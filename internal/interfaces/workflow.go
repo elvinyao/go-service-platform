@@ -1,8 +1,11 @@
 package interfaces
 
-import "project/internal/model"
+import (
+	"context"
+	"project/internal/model"
+)
 
 type Workflow interface {
 	GetName() string
-	ProcessMessage(msg model.Message) error
+	ProcessMessage(ctx context.Context, msg model.Message) error
 }

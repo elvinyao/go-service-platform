@@ -1,10 +1,16 @@
-// internal/interfaces/service_manager.go
+// internal/interfaces/srvinterface.go
 package interfaces
 
-import "project/internal/service"
+import (
+	"context"
+	"project/internal/service"
+)
 
 type ServiceManager interface {
-	GetServiceByName(name string) (service.Service, bool)
-	GetServicesByWorkflowAndType(workflow string, serviceType string) []service.Service
+	GetServiceByName(ctx context.Context, name string) (service.Service, bool)
+	GetServicesByWorkflowAndType(ctx context.Context, workflow string, serviceType string) []service.Service
+	StartAll(ctx context.Context) error
+	StopAll(ctx context.Context) error
+	MonitorServices(ctx context.Context)
 	// 其他方法
 }

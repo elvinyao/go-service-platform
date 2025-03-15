@@ -2,95 +2,225 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/signal"
 	"project/internal/dataaccess"
-	"project/internal/interfaces"
 	"project/internal/manager"
 	"project/internal/model"
 	"project/internal/service"
 	"project/internal/workflow"
+	appctx "project/pkg/context"
+	"project/pkg/errors"
 	"project/pkg/logger"
+	"syscall"
+	"time"
 	// 其他必要的导入
 )
 
 func main() {
+	// Initialize logger
 	logger.Init()
 
-	// 创建一个根 context 和一个取消函数
-	ctx, cancel := context.WithCancel(context.Background())
+	// Create our application context with request ID
+	rootCtx := appctx.NewContext(context.Background())
+	cancelCtx, cancel := context.WithCancel(rootCtx)
 	defer cancel()
 
-	// 初始化服务管理器和数据访问器
-	serviceManager := initServiceManager()
-	dataAccessor := initDataAccessor()
+	appName := "service-workflow"
+	rootCtx = appctx.WithServiceName(rootCtx, appName)
 
-	// 注册和启动服务
-	registerAndStartServices(ctx, serviceManager, dataAccessor)
+	logger.InfoWithContext(rootCtx, "Starting application")
 
-	// 启动服务监控
-	go serviceManager.MonitorServices(ctx)
+	// Set up signal handling for graceful shutdown
+	setupSignalHandling(rootCtx, cancel)
 
-	workflowManager := initWorkflowManager(serviceManager)
+	// Initialize dependencies
+	serviceManager := initServiceManager(rootCtx)
+	dataAccessor := initDataAccessor(rootCtx)
 
-	// 启动消息监听
-	setupMessageListeners(serviceManager, workflowManager)
+	// Register and start services
+	startCtx := appctx.WithOperationName(rootCtx, "startup")
+	if err := registerAndStartServices(startCtx, serviceManager, dataAccessor); err != nil {
+		logger.WithContextError(rootCtx, err).Error("Failed to register and start services")
+		os.Exit(1)
+	}
 
-	// 阻塞主线程直到接收到取消信号
-	<-ctx.Done()
+	// Start service monitoring
+	monitorCtx := appctx.WithOperationName(cancelCtx, "monitoring")
+	go monitorServices(monitorCtx, serviceManager)
+
+	// Initialize and setup workflow manager
+	workflowManager, err := initWorkflowManager(rootCtx, serviceManager)
+	if err != nil {
+		logger.WithContextError(rootCtx, err).Error("Failed to initialize workflow manager")
+		shutdown(rootCtx, serviceManager)
+		os.Exit(1)
+	}
+
+	// Set up message listeners
+	if err := setupMessageListeners(rootCtx, serviceManager, workflowManager); err != nil {
+		logger.WithContextError(rootCtx, err).Error("Failed to set up message listeners")
+		shutdown(rootCtx, serviceManager)
+		os.Exit(1)
+	}
+
+	logger.InfoWithContext(rootCtx, "Application started successfully")
+
+	// Block until context is cancelled
+	<-cancelCtx.Done()
+
+	// Handle graceful shutdown
+	shutdownCtx := appctx.WithOperationName(rootCtx, "shutdown")
+	logger.InfoWithContext(shutdownCtx, "Shutting down application")
+	shutdown(shutdownCtx, serviceManager)
+	logger.InfoWithContext(shutdownCtx, "Application shutdown complete")
 }
 
-// 初始化服务管理器
-func initServiceManager() *manager.ServiceManager {
+// setupSignalHandling configures the application to handle OS signals
+func setupSignalHandling(ctx context.Context, cancel context.CancelFunc) {
+	ctx = appctx.WithOperationName(ctx, "signal_handling")
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		sig := <-sigChan
+		logger.InfofWithContext(ctx, "Received signal: %v", sig)
+		cancel()
+	}()
+
+	logger.DebugWithContext(ctx, "Signal handlers set up")
+}
+
+// shutdown performs a graceful shutdown of all services
+func shutdown(ctx context.Context, serviceManager *manager.ServiceManager) {
+	ctx = appctx.WithOperationName(ctx, "graceful_shutdown")
+
+	// Allow up to 10 seconds for graceful shutdown
+	shutdownCtx, cancel := appctx.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := serviceManager.StopAll(shutdownCtx); err != nil {
+		logger.WithContextError(ctx, err).Error("Error during service shutdown")
+	}
+
+	// Wait for context to be done, either by timeout or successful shutdown
+	<-shutdownCtx.Done()
+
+	if shutdownCtx.Err() == context.DeadlineExceeded {
+		logger.WarnWithContext(ctx, "Shutdown timed out, forcing exit")
+	}
+}
+
+// monitorServices starts the service monitoring in a separate goroutine
+func monitorServices(ctx context.Context, serviceManager *manager.ServiceManager) {
+	logger.InfoWithContext(ctx, "Starting service monitoring")
+	serviceManager.MonitorServices(ctx)
+	logger.InfoWithContext(ctx, "Service monitoring stopped")
+}
+
+// Initialize service manager
+func initServiceManager(ctx context.Context) *manager.ServiceManager {
+	ctx = appctx.WithOperationName(ctx, "init_service_manager")
+	logger.InfoWithContext(ctx, "Initializing service manager")
 	return manager.NewServiceManager()
 }
 
-// 初始化数据访问器
-func initDataAccessor() *dataaccess.CacheDataAccessor {
+// Initialize data accessor
+func initDataAccessor(ctx context.Context) *dataaccess.CacheDataAccessor {
+	ctx = appctx.WithOperationName(ctx, "init_data_accessor")
+	logger.InfoWithContext(ctx, "Initializing data accessor")
 	return dataaccess.NewCacheDataAccessor()
 }
 
-// 注册和启动服务
-func registerAndStartServices(ctx context.Context, serviceManager *manager.ServiceManager, dataAccessor dataaccess.DataAccessor) {
-	services := []service.Service{
-		service.NewConfluenceService("ConfluenceServiceA", "A", dataAccessor),
-		service.NewWebSocketService("WebSocketServiceA", "A"),
-		service.NewBadgeDBService("BadgeDBService", "Global"),
-	}
+// Register and start services
+func registerAndStartServices(ctx context.Context, serviceManager *manager.ServiceManager, dataAccessor dataaccess.DataAccessor) error {
+	return logger.LogOperation(ctx, "register_and_start_services", func(ctx context.Context) error {
+		logger.InfoWithContext(ctx, "Registering services")
 
-	for _, svc := range services {
-		serviceManager.RegisterService(svc)
-	}
-	serviceManager.StartAll(ctx)
+		services := []service.Service{
+			service.NewConfluenceService("ConfluenceServiceA", "A", dataAccessor),
+			service.NewWebSocketService("WebSocketServiceA", "A"),
+			service.NewBadgeDBService("BadgeDBService", "Global"),
+		}
+
+		for _, svc := range services {
+			serviceManager.RegisterService(svc)
+			logger.InfofWithContext(ctx, "Registered service: %s", svc.GetName())
+		}
+
+		logger.InfoWithContext(ctx, "Starting all services")
+		if err := serviceManager.StartAll(ctx); err != nil {
+			return errors.Wrap(err, "Failed to start services", errors.TypeServiceUnavailable)
+		}
+
+		logger.InfoWithContext(ctx, "All services started successfully")
+		return nil
+	})
 }
 
-// 初始化工作流管理器
-func initWorkflowManager(serviceManager *manager.ServiceManager) *manager.WorkflowManager {
-	workflowManager := manager.NewWorkflowManager()
-	workflows := []interfaces.Workflow{
-		workflow.NewWorkflowA(serviceManager),
+// Initialize workflow manager
+func initWorkflowManager(ctx context.Context, serviceManager *manager.ServiceManager) (*manager.WorkflowManager, error) {
+	var wfManager *manager.WorkflowManager
+	var wfError error
+
+	err := logger.LogOperation(ctx, "init_workflow_manager", func(ctx context.Context) error {
+		logger.InfoWithContext(ctx, "Initializing workflow manager")
+		workflowManager := manager.NewWorkflowManager()
+
+		workflowA := workflow.NewWorkflowA(serviceManager)
+
+		if err := workflowManager.RegisterWorkflow(workflowA); err != nil {
+			wfError = errors.Wrap(err, "Failed to register workflow", errors.TypeInternal).
+				WithField("workflow", workflowA.GetName())
+			return wfError
+		}
+
+		logger.InfofWithContext(ctx, "Registered workflow: %s", workflowA.GetName())
+
+		wfManager = workflowManager
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
 	}
 
-	for _, wf := range workflows {
-		workflowManager.RegisterWorkflow(wf)
+	if wfError != nil {
+		return nil, wfError
 	}
 
-	return workflowManager
+	return wfManager, nil
 }
 
-// 设置消息监听
-func setupMessageListeners(serviceManager *manager.ServiceManager, workflowManager *manager.WorkflowManager) {
-	svc, ok := serviceManager.GetServiceByName("WebSocketServiceA")
-	if !ok {
-		logger.Errorf("Service not found: WebSocketServiceA")
-		return
-	}
+// Set up message listeners
+func setupMessageListeners(ctx context.Context, serviceManager *manager.ServiceManager, workflowManager *manager.WorkflowManager) error {
+	return logger.LogOperation(ctx, "setup_message_listeners", func(ctx context.Context) error {
+		logger.InfoWithContext(ctx, "Setting up message listeners")
 
-	websocketServiceA, ok := svc.(*service.WebSocketService)
-	if !ok {
-		logger.Errorf("Service is not of type *service.WebSocketService: %T", svc)
-		return
-	}
+		svc, ok := serviceManager.GetServiceByName(ctx, "WebSocketServiceA")
+		if !ok {
+			return errors.New(errors.TypeNotFound, "Service not found: WebSocketServiceA", nil)
+		}
 
-	websocketServiceA.OnMessage(func(msg model.Message) {
-		workflowManager.DispatchMessage(msg)
+		websocketServiceA, ok := svc.(*service.WebSocketService)
+		if !ok {
+			return errors.New(errors.TypeInternal,
+				"Service is not of type *service.WebSocketService", nil).
+				WithField("actual_type", fmt.Sprintf("%T", svc))
+		}
+
+		websocketServiceA.OnMessage(func(msg model.Message) {
+			// Create a new request context for each message
+			msgCtx := appctx.NewContext(ctx)
+
+			if err := workflowManager.DispatchMessage(msgCtx, msg); err != nil {
+				logger.WithContextError(msgCtx, err).Errorf("Error dispatching message: %+v", msg)
+			}
+		})
+
+		logger.InfoWithContext(ctx, "Message listeners set up successfully")
+		return nil
 	})
 }

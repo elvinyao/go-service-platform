@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"project/internal/dataaccess"
+	appctx "project/pkg/context"
+	"project/pkg/errors"
 	"project/pkg/logger"
+	"sync"
 	// 其他必要的导入
 )
 
@@ -11,7 +14,8 @@ type ConfluenceService struct {
 	name         string
 	workflow     string
 	dataAccessor dataaccess.DataAccessor
-	running      bool // 新增字段
+	running      bool
+	mu           sync.Mutex
 	// 其他字段
 }
 
@@ -24,32 +28,54 @@ func NewConfluenceService(name, workflow string, da dataaccess.DataAccessor) *Co
 }
 
 func (s *ConfluenceService) Start(ctx context.Context) error {
-	logger.Infof("Starting service: %s", s.name)
+	ctx = appctx.WithOperationName(ctx, "start_service")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.running {
+		return errors.New(errors.TypeInvalidInput, "Service is already running", nil).
+			WithField("service", s.name)
+	}
+
+	logger.InfofWithContext(ctx, "Starting service: %s", s.name)
 	s.running = true
+
 	go func() {
 		<-ctx.Done()
-		err := s.Stop()
-		if err != nil {
-			return
+		stopCtx := appctx.NewContext(context.Background())
+		if err := s.Stop(stopCtx); err != nil {
+			logger.WithContextError(stopCtx, err).Errorf("Error stopping service: %s", s.name)
 		}
 	}()
-	// 实现启动逻辑，例如定时从Confluence获取数据
+
 	return nil
 }
 
-func (s *ConfluenceService) Stop() error {
+func (s *ConfluenceService) Stop(ctx context.Context) error {
+	ctx = appctx.WithOperationName(ctx, "stop_service")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.running {
+		return errors.New(errors.TypeInvalidInput, "Service is not running", nil).
+			WithField("service", s.name)
+	}
+
+	logger.InfofWithContext(ctx, "Stopping service: %s", s.name)
 	s.running = false
-	logger.Infof("Stopping service: %s", s.name)
-	// 实现停止逻辑
+
 	return nil
 }
 
 func (s *ConfluenceService) Restart(ctx context.Context) error {
-	logger.Infof("Restarting service: %s", s.name)
-	err := s.Stop()
-	if err != nil {
-		return err
+	ctx = appctx.WithOperationName(ctx, "restart_service")
+	logger.InfofWithContext(ctx, "Restarting service: %s", s.name)
+
+	if err := s.Stop(ctx); err != nil {
+		return errors.Wrap(err, "Failed to stop service during restart", errors.TypeServiceUnavailable).
+			WithField("service", s.name)
 	}
+
 	return s.Start(ctx)
 }
 
@@ -61,28 +87,67 @@ func (s *ConfluenceService) GetWorkflow() string {
 	return s.workflow
 }
 
+func (s *ConfluenceService) GetType() string {
+	return "confluence"
+}
+
 func (s *ConfluenceService) IsRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.running
 }
 
-// 其他方法，例如FetchData()
-func (s *ConfluenceService) GetType() string {
-	return s.name
-}
-
+// FetchData retrieves data from the Confluence API
 func (s *ConfluenceService) FetchData() (string, error) {
-	return s.name, nil
+	// In a real implementation, this would make API calls to Confluence
+	// For demonstration purposes, we'll just return the service name
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.running {
+		return "", errors.New(errors.TypeServiceUnavailable, "Service is not running", nil).
+			WithField("service", s.name)
+	}
+
+	// Example of using the data accessor
+	key := "confluence_data_" + s.name
+	cachedData, err := s.dataAccessor.GetData(key)
+	if err == nil && cachedData != nil {
+		// Return cached data if available
+		if strData, ok := cachedData.(string); ok {
+			return strData, nil
+		}
+	}
+
+	// Simulate fetching data
+	fetchedData := "Data from " + s.name
+
+	// Cache the fetched data
+	_ = s.dataAccessor.SetData(key, fetchedData)
+
+	return fetchedData, nil
 }
 
-// GetMetrics implements Service interface
-func (s *ConfluenceService) GetMetrics() map[string]interface{} {
+// GetMetrics implements Service interface with context support
+func (s *ConfluenceService) GetMetrics(ctx context.Context) map[string]interface{} {
+	ctx = appctx.WithOperationName(ctx, "get_metrics")
+	logger.DebugfWithContext(ctx, "Getting metrics for service: %s", s.name)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	return map[string]interface{}{
-		"running": s.running,
+		"running":  s.running,
+		"workflow": s.workflow,
 	}
 }
 
-// Configure implements Service interface
-func (s *ConfluenceService) Configure(config interface{}) error {
-	// Implementation for dynamic configuration
+// Configure implements Service interface with context support
+func (s *ConfluenceService) Configure(ctx context.Context, config interface{}) error {
+	ctx = appctx.WithOperationName(ctx, "configure_service")
+	logger.InfofWithContext(ctx, "Configuring service: %s", s.name)
+
+	// Add configuration logic here
+
 	return nil
 }
