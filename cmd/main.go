@@ -15,69 +15,86 @@ import (
 	"project/pkg/errors"
 	"project/pkg/health"
 	"project/pkg/logger"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/sirupsen/logrus"
 	// 其他必要的导入
 )
 
 const (
 	// 应用版本
 	appVersion = "1.0.0"
+	// 优雅关闭超时 - 总体超时
+	shutdownTimeout = 30 * time.Second
+	// 服务停止超时 - 每个服务的超时
+	serviceShutdownTimeout = 10 * time.Second
 )
 
 func main() {
-	// Initialize logger
-	logger.Init()
+	// Initialize logger with environment variables
+	logger.InitFromEnv()
+
+	// Log application start
+	logger.WithFields(logrus.Fields{
+		"version": appVersion,
+		"pid":     os.Getpid(),
+	}).Info("Application starting")
 
 	// Create our application context with request ID
 	rootCtx := appctx.NewContext(context.Background())
+
+	// Setup cancellable context for shutdown
 	cancelCtx, cancel := context.WithCancel(rootCtx)
 	defer cancel()
 
 	appName := "service-workflow"
 	rootCtx = appctx.WithServiceName(rootCtx, appName)
 
-	logger.InfoWithContext(rootCtx, "Starting application")
+	logger.InfoWithContext(rootCtx, "Initializing application")
 
 	// Set up signal handling for graceful shutdown
-	setupSignalHandling(rootCtx, cancel)
+	signalChan := setupSignalHandling(rootCtx, cancel)
 
 	// 创建依赖注入容器
 	container := di.NewContainer(appVersion)
+	startCtx := appctx.WithOperationName(rootCtx, "startup")
 
 	// 初始化依赖
-	startCtx := appctx.WithOperationName(rootCtx, "startup")
 	serviceManager := container.GetServiceManager(startCtx)
 
-	// 注册服务
+	// 注册所有服务
 	if err := container.RegisterServices(startCtx); err != nil {
-		logger.WithContextError(rootCtx, err).Error("Failed to register services")
-		os.Exit(1)
+		logger.WithContextError(rootCtx, err).Fatal("Failed to register services")
 	}
 
 	// 启动所有服务
 	if err := serviceManager.StartAll(startCtx); err != nil {
-		logger.WithContextError(rootCtx, err).Error("Failed to start services")
-		os.Exit(1)
+		logger.WithContextError(rootCtx, err).Fatal("Failed to start services")
 	}
 
 	// Start service monitoring
-	monitorCtx := appctx.WithOperationName(cancelCtx, "monitoring")
-	go monitorServices(monitorCtx, serviceManager)
+	monitorCtx, monitorCancel := context.WithCancel(cancelCtx)
+	defer monitorCancel()
+
+	// Track when monitoring is done
+	var monitorWg sync.WaitGroup
+	monitorWg.Add(1)
+	go func() {
+		defer monitorWg.Done()
+		monitorServices(monitorCtx, serviceManager)
+	}()
 
 	// Initialize and setup workflow manager
 	workflowManager, err := container.GetWorkflowManager(rootCtx)
 	if err != nil {
-		logger.WithContextError(rootCtx, err).Error("Failed to initialize workflow manager")
-		shutdown(rootCtx, serviceManager)
-		os.Exit(1)
+		logger.WithContextError(rootCtx, err).Fatal("Failed to initialize workflow manager")
 	}
 
 	// Set up message listeners
 	if err := setupMessageListeners(rootCtx, serviceManager, workflowManager); err != nil {
-		logger.WithContextError(rootCtx, err).Error("Failed to set up message listeners")
-		shutdown(rootCtx, serviceManager)
-		os.Exit(1)
+		logger.WithContextError(rootCtx, err).Fatal("Failed to set up message listeners")
 	}
 
 	// 创建健康检查管理器
@@ -85,57 +102,133 @@ func main() {
 
 	// 创建HTTP管理服务器
 	adminServer := createAdminServer(rootCtx, serviceManager, workflowManager, healthManager)
+
+	// Track when HTTP server is done
+	var adminServerWg sync.WaitGroup
+	adminServerWg.Add(1)
 	go func() {
+		defer adminServerWg.Done()
+		logger.InfoWithContext(rootCtx, "Starting admin server on", adminServer.Addr)
+
 		if err := adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.WithContextError(rootCtx, err).Fatal("Admin server failed")
+			logger.WithContextError(rootCtx, err).Error("Admin server failed")
 		}
 	}()
 
 	logger.InfoWithContext(rootCtx, "Application started successfully")
 
-	// Block until context is cancelled
-	<-cancelCtx.Done()
+	// Wait for shutdown signal
+	sig := <-signalChan
+	logger.InfofWithContext(rootCtx, "Received signal: %v, initiating graceful shutdown", sig)
+
+	// Create a context with timeout for shutdown
+	shutdownCtx, shutdownCancel := context.WithTimeout(rootCtx, shutdownTimeout)
+	defer shutdownCancel()
 
 	// Handle graceful shutdown
-	shutdownCtx := appctx.WithOperationName(rootCtx, "shutdown")
-	logger.InfoWithContext(shutdownCtx, "Shutting down application")
-	shutdown(shutdownCtx, serviceManager)
-	logger.InfoWithContext(shutdownCtx, "Application shutdown complete")
+	shutdownSequence(shutdownCtx, serviceManager, adminServer, monitorCancel, &adminServerWg, &monitorWg)
+
+	logger.InfoWithContext(rootCtx, "Application shutdown complete")
 }
 
 // setupSignalHandling configures the application to handle OS signals
-func setupSignalHandling(ctx context.Context, cancel context.CancelFunc) {
+func setupSignalHandling(ctx context.Context, cancel context.CancelFunc) chan os.Signal {
 	ctx = appctx.WithOperationName(ctx, "signal_handling")
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	// Create buffered channel to avoid signal loss
+	sigChan := make(chan os.Signal, 3)
 
-	go func() {
-		sig := <-sigChan
-		logger.InfofWithContext(ctx, "Received signal: %v", sig)
-		cancel()
-	}()
+	// Register for SIGINT (Ctrl+C), SIGTERM (Docker stop/kill), and SIGQUIT
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
 	logger.DebugWithContext(ctx, "Signal handlers set up")
+
+	return sigChan
+}
+
+// shutdownSequence performs a coordinated shutdown of all components
+func shutdownSequence(ctx context.Context, serviceManager *manager.ServiceManager,
+	adminServer *http.Server, monitorCancel context.CancelFunc,
+	adminWg *sync.WaitGroup, monitorWg *sync.WaitGroup) {
+
+	ctx = appctx.WithOperationName(ctx, "graceful_shutdown")
+	logger.InfoWithContext(ctx, "Starting graceful shutdown sequence")
+
+	// Step 1: Stop the monitoring first to avoid log spam during shutdown
+	logger.InfoWithContext(ctx, "Stopping service monitoring")
+	monitorCancel()
+
+	// Wait for monitoring to complete
+	monitorDone := make(chan struct{})
+	go func() {
+		monitorWg.Wait()
+		close(monitorDone)
+	}()
+
+	// Wait with timeout
+	select {
+	case <-monitorDone:
+		logger.InfoWithContext(ctx, "Service monitoring stopped successfully")
+	case <-time.After(5 * time.Second):
+		logger.WarnWithContext(ctx, "Timeout waiting for service monitoring to stop")
+	}
+
+	// Step 2: Shutdown the admin HTTP server
+	logger.InfoWithContext(ctx, "Shutting down admin server")
+	httpShutdownCtx, httpCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer httpCancel()
+
+	if err := adminServer.Shutdown(httpShutdownCtx); err != nil {
+		logger.WithContextError(ctx, err).Warn("Admin server shutdown error")
+	}
+
+	// Wait for HTTP server to complete
+	httpDone := make(chan struct{})
+	go func() {
+		adminWg.Wait()
+		close(httpDone)
+	}()
+
+	// Wait with timeout
+	select {
+	case <-httpDone:
+		logger.InfoWithContext(ctx, "Admin server stopped successfully")
+	case <-time.After(7 * time.Second):
+		logger.WarnWithContext(ctx, "Timeout waiting for admin server to stop")
+	}
+
+	// Step 3: Shutdown all services
+	logger.InfoWithContext(ctx, "Shutting down all services")
+	shutdownServices(ctx, serviceManager)
 }
 
 // shutdown performs a graceful shutdown of all services
-func shutdown(ctx context.Context, serviceManager *manager.ServiceManager) {
-	ctx = appctx.WithOperationName(ctx, "graceful_shutdown")
+func shutdownServices(ctx context.Context, serviceManager *manager.ServiceManager) {
+	ctx = appctx.WithOperationName(ctx, "services_shutdown")
 
-	// Allow up to 10 seconds for graceful shutdown
-	shutdownCtx, cancel := appctx.WithTimeout(ctx, 10*time.Second)
+	// Allow specified timeout for graceful shutdown
+	shutdownCtx, cancel := context.WithTimeout(ctx, serviceShutdownTimeout)
 	defer cancel()
 
-	if err := serviceManager.StopAll(shutdownCtx); err != nil {
-		logger.WithContextError(ctx, err).Error("Error during service shutdown")
-	}
+	// Create a channel to signal when services are stopped
+	done := make(chan struct{})
 
-	// Wait for context to be done, either by timeout or successful shutdown
-	<-shutdownCtx.Done()
+	// Stop services in a goroutine to handle timeout
+	go func() {
+		if err := serviceManager.StopAll(shutdownCtx); err != nil {
+			logger.WithContextError(ctx, err).Error("Error during service shutdown")
+		}
+		close(done)
+	}()
 
-	if shutdownCtx.Err() == context.DeadlineExceeded {
-		logger.WarnWithContext(ctx, "Shutdown timed out, forcing exit")
+	// Wait for either completion or timeout
+	select {
+	case <-done:
+		logger.InfoWithContext(ctx, "All services stopped successfully")
+	case <-shutdownCtx.Done():
+		if shutdownCtx.Err() == context.DeadlineExceeded {
+			logger.WarnWithContext(ctx, "Service shutdown timed out, some services may not have stopped gracefully")
+		}
 	}
 }
 
@@ -200,11 +293,14 @@ func createAdminServer(ctx context.Context, serviceManager *manager.ServiceManag
 		workflowsList(w, r, workflowManager)
 	})
 
-	// 配置HTTP服务器
+	// 配置HTTP服务器 with timeout settings
 	server := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	logger.InfoWithContext(ctx, "Admin server created successfully")
@@ -276,11 +372,9 @@ func healthCheck(w http.ResponseWriter, r *http.Request, serviceManager *manager
 // servicesList 处理服务列表请求
 func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manager.ServiceManager) {
 	ctx := appctx.FromRequest(r)
+	logger.InfoWithContext(ctx, "Handling services list request")
 
-	// 获取所有服务
-	services := serviceManager.ListServices(ctx)
-
-	// 创建简化的服务信息列表
+	// 创建服务信息列表
 	type ServiceInfo struct {
 		Name     string                 `json:"name"`
 		Running  bool                   `json:"running"`
@@ -289,24 +383,37 @@ func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manage
 		Metrics  map[string]interface{} `json:"metrics,omitempty"`
 	}
 
+	services := serviceManager.ListServices(ctx)
 	serviceInfos := make([]ServiceInfo, 0, len(services))
 
 	for _, svc := range services {
 		info := ServiceInfo{
-			Name:     svc.GetName(),
-			Running:  svc.IsRunning(ctx),
-			Workflow: svc.GetWorkflow(),
-			Type:     svc.GetType(),
-			Metrics:  svc.GetMetrics(ctx),
+			Name:    svc.GetName(),
+			Running: svc.IsRunning(ctx),
+			Type:    fmt.Sprintf("%T", svc),
+		}
+
+		// 获取服务指标
+		if metricProvider, ok := svc.(interface {
+			GetMetrics(ctx context.Context) map[string]interface{}
+		}); ok {
+			info.Metrics = metricProvider.GetMetrics(ctx)
+		}
+
+		// 获取关联工作流
+		if workflowProvider, ok := svc.(interface {
+			GetWorkflowName() string
+		}); ok {
+			info.Workflow = workflowProvider.GetWorkflowName()
 		}
 
 		serviceInfos = append(serviceInfos, info)
 	}
 
-	// 设置内容类型
+	// 设置响应头
 	w.Header().Set("Content-Type", "application/json")
 
-	// 将服务列表编码为JSON
+	// Encode with error handling
 	if err := json.NewEncoder(w).Encode(serviceInfos); err != nil {
 		logger.WithContextError(ctx, err).Error("Failed to encode services list")
 	}
@@ -314,12 +421,27 @@ func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manage
 
 // workflowsList 处理工作流列表请求
 func workflowsList(w http.ResponseWriter, r *http.Request, workflowManager *manager.WorkflowManager) {
-	// 设置内容类型
+	ctx := appctx.FromRequest(r)
+	logger.InfoWithContext(ctx, "Handling workflows list request")
+
+	// 创建工作流信息列表
+	type WorkflowInfo struct {
+		Name string `json:"name"`
+	}
+
+	// 获取所有注册的工作流
+	workflowNames := workflowManager.ListWorkflows(ctx)
+	workflowInfos := make([]WorkflowInfo, 0, len(workflowNames))
+
+	for _, name := range workflowNames {
+		workflowInfos = append(workflowInfos, WorkflowInfo{Name: name})
+	}
+
+	// 设置响应头
 	w.Header().Set("Content-Type", "application/json")
 
-	// 暂时只返回简单消息，因为WorkflowManager尚未提供获取所有工作流的方法
-	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
-		ctx := appctx.FromRequest(r)
-		logger.WithContextError(ctx, err).Error("Failed to encode workflows response")
+	// Encode with error handling
+	if err := json.NewEncoder(w).Encode(workflowInfos); err != nil {
+		logger.WithContextError(ctx, err).Error("Failed to encode workflows list")
 	}
 }

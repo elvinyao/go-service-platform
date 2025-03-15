@@ -1,23 +1,87 @@
 package logger
 
 import (
+	"io"
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
 var log = logrus.New()
 
+// Config holds configuration for the logger
+type Config struct {
+	Level      string `json:"level" yaml:"level"`
+	Format     string `json:"format" yaml:"format"` // "json" or "text"
+	TimeFormat string `json:"time_format" yaml:"time_format"`
+	CallerInfo bool   `json:"caller_info" yaml:"caller_info"`
+	Output     string `json:"output" yaml:"output"` // "stdout", "stderr", or a file path
+}
+
+// DefaultConfig returns a default logger configuration
+func DefaultConfig() Config {
+	return Config{
+		Level:      "info",
+		Format:     "json",
+		TimeFormat: time.RFC3339,
+		CallerInfo: true,
+		Output:     "stdout",
+	}
+}
+
 // Init initializes the logger with default configuration
 func Init() {
-	log.Out = os.Stdout
-	log.SetLevel(logrus.InfoLevel)
-	log.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp:   true,
-		TimestampFormat: "2006-01-02 15:04:05",
-	})
+	Configure(DefaultConfig())
+}
+
+// Configure configures the logger with the provided configuration
+func Configure(config Config) {
+	// Set output
+	switch strings.ToLower(config.Output) {
+	case "stdout":
+		log.Out = os.Stdout
+	case "stderr":
+		log.Out = os.Stderr
+	default:
+		// Attempt to use a file
+		file, err := os.OpenFile(config.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			log.Errorf("Failed to open log file %s, using stdout: %v", config.Output, err)
+			log.Out = os.Stdout
+		} else {
+			log.Out = file
+		}
+	}
+
+	// Set level
+	SetLevel(config.Level)
+
+	// Set formatter
+	switch strings.ToLower(config.Format) {
+	case "json":
+		log.SetFormatter(&logrus.JSONFormatter{
+			TimestampFormat: config.TimeFormat,
+			PrettyPrint:     false,
+		})
+	default:
+		log.SetFormatter(&logrus.TextFormatter{
+			FullTimestamp:   true,
+			TimestampFormat: config.TimeFormat,
+		})
+	}
+
+	// Set caller info
+	if config.CallerInfo {
+		log.SetReportCaller(true)
+	}
+}
+
+// SetOutput sets the output destination for the logger
+func SetOutput(output io.Writer) {
+	log.Out = output
 }
 
 // SetLevel sets the log level
@@ -31,6 +95,12 @@ func SetLevel(level string) {
 		log.SetLevel(logrus.WarnLevel)
 	case "error":
 		log.SetLevel(logrus.ErrorLevel)
+	case "fatal":
+		log.SetLevel(logrus.FatalLevel)
+	case "panic":
+		log.SetLevel(logrus.PanicLevel)
+	case "trace":
+		log.SetLevel(logrus.TraceLevel)
 	default:
 		log.SetLevel(logrus.InfoLevel)
 	}
@@ -129,6 +199,11 @@ func WithPackageName() *logrus.Entry {
 	}
 
 	return log.WithField("package", packageName)
+}
+
+// GetLogger returns the underlying logrus logger
+func GetLogger() *logrus.Logger {
+	return log
 }
 
 // 其他日志方法...

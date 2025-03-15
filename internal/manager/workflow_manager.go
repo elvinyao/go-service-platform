@@ -141,3 +141,38 @@ func (wm *WorkflowManager) GetWorkflowByName(ctx context.Context, name string) (
 
 	return workflow, nil
 }
+
+// ListWorkflows returns the list of all registered workflows
+func (wm *WorkflowManager) ListWorkflows(ctx context.Context) []string {
+	ctx = appctx.WithOperationName(ctx, "list_workflows")
+	logger.DebugWithContext(ctx, "Listing all registered workflows")
+
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	workflowNames := make([]string, 0, len(wm.workflows))
+	for name := range wm.workflows {
+		workflowNames = append(workflowNames, name)
+	}
+
+	logger.InfofWithContext(ctx, "Found %d registered workflows", len(workflowNames))
+	return workflowNames
+}
+
+// GetAllWorkflows returns all workflow instances
+func (wm *WorkflowManager) GetAllWorkflows(ctx context.Context) map[string]interfaces.Workflow {
+	ctx = appctx.WithOperationName(ctx, "get_all_workflows")
+	logger.DebugWithContext(ctx, "Getting all workflow instances")
+
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	// Create a copy of the workflows map to avoid concurrent access issues
+	result := make(map[string]interfaces.Workflow, len(wm.workflows))
+	for name, workflow := range wm.workflows {
+		result[name] = workflow
+	}
+
+	logger.InfofWithContext(ctx, "Retrieved %d workflow instances", len(result))
+	return result
+}

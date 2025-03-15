@@ -2,7 +2,10 @@ package logger
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	appctx "project/pkg/context"
+	"runtime"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -46,6 +49,14 @@ func FromContext(ctx context.Context) *logrus.Entry {
 	if !startTime.IsZero() {
 		elapsed := time.Since(startTime)
 		entry = entry.WithField("elapsed_ms", elapsed.Milliseconds())
+	}
+
+	// Add caller information if not already added by logrus
+	if !log.ReportCaller {
+		_, file, line, ok := runtime.Caller(2)
+		if ok {
+			entry = entry.WithField("caller", fmt.Sprintf("%s:%d", filepath.Base(file), line))
+		}
 	}
 
 	return entry
@@ -103,7 +114,22 @@ func FatalfWithContext(ctx context.Context, format string, args ...interface{}) 
 
 // WithContextError adds error information to the logging context
 func WithContextError(ctx context.Context, err error) *logrus.Entry {
-	return FromContext(ctx).WithError(err)
+	entry := FromContext(ctx).WithError(err)
+
+	// Try to extract error details if it's a custom error with fields
+	if fieldErr, ok := err.(interface{ Fields() map[string]interface{} }); ok {
+		fields := fieldErr.Fields()
+		if len(fields) > 0 {
+			entry = entry.WithFields(logrus.Fields(fields))
+		}
+	}
+
+	return entry
+}
+
+// WithContextFields adds fields to the logging entry from the context
+func WithContextFields(ctx context.Context, fields logrus.Fields) *logrus.Entry {
+	return FromContext(ctx).WithFields(fields)
 }
 
 // LogOperation logs the beginning and end of an operation with elapsed time
@@ -111,18 +137,30 @@ func LogOperation(ctx context.Context, operation string, fn func(ctx context.Con
 	// Create a new context with the operation name
 	opCtx := appctx.WithOperationName(ctx, operation)
 
+	// Add start timestamp to the context
+	startTime := time.Now()
+
 	// Log the start of the operation
 	InfofWithContext(opCtx, "Starting operation: %s", operation)
 
 	// Execute the operation
 	err := fn(opCtx)
 
+	// Calculate duration
+	duration := time.Since(startTime)
+
+	// Create result fields
+	fields := logrus.Fields{
+		"operation":   operation,
+		"duration_ms": duration.Milliseconds(),
+		"success":     err == nil,
+	}
+
 	// Log the result of the operation
 	if err != nil {
-		ErrorfWithContext(opCtx, "Operation failed: %s, error: %v", operation, err)
+		WithContextFields(opCtx, fields).WithError(err).Error("Operation failed")
 	} else {
-		InfofWithContext(opCtx, "Operation completed: %s, elapsed: %d ms",
-			operation, appctx.GetElapsedTime(opCtx).Milliseconds())
+		WithContextFields(opCtx, fields).Info("Operation completed")
 	}
 
 	return err
@@ -132,20 +170,26 @@ func LogOperation(ctx context.Context, operation string, fn func(ctx context.Con
 func LogTimingOperation(ctx context.Context, operation string, fn func(ctx context.Context) error) error {
 	// Create a new context with the operation name and start time
 	opCtx := appctx.WithOperationName(ctx, operation)
+	startTime := time.Now()
 
 	// Execute the operation
 	err := fn(opCtx)
 
-	// Log the result with timing
+	// Calculate duration
+	duration := time.Since(startTime)
+
+	// Create result fields
 	fields := logrus.Fields{
-		"operation":  operation,
-		"elapsed_ms": appctx.GetElapsedTime(opCtx).Milliseconds(),
+		"operation":   operation,
+		"duration_ms": duration.Milliseconds(),
+		"success":     err == nil,
 	}
 
+	// Log the result with timing
 	if err != nil {
-		log.WithFields(fields).WithError(err).Error("Operation error")
+		WithContextFields(opCtx, fields).WithError(err).Error("Operation error")
 	} else {
-		log.WithFields(fields).Debug("Operation timing")
+		WithContextFields(opCtx, fields).Debug("Operation timing")
 	}
 
 	return err

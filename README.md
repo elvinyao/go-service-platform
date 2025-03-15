@@ -253,3 +253,76 @@ go build -o bin/service-workflow cmd/main.go
    - 注入到需要的服务中
 
 这个系统设计良好，具有高度的可扩展性和模块化特性。通过接口定义和依赖注入，使得各个组件之间松耦合，易于测试和维护。系统的监控和错误处理机制也比较完善，能够保证服务的稳定运行。服务接口的扩展支持了更丰富的功能，包括指标收集和动态配置。
+
+## New Features
+
+### Structured Logging
+
+The platform now includes improved structured logging with the following features:
+
+- **JSON Formatted Logs**: All logs are now in JSON format by default for better parsing and indexing in log management systems
+- **Context-aware Logging**: Logs include request IDs, trace IDs, and other contextual information
+- **Configurable Log Levels**: Easily configure log levels via environment variables
+- **File Rotation**: Support for log file rotation based on size and time
+- **Multiple Outputs**: Logs can be sent to multiple destinations simultaneously
+- **Performance Metrics**: Operations automatically include duration metrics
+- **Error Details**: Enhanced error logging with structured error details
+
+Environment variables for configuring logging:
+
+- `LOG_LEVEL`: Set the log level (debug, info, warn, error, fatal)
+- `LOG_FORMAT`: Log format (json or text)
+- `LOG_TIME_FORMAT`: Timestamp format
+- `LOG_CALLER_INFO`: Include caller information (true/false)
+- `LOG_OUTPUT`: Output destination (stdout, stderr, or file path)
+
+Example usage:
+
+```go
+// Initialize logger with environment variables
+logger.InitFromEnv()
+
+// Log with structured fields
+logger.WithFields(logrus.Fields{
+    "version": appVersion,
+    "pid":     os.Getpid(),
+}).Info("Application starting")
+
+// Context-aware logging
+logger.InfoWithContext(ctx, "Operation completed")
+
+// Log operations with timing metrics
+err := logger.LogOperation(ctx, "database_query", func(ctx context.Context) error {
+    // Operation code here
+    return nil
+})
+```
+
+### Graceful Shutdown
+
+The platform now includes a robust graceful shutdown mechanism:
+
+- **Signal Handling**: Properly handles SIGINT, SIGTERM, and SIGQUIT signals
+- **Shutdown Sequence**: Implements a coordinated shutdown sequence to ensure resources are released properly
+- **Timeout Handling**: Enforces timeouts during shutdown to prevent hanging
+- **Resource Cleanup**: Ensures all resources (servers, connections, goroutines) are properly cleaned up
+- **Contextual Shutdown**: Uses contexts to propagate shutdown signals throughout the application
+
+The shutdown sequence follows this order:
+
+1. Stop monitoring services first to avoid log spam during shutdown
+2. Shutdown HTTP servers
+3. Stop all application services
+4. Release resources
+
+Example configuration:
+
+```go
+// Set shutdown timeouts
+const (
+    shutdownTimeout = 30 * time.Second        // Overall shutdown timeout
+    serviceShutdownTimeout = 10 * time.Second // Per-service shutdown timeout
+)
+```
+
+## Using This Platform
