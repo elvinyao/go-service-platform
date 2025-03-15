@@ -1,0 +1,19 @@
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# VS Code settings
+#.vscode/
+
+# Common output directories
+bin/
+build/
+dist/
+
+# Logs & coverage
+*.log
+*.out
