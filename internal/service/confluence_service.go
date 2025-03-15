@@ -2,49 +2,63 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"project/internal/dataaccess"
 	appctx "project/pkg/context"
 	"project/pkg/errors"
+	"project/pkg/health"
 	"project/pkg/logger"
 	"sync"
+	"time"
 	// 其他必要的导入
 )
 
 type ConfluenceService struct {
-	name         string
-	workflow     string
+	*BaseService
 	dataAccessor dataaccess.DataAccessor
-	running      bool
 	mu           sync.Mutex
-	// 其他字段
+	apiEndpoint  string
+	lastFetch    time.Time
 }
 
-func NewConfluenceService(name, workflow string, da dataaccess.DataAccessor) *ConfluenceService {
-	return &ConfluenceService{
-		name:         name,
-		workflow:     workflow,
+func NewConfluenceService(name, workflow string, da dataaccess.DataAccessor, version string) *ConfluenceService {
+	s := &ConfluenceService{
+		BaseService:  NewBaseService(name, workflow, "confluence", version),
 		dataAccessor: da,
+		apiEndpoint:  "https://confluence.example.com/api",
+		lastFetch:    time.Time{},
 	}
+
+	// Add custom health checkers
+	s.AddHealthChecker(&confluenceApiChecker{service: s})
+
+	return s
 }
 
 func (s *ConfluenceService) Start(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "start_service")
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.running {
-		return errors.New(errors.TypeInvalidInput, "Service is already running", nil).
-			WithField("service", s.name)
+	if s.IsRunning() {
+		logger.InfofWithContext(ctx, "Service %s is already running", s.GetName())
+		return nil
 	}
 
-	logger.InfofWithContext(ctx, "Starting service: %s", s.name)
-	s.running = true
+	logger.InfofWithContext(ctx, "Starting service: %s", s.GetName())
 
+	// Initialize any resources needed
+
+	// Mark as running
+	s.LockRunning(true)
+
+	// Setup cleanup on context cancellation
 	go func() {
 		<-ctx.Done()
 		stopCtx := appctx.NewContext(context.Background())
 		if err := s.Stop(stopCtx); err != nil {
-			logger.WithContextError(stopCtx, err).Errorf("Error stopping service: %s", s.name)
+			logger.WithContextError(stopCtx, err).Error("Error stopping service on context cancellation")
 		}
 	}()
 
@@ -53,64 +67,50 @@ func (s *ConfluenceService) Start(ctx context.Context) error {
 
 func (s *ConfluenceService) Stop(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "stop_service")
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.running {
-		return errors.New(errors.TypeInvalidInput, "Service is not running", nil).
-			WithField("service", s.name)
+	if !s.IsRunning() {
+		logger.InfofWithContext(ctx, "Service %s is not running", s.GetName())
+		return nil
 	}
 
-	logger.InfofWithContext(ctx, "Stopping service: %s", s.name)
-	s.running = false
+	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
+
+	// Cleanup any resources
+
+	// Mark as not running
+	s.LockRunning(false)
 
 	return nil
 }
 
 func (s *ConfluenceService) Restart(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "restart_service")
-	logger.InfofWithContext(ctx, "Restarting service: %s", s.name)
+	logger.InfofWithContext(ctx, "Restarting service: %s", s.GetName())
 
 	if err := s.Stop(ctx); err != nil {
-		return errors.Wrap(err, "Failed to stop service during restart", errors.TypeServiceUnavailable).
-			WithField("service", s.name)
+		return errors.Wrap(err, "Failed to stop service during restart", errors.TypeServiceUnavailable)
 	}
 
 	return s.Start(ctx)
 }
 
-func (s *ConfluenceService) GetName() string {
-	return s.name
-}
-
-func (s *ConfluenceService) GetWorkflow() string {
-	return s.workflow
-}
-
-func (s *ConfluenceService) GetType() string {
-	return "confluence"
-}
-
-func (s *ConfluenceService) IsRunning() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.running
-}
-
 // FetchData retrieves data from the Confluence API
-func (s *ConfluenceService) FetchData() (string, error) {
-	// In a real implementation, this would make API calls to Confluence
-	// For demonstration purposes, we'll just return the service name
+func (s *ConfluenceService) FetchData(ctx context.Context) (string, error) {
+	ctx = appctx.WithOperationName(ctx, "fetch_data")
+	logger.DebugfWithContext(ctx, "Fetching data from Confluence API")
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.running {
-		return "", errors.New(errors.TypeServiceUnavailable, "Service is not running", nil).
-			WithField("service", s.name)
+	if !s.IsRunning() {
+		return "", errors.New(errors.TypeServiceUnavailable, "Service is not running", nil)
 	}
 
 	// Example of using the data accessor
-	key := "confluence_data_" + s.name
+	key := "confluence_data_" + s.GetName()
 	cachedData, err := s.dataAccessor.GetData(key)
 	if err == nil && cachedData != nil {
 		// Return cached data if available
@@ -120,7 +120,10 @@ func (s *ConfluenceService) FetchData() (string, error) {
 	}
 
 	// Simulate fetching data
-	fetchedData := "Data from " + s.name
+	fetchedData := "Data from " + s.GetName()
+
+	// Update last fetch time
+	s.lastFetch = time.Now()
 
 	// Cache the fetched data
 	_ = s.dataAccessor.SetData(key, fetchedData)
@@ -131,23 +134,94 @@ func (s *ConfluenceService) FetchData() (string, error) {
 // GetMetrics implements Service interface with context support
 func (s *ConfluenceService) GetMetrics(ctx context.Context) map[string]interface{} {
 	ctx = appctx.WithOperationName(ctx, "get_metrics")
-	logger.DebugfWithContext(ctx, "Getting metrics for service: %s", s.name)
+	logger.DebugfWithContext(ctx, "Getting metrics for service: %s", s.GetName())
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return map[string]interface{}{
-		"running":  s.running,
-		"workflow": s.workflow,
+	metrics := map[string]interface{}{
+		"running":      s.IsRunning(),
+		"workflow":     s.GetWorkflow(),
+		"api_endpoint": s.apiEndpoint,
 	}
+
+	if !s.lastFetch.IsZero() {
+		metrics["last_fetch"] = s.lastFetch.Format(time.RFC3339)
+		metrics["last_fetch_age_seconds"] = time.Since(s.lastFetch).Seconds()
+	}
+
+	return metrics
 }
 
 // Configure implements Service interface with context support
 func (s *ConfluenceService) Configure(ctx context.Context, config interface{}) error {
 	ctx = appctx.WithOperationName(ctx, "configure_service")
-	logger.InfofWithContext(ctx, "Configuring service: %s", s.name)
+	logger.InfofWithContext(ctx, "Configuring service: %s", s.GetName())
 
-	// Add configuration logic here
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	return nil
+	// Handle configuration based on type
+	if configMap, ok := config.(map[string]interface{}); ok {
+		if endpoint, ok := configMap["api_endpoint"].(string); ok && endpoint != "" {
+			s.apiEndpoint = endpoint
+			logger.DebugfWithContext(ctx, "Updated API endpoint to: %s", s.apiEndpoint)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unsupported configuration type")
+}
+
+// confluenceApiChecker checks Confluence API connectivity
+type confluenceApiChecker struct {
+	service *ConfluenceService
+}
+
+// Check implements the health.Checker interface
+func (c *confluenceApiChecker) Check(ctx context.Context) health.CheckResult {
+	result := health.NewCheckResult("confluence-api", health.CategoryConnectivity, health.LevelCritical)
+
+	c.service.mu.Lock()
+	apiEndpoint := c.service.apiEndpoint
+	isRunning := c.service.IsRunning()
+	lastFetch := c.service.lastFetch
+	c.service.mu.Unlock()
+
+	// Add details
+	result.AddDetail("api_endpoint", apiEndpoint)
+	result.AddDetail("is_running", fmt.Sprintf("%v", isRunning))
+
+	if !isRunning {
+		result.SetStatus(health.StatusDown, "Confluence service is not running")
+		result.Complete()
+		return result
+	}
+
+	// Check last fetch time if available
+	if !lastFetch.IsZero() {
+		fetchAge := time.Since(lastFetch)
+		result.AddDetail("last_fetch", lastFetch.Format(time.RFC3339))
+		result.AddDetail("fetch_age_minutes", fmt.Sprintf("%.2f", fetchAge.Minutes()))
+
+		// If last fetch was recent enough, consider the API accessible
+		if fetchAge < 10*time.Minute {
+			result.SetStatus(health.StatusUp, "Recently connected to Confluence API")
+			result.Complete()
+			return result
+		}
+	}
+
+	// Try to connect to the API
+	// In a real implementation, this would make a test API call
+	// For demo purposes, we'll simulate a successful connection
+
+	// Simulate an API call
+	time.Sleep(50 * time.Millisecond)
+
+	// For demo purposes, assume connection is successful
+	result.SetStatus(health.StatusUp, "Successfully connected to Confluence API")
+
+	result.Complete()
+	return result
 }

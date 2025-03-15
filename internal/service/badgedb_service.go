@@ -3,104 +3,75 @@ package service
 import (
 	"context"
 	"fmt"
+	"project/internal/model"
 	appctx "project/pkg/context"
-	appErrors "project/pkg/errors"
+	"project/pkg/health"
 	"project/pkg/logger"
 	"sync"
 	"time"
 	// 其他必要的导入
 )
 
+// BadgeDBService manages badge data
 type BadgeDBService struct {
-	name     string
-	workflow string
-	running  bool
-	mu       sync.Mutex
-	// 数据库连接等字段
-	processingMethods map[string]string // 缓存处理方法
+	*BaseService
+	mu            sync.Mutex
+	db            map[string]interface{}
+	dbPath        string
+	processingMap map[string]string
+	lastBackup    time.Time
 }
 
-func NewBadgeDBService(name, workflow string) *BadgeDBService {
-	return &BadgeDBService{
-		name:              name,
-		workflow:          workflow,
-		processingMethods: make(map[string]string),
+// NewBadgeDBService creates a new BadgeDBService
+func NewBadgeDBService(name, workflow, dbPath, version string) *BadgeDBService {
+	s := &BadgeDBService{
+		BaseService:   NewBaseService(name, workflow, "badgedb", version),
+		db:            make(map[string]interface{}),
+		dbPath:        dbPath,
+		processingMap: make(map[string]string),
+		lastBackup:    time.Time{},
 	}
+
+	// Add custom health checkers
+	s.AddHealthChecker(&badgeDBAccessChecker{service: s})
+	s.AddHealthChecker(&badgeDBBackupChecker{service: s})
+
+	return s
 }
 
+// Start implements Service interface with context support
 func (s *BadgeDBService) Start(ctx context.Context) error {
+	ctx = appctx.WithOperationName(ctx, "start_service")
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.running {
-		return appErrors.New(appErrors.TypeInvalidInput,
-			fmt.Sprintf("Service %s is already running", s.name), nil)
+	if s.IsRunning() {
+		logger.InfofWithContext(ctx, "Service %s is already running", s.GetName())
+		return nil
 	}
 
-	logger.InfofWithContext(ctx, "Starting service: %s", s.name)
+	logger.InfofWithContext(ctx, "Starting service: %s", s.GetName())
 
-	// Initialize database connection or other resources
-	if err := s.initializeResources(); err != nil {
-		return appErrors.Wrap(err, "Failed to initialize resources", appErrors.TypeServiceUnavailable).
-			WithField("service", s.name)
+	// Load database
+	if err := s.loadDB(ctx); err != nil {
+		return err
 	}
 
-	s.running = true
+	// Initialize processing map
+	s.initProcessingMap()
 
-	// Setup cleanup when context is canceled
+	// Set service as running
+	s.LockRunning(true)
+
+	// Setup cleanup on context cancellation
 	go func() {
 		<-ctx.Done()
-		if err := s.Stop(ctx); err != nil {
-			logger.WithError(err).Errorf("Error stopping service %s during context cancellation", s.name)
+		stopCtx := appctx.NewContext(context.Background())
+		if err := s.Stop(stopCtx); err != nil {
+			logger.WithContextError(stopCtx, err).Error("Error stopping service on context cancellation")
 		}
 	}()
-
-	// Start any background processes
-	go s.backgroundProcessing(ctx)
-
-	return nil
-}
-
-// initializeResources sets up any resources needed by the service
-func (s *BadgeDBService) initializeResources() error {
-	// Simulate database connection or other initialization
-	time.Sleep(100 * time.Millisecond)
-
-	// Pre-load some processing methods
-	s.processingMethods["default"] = "DefaultProcessingMethod"
-	s.processingMethods["urgent"] = "UrgentProcessingMethod"
-
-	return nil
-}
-
-// backgroundProcessing handles any recurring tasks
-func (s *BadgeDBService) backgroundProcessing(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := s.refreshProcessingMethods(); err != nil {
-				logger.WithError(err).Errorf("Failed to refresh processing methods")
-			}
-		}
-	}
-}
-
-// refreshProcessingMethods updates the processing methods from the database
-func (s *BadgeDBService) refreshProcessingMethods() error {
-	// In a real implementation, this would query a database
-	// Simulate some processing time
-	time.Sleep(50 * time.Millisecond)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Update with some new values
-	s.processingMethods["special"] = "SpecialProcessingMethod"
 
 	return nil
 }
@@ -108,123 +79,223 @@ func (s *BadgeDBService) refreshProcessingMethods() error {
 // Stop implements Service interface with context support
 func (s *BadgeDBService) Stop(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "stop_service")
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.running {
-		return appErrors.New(appErrors.TypeInvalidInput,
-			fmt.Sprintf("Service %s is not running", s.name), nil)
+	if !s.IsRunning() {
+		logger.InfofWithContext(ctx, "Service %s is not running", s.GetName())
+		return nil
 	}
 
-	logger.InfofWithContext(ctx, "Stopping service: %s", s.name)
+	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
 
-	// Close any resources
+	// Backup database before stopping
+	if err := s.backupDB(ctx); err != nil {
+		logger.WithContextError(ctx, err).Error("Failed to backup database during shutdown")
+	}
 
-	s.running = false
+	// Set service as not running
+	s.LockRunning(false)
+
 	return nil
 }
 
+// Restart implements Service interface with context support
 func (s *BadgeDBService) Restart(ctx context.Context) error {
-	logger.InfofWithContext(ctx, "Restarting service: %s", s.name)
+	ctx = appctx.WithOperationName(ctx, "restart_service")
+	logger.InfofWithContext(ctx, "Restarting service: %s", s.GetName())
 
 	if err := s.Stop(ctx); err != nil {
-		return appErrors.Wrap(err, "Failed to stop service during restart", appErrors.TypeServiceUnavailable).
-			WithField("service", s.name)
+		return err
 	}
 
 	return s.Start(ctx)
 }
 
-func (s *BadgeDBService) GetName() string {
-	return s.name
-}
-
-func (s *BadgeDBService) GetWorkflow() string {
-	return s.workflow
-}
-
-func (s *BadgeDBService) IsRunning() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.running
-}
-
-func (s *BadgeDBService) GetType() string {
-	return "badgedb"
-}
-
-// GetProcessingMethod retrieves the processing method for a given message type
+// GetProcessingMethod returns the processing method for a message type
 func (s *BadgeDBService) GetProcessingMethod(messageType string) (string, error) {
-	if messageType == "" {
-		return "", appErrors.New(appErrors.TypeInvalidInput, "Message type cannot be empty", nil)
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	method, exists := s.processingMethods[messageType]
-	if !exists {
-		// Check for default fallback
-		method, exists = s.processingMethods["default"]
-		if !exists {
-			return "", appErrors.New(appErrors.TypeNotFound,
-				fmt.Sprintf("No processing method found for message type '%s'", messageType), nil).
-				WithField("message_type", messageType)
-		}
-
-		// Log we're using the default
-		logger.Warnf("Using default processing method for unknown message type: %s", messageType)
+	method, ok := s.processingMap[messageType]
+	if !ok {
+		return "", fmt.Errorf("no processing method found for message type: %s", messageType)
 	}
 
 	return method, nil
 }
 
-// GetMetrics implements Service interface with context support
-func (s *BadgeDBService) GetMetrics(ctx context.Context) map[string]interface{} {
-	ctx = appctx.WithOperationName(ctx, "get_metrics")
-	logger.DebugfWithContext(ctx, "Getting metrics for %s", s.name)
+// GetBadge retrieves a badge by ID
+func (s *BadgeDBService) GetBadge(ctx context.Context, id string) (model.Badge, error) {
+	ctx = appctx.WithOperationName(ctx, "get_badge")
+	logger.DebugfWithContext(ctx, "Getting badge with ID: %s", id)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	methodCount := len(s.processingMethods)
-
-	return map[string]interface{}{
-		"running":            s.running,
-		"processing_methods": methodCount,
-		"has_default_method": s.hasDefaultMethod(),
+	if !s.IsRunning() {
+		return model.Badge{}, fmt.Errorf("service is not running")
 	}
+
+	data, ok := s.db[id]
+	if !ok {
+		return model.Badge{}, fmt.Errorf("badge not found: %s", id)
+	}
+
+	badge, ok := data.(model.Badge)
+	if !ok {
+		return model.Badge{}, fmt.Errorf("invalid data type for badge: %s", id)
+	}
+
+	return badge, nil
 }
 
-// hasDefaultMethod checks if the default method exists
-func (s *BadgeDBService) hasDefaultMethod() bool {
-	_, exists := s.processingMethods["default"]
-	return exists
+// SaveBadge saves a badge to the database
+func (s *BadgeDBService) SaveBadge(ctx context.Context, badge model.Badge) error {
+	ctx = appctx.WithOperationName(ctx, "save_badge")
+	logger.DebugfWithContext(ctx, "Saving badge with ID: %s", badge.ID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.IsRunning() {
+		return fmt.Errorf("service is not running")
+	}
+
+	s.db[badge.ID] = badge
+
+	// Schedule async backup
+	go func() {
+		backupCtx := appctx.NewContext(context.Background())
+		backupCtx = appctx.WithServiceName(backupCtx, s.GetName())
+		backupCtx = appctx.WithOperationName(backupCtx, "async_backup")
+
+		if err := s.backupDB(backupCtx); err != nil {
+			logger.WithContextError(backupCtx, err).Error("Async backup failed")
+		}
+	}()
+
+	return nil
 }
 
 // Configure implements Service interface with context support
 func (s *BadgeDBService) Configure(ctx context.Context, config interface{}) error {
 	ctx = appctx.WithOperationName(ctx, "configure_service")
-	logger.DebugfWithContext(ctx, "Configuring service %s", s.name)
+	logger.InfofWithContext(ctx, "Configuring service: %s", s.GetName())
 
-	// Type assert the config to ensure it's the correct type
-	badgeConfig, ok := config.(map[string]interface{})
-	if !ok {
-		return appErrors.New(appErrors.TypeInvalidInput,
-			"Invalid configuration type for BadgeDB service", nil).
-			WithField("config_type", fmt.Sprintf("%T", config))
+	// Handle configuration based on type
+	if configStr, ok := config.(string); ok {
+		s.dbPath = configStr
+		logger.DebugfWithContext(ctx, "Updated DB path to: %s", s.dbPath)
+		return nil
 	}
+
+	return fmt.Errorf("unsupported configuration type")
+}
+
+// GetMetrics implements Service interface with context support
+func (s *BadgeDBService) GetMetrics(ctx context.Context) map[string]interface{} {
+	ctx = appctx.WithOperationName(ctx, "get_metrics")
+	logger.DebugfWithContext(ctx, "Getting metrics for service: %s", s.GetName())
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Process configuration updates
-	if methods, ok := badgeConfig["processing_methods"].(map[string]string); ok {
-		for k, v := range methods {
-			s.processingMethods[k] = v
-		}
-		logger.InfofWithContext(ctx, "Updated %d processing methods for BadgeDB service", len(methods))
+	return map[string]interface{}{
+		"running":     s.IsRunning(),
+		"db_entries":  len(s.db),
+		"last_backup": s.lastBackup.Format(time.RFC3339),
+	}
+}
+
+// Helper methods
+func (s *BadgeDBService) loadDB(ctx context.Context) error {
+	// Simulate loading from a file
+	logger.DebugfWithContext(ctx, "Loading database from: %s", s.dbPath)
+	// In a real implementation, load from a file or database
+	return nil
+}
+
+func (s *BadgeDBService) backupDB(ctx context.Context) error {
+	// Simulate backing up to a file
+	logger.DebugfWithContext(ctx, "Backing up database to: %s", s.dbPath)
+	// In a real implementation, save to a file or database
+	s.lastBackup = time.Now()
+	return nil
+}
+
+func (s *BadgeDBService) initProcessingMap() {
+	// Initialize the processing method map
+	s.processingMap = map[string]string{
+		"badge_award":    "StandardAward",
+		"badge_revoke":   "StandardRevoke",
+		"badge_transfer": "SecureTransfer",
+	}
+}
+
+// badgeDBAccessChecker checks database access
+type badgeDBAccessChecker struct {
+	service *BadgeDBService
+}
+
+// Check implements the health.Checker interface
+func (c *badgeDBAccessChecker) Check(ctx context.Context) health.CheckResult {
+	result := health.NewCheckResult("database-access", health.CategoryData, health.LevelCritical)
+
+	// Get a test badge to verify DB access
+	_, err := c.service.GetBadge(ctx, "test")
+
+	if err != nil && err.Error() != "badge not found: test" {
+		// If error is not just "badge not found", it's a real error
+		result.SetStatus(health.StatusDown, fmt.Sprintf("Database access error: %v", err))
+	} else {
+		result.SetStatus(health.StatusUp, "Database is accessible")
 	}
 
-	return nil
+	// Add details
+	c.service.mu.Lock()
+	result.AddDetail("db_entries", fmt.Sprintf("%d", len(c.service.db)))
+	c.service.mu.Unlock()
+
+	result.Complete()
+	return result
+}
+
+// badgeDBBackupChecker checks database backup status
+type badgeDBBackupChecker struct {
+	service *BadgeDBService
+}
+
+// Check implements the health.Checker interface
+func (c *badgeDBBackupChecker) Check(ctx context.Context) health.CheckResult {
+	result := health.NewCheckResult("database-backup", health.CategoryData, health.LevelWarning)
+
+	c.service.mu.Lock()
+	lastBackup := c.service.lastBackup
+	c.service.mu.Unlock()
+
+	// If backup has never happened
+	if lastBackup.IsZero() {
+		result.SetStatus(health.StatusDegraded, "No database backup has been performed")
+		result.Complete()
+		return result
+	}
+
+	// Check how long since last backup
+	backupAge := time.Since(lastBackup)
+	result.AddDetail("last_backup", lastBackup.Format(time.RFC3339))
+	result.AddDetail("backup_age_minutes", fmt.Sprintf("%.2f", backupAge.Minutes()))
+
+	// Thresholds: Warning after 30 minutes, critical after 120 minutes
+	if backupAge > 120*time.Minute {
+		result.SetStatus(health.StatusDegraded, fmt.Sprintf("Database backup is too old: %.2f minutes", backupAge.Minutes()))
+	} else if backupAge > 30*time.Minute {
+		result.SetStatus(health.StatusDegraded, fmt.Sprintf("Database backup is getting old: %.2f minutes", backupAge.Minutes()))
+	} else {
+		result.SetStatus(health.StatusUp, fmt.Sprintf("Database backup is recent: %.2f minutes ago", backupAge.Minutes()))
+	}
+
+	result.Complete()
+	return result
 }

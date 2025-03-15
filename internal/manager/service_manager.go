@@ -6,23 +6,34 @@ import (
 	"project/internal/service"
 	appctx "project/pkg/context"
 	"project/pkg/errors"
+	"project/pkg/health"
 	"project/pkg/logger"
 	"sync"
 	"time"
 )
 
 type ServiceManager struct {
-	services map[string]service.Service
-	mu       sync.Mutex
+	services  map[string]service.Service
+	mu        sync.Mutex
+	healthMgr *health.HealthManager
+	version   string
+	startTime time.Time
 }
 
 // 确保 ServiceManager 实现了 interfaces.ServiceManager 接口
 var _ interfaces.ServiceManager = (*ServiceManager)(nil)
 
-func NewServiceManager() *ServiceManager {
-	return &ServiceManager{
-		services: make(map[string]service.Service),
+func NewServiceManager(version string) *ServiceManager {
+	manager := &ServiceManager{
+		services:  make(map[string]service.Service),
+		version:   version,
+		startTime: time.Now(),
 	}
+
+	// Initialize health manager
+	manager.healthMgr = health.NewHealthManager(30*time.Second, version)
+
+	return manager
 }
 
 func (sm *ServiceManager) RegisterService(s service.Service) {
@@ -45,6 +56,30 @@ func (sm *ServiceManager) RegisterService(s service.Service) {
 	}
 
 	sm.services[serviceName] = s
+
+	// Register service with health manager
+	sm.healthMgr.RegisterReporter(serviceName, s)
+}
+
+// GetServiceHealth gets health information for a specific service
+func (sm *ServiceManager) GetServiceHealth(ctx context.Context, serviceName string) (health.Report, bool) {
+	ctx = appctx.WithOperationName(ctx, "get_service_health")
+
+	return sm.healthMgr.GetServiceHealth(ctx, serviceName)
+}
+
+// GetAllServicesHealth gets health information for all services
+func (sm *ServiceManager) GetAllServicesHealth(ctx context.Context) map[string]health.Report {
+	ctx = appctx.WithOperationName(ctx, "get_all_services_health")
+
+	return sm.healthMgr.GetAllServicesHealth(ctx)
+}
+
+// GetSystemHealth gets overall system health
+func (sm *ServiceManager) GetSystemHealth(ctx context.Context) health.Report {
+	ctx = appctx.WithOperationName(ctx, "get_system_health")
+
+	return sm.healthMgr.GetSystemHealth(ctx)
 }
 
 func (sm *ServiceManager) StartAll(ctx context.Context) error {
@@ -175,8 +210,12 @@ func (sm *ServiceManager) MonitorServices(ctx context.Context) {
 	}
 }
 
+// Enhanced checkServiceHealth implementation
 func (sm *ServiceManager) checkServiceHealth(ctx context.Context) {
 	monitorCtx := appctx.WithOperationName(ctx, "check_service_health")
+
+	// Get current health of all services
+	servicesHealth := sm.GetAllServicesHealth(monitorCtx)
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -185,7 +224,20 @@ func (sm *ServiceManager) checkServiceHealth(ctx context.Context) {
 		serviceName := service.GetName()
 		serviceCtx := appctx.WithServiceName(monitorCtx, serviceName)
 
-		if !service.IsRunning() {
+		// Check health report if available
+		if report, exists := servicesHealth[serviceName]; exists {
+			if report.Status == health.StatusDown || report.Status == health.StatusDegraded {
+				logger.WarnfWithContext(serviceCtx, "Service %s is in %s state, attempting to restart...",
+					serviceName, report.Status)
+
+				if err := service.Restart(serviceCtx); err != nil {
+					logger.WithContextError(serviceCtx, err).Error("Failed to restart service")
+				} else {
+					logger.InfofWithContext(serviceCtx, "Successfully restarted service %s", serviceName)
+				}
+			}
+		} else if !service.IsRunning() {
+			// Fallback to basic IsRunning check if no health report
 			logger.WarnfWithContext(serviceCtx, "Service %s is not running, attempting to restart...", serviceName)
 
 			if err := service.Restart(serviceCtx); err != nil {

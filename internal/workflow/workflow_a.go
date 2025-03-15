@@ -73,23 +73,48 @@ func (w *WorkflowA) ProcessMessage(ctx context.Context, msg model.Message) error
 			}
 
 			logger.DebugfWithContext(ctx, "Fetching data from confluence service: %s", s.GetName())
-			processedData, processErr = confluenceService.FetchData()
-			if processErr != nil {
-				return errors.Wrap(processErr, "Failed to fetch data", errors.TypeServiceUnavailable).
-					WithField("service", s.GetName())
+			data, fetchErr := confluenceService.FetchData(ctx)
+			if fetchErr != nil {
+				logger.WithContextError(ctx, fetchErr).Errorf("Failed to fetch data from service %s", s.GetName())
+				processErr = fetchErr
+				continue
 			}
 
-			// Log the result
-			logger.InfofWithContext(ctx, "Data fetched successfully from %s", s.GetName())
+			processedData = data
+			processErr = nil
 			break
 		}
 	}
 
-	if processedData == nil && processErr == nil {
-		return errors.New(errors.TypeNotFound,
-			"No matching confluence service found for processing method", nil).
+	if processErr != nil {
+		return errors.Wrap(processErr, "All confluence services failed to process message", errors.TypeServiceUnavailable)
+	}
+
+	if processedData == nil {
+		return errors.New(errors.TypeNotFound, "No service found to process this message type", nil).
+			WithField("message_type", msg.Type).
 			WithField("processing_method", processingMethod)
 	}
 
+	// Create a badge based on the processed data
+	badge := model.Badge{
+		ID:          "badge_" + msg.ID,
+		Name:        "Example Badge",
+		Description: "Created from " + msg.Type,
+		UserID:      msg.UserID,
+		AwardedAt:   msg.Timestamp,
+		Type:        msg.Type,
+		Attributes: map[string]interface{}{
+			"processed_data": processedData,
+			"source_message": msg.ID,
+		},
+	}
+
+	// Save the badge to BadgeDB
+	if err := badgeDBSvc.SaveBadge(ctx, badge); err != nil {
+		return errors.Wrap(err, "Failed to save badge", errors.TypeServiceUnavailable)
+	}
+
+	logger.InfofWithContext(ctx, "Successfully processed message and created badge: %s", badge.ID)
 	return nil
 }

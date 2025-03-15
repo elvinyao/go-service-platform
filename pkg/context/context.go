@@ -2,6 +2,7 @@ package context
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
@@ -182,4 +183,30 @@ func ToContext(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+// FromRequest creates an AppContext from an HTTP request
+// It extracts common headers like X-Request-ID and X-Trace-ID if present
+func FromRequest(r *http.Request) context.Context {
+	ctx := r.Context()
+
+	// Create new AppContext
+	appCtx := NewContext(ctx)
+
+	// Extract request ID from header if present
+	if requestID := r.Header.Get("X-Request-ID"); requestID != "" {
+		appCtx = WithRequestID(appCtx, requestID)
+	}
+
+	// Extract trace ID from header if present
+	if traceID := r.Header.Get("X-Trace-ID"); traceID != "" {
+		appCtx = WithTraceID(appCtx, traceID)
+	}
+
+	// Extract user ID from header if present
+	if userID := r.Header.Get("X-User-ID"); userID != "" {
+		appCtx = WithUserID(appCtx, userID)
+	}
+
+	return appCtx
 }

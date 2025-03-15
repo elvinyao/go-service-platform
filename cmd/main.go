@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"project/internal/dataaccess"
@@ -12,10 +13,16 @@ import (
 	"project/internal/workflow"
 	appctx "project/pkg/context"
 	"project/pkg/errors"
+	"project/pkg/health"
 	"project/pkg/logger"
 	"syscall"
 	"time"
 	// 其他必要的导入
+)
+
+const (
+	// 应用版本
+	appVersion = "1.0.0"
 )
 
 func main() {
@@ -64,6 +71,14 @@ func main() {
 		shutdown(rootCtx, serviceManager)
 		os.Exit(1)
 	}
+
+	// 创建HTTP管理服务器
+	adminServer := createAdminServer(rootCtx, serviceManager, workflowManager)
+	go func() {
+		if err := adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.WithContextError(rootCtx, err).Fatal("Admin server failed")
+		}
+	}()
 
 	logger.InfoWithContext(rootCtx, "Application started successfully")
 
@@ -124,7 +139,7 @@ func monitorServices(ctx context.Context, serviceManager *manager.ServiceManager
 func initServiceManager(ctx context.Context) *manager.ServiceManager {
 	ctx = appctx.WithOperationName(ctx, "init_service_manager")
 	logger.InfoWithContext(ctx, "Initializing service manager")
-	return manager.NewServiceManager()
+	return manager.NewServiceManager(appVersion)
 }
 
 // Initialize data accessor
@@ -140,9 +155,9 @@ func registerAndStartServices(ctx context.Context, serviceManager *manager.Servi
 		logger.InfoWithContext(ctx, "Registering services")
 
 		services := []service.Service{
-			service.NewConfluenceService("ConfluenceServiceA", "A", dataAccessor),
-			service.NewWebSocketService("WebSocketServiceA", "A"),
-			service.NewBadgeDBService("BadgeDBService", "Global"),
+			service.NewConfluenceService("ConfluenceServiceA", "A", dataAccessor, appVersion),
+			service.NewWebSocketService("WebSocketServiceA", "A", appVersion),
+			service.NewBadgeDBService("BadgeDBService", "Global", "/tmp/badges.db", appVersion),
 		}
 
 		for _, svc := range services {
@@ -223,4 +238,27 @@ func setupMessageListeners(ctx context.Context, serviceManager *manager.ServiceM
 		logger.InfoWithContext(ctx, "Message listeners set up successfully")
 		return nil
 	})
+}
+
+// 创建HTTP管理服务器
+func createAdminServer(ctx context.Context, serviceManager *manager.ServiceManager, workflowManager *manager.WorkflowManager) *http.Server {
+	ctx = appctx.WithOperationName(ctx, "create_admin_server")
+	logger.InfoWithContext(ctx, "Creating admin server")
+
+	// 创建HTTP路由
+	mux := http.NewServeMux()
+
+	// 创建健康检查处理器
+	healthManager := health.NewHealthManager(30*time.Second, appVersion)
+	healthHandler := health.NewHealthHandler(healthManager)
+	healthHandler.RegisterHTTPHandlers(mux)
+
+	// 返回配置好的服务器
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: mux,
+	}
+
+	logger.InfoWithContext(ctx, "Admin server created at :8080")
+	return server
 }

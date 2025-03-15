@@ -1,6 +1,9 @@
 package service
 
-import "context"
+import (
+	"context"
+	"project/pkg/health"
+)
 
 type Service interface {
 	Start(ctx context.Context) error
@@ -12,4 +15,8 @@ type Service interface {
 	IsRunning() bool
 	GetMetrics(ctx context.Context) map[string]interface{}
 	Configure(ctx context.Context, config interface{}) error
+
+	// Health check methods
+	RegisterHealthChecks() []health.Checker
+	HealthCheck(ctx context.Context) health.Report
 }

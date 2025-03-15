@@ -1,8 +1,16 @@
 package model
 
+import (
+	"time"
+)
+
 type Message struct {
-	Type    string `json:"type"`
-	Content string `json:"content"`
+	ID        string                 `json:"id"`
+	Type      string                 `json:"type"`
+	Content   string                 `json:"content"`
+	UserID    string                 `json:"user_id"`
+	Timestamp time.Time              `json:"timestamp"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type MattermostConfig struct {
