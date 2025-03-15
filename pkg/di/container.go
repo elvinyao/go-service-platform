@@ -11,24 +11,27 @@ import (
 	"time"
 )
 
-// Container 提供依赖注入容器功能
+// Container Provides dependency injection container functionality
 type Container struct {
+	// Mutex for thread-safe operations, protects the container state
+	// RWMutex is a reader/writer mutex that allows multiple readers or a single writer
+	// It is different from Mutex, which allows only one writer or multiple readers
 	mu sync.RWMutex
 
-	// 配置
+	// Configuration
 	version string
 
-	// 单例实例
+	// Singleton instances
 	dataAccessor    dataaccess.DataAccessor
 	serviceManager  *manager.ServiceManager
 	workflowManager *manager.WorkflowManager
 	healthManager   *health.HealthManager
 
-	// 服务实例映射
+	// Service instance mapping
 	services map[string]service.Service
 }
 
-// NewContainer 创建一个新的依赖注入容器
+// NewContainer Creates a new dependency injection container
 func NewContainer(version string) *Container {
 	return &Container{
 		version:  version,
@@ -36,12 +39,12 @@ func NewContainer(version string) *Container {
 	}
 }
 
-// GetVersion 返回应用版本
+// GetVersion Returns the application version
 func (c *Container) GetVersion() string {
 	return c.version
 }
 
-// GetDataAccessor 返回数据访问器实例，如果不存在则创建
+// GetDataAccessor Returns the data accessor instance, creating it if it doesn't exist
 func (c *Container) GetDataAccessor(ctx context.Context) dataaccess.DataAccessor {
 	c.mu.RLock()
 	if c.dataAccessor != nil {
@@ -54,7 +57,7 @@ func (c *Container) GetDataAccessor(ctx context.Context) dataaccess.DataAccessor
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 双重检查，避免在获取写锁期间其他goroutine已创建
+	// Double-check to avoid creating the instance during the write lock
 	if c.dataAccessor != nil {
 		return c.dataAccessor
 	}
@@ -63,7 +66,7 @@ func (c *Container) GetDataAccessor(ctx context.Context) dataaccess.DataAccessor
 	return c.dataAccessor
 }
 
-// GetServiceManager 返回服务管理器实例，如果不存在则创建
+// GetServiceManager Returns the service manager instance, creating it if it doesn't exist
 func (c *Container) GetServiceManager(ctx context.Context) *manager.ServiceManager {
 	c.mu.RLock()
 	if c.serviceManager != nil {
@@ -76,7 +79,7 @@ func (c *Container) GetServiceManager(ctx context.Context) *manager.ServiceManag
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 双重检查
+	// Double-check
 	if c.serviceManager != nil {
 		return c.serviceManager
 	}
@@ -85,7 +88,7 @@ func (c *Container) GetServiceManager(ctx context.Context) *manager.ServiceManag
 	return c.serviceManager
 }
 
-// GetHealthManager 返回健康检查管理器实例，如果不存在则创建
+// GetHealthManager Returns the health check manager instance, creating it if it doesn't exist
 func (c *Container) GetHealthManager(ctx context.Context) *health.HealthManager {
 	c.mu.RLock()
 	if c.healthManager != nil {
@@ -98,7 +101,7 @@ func (c *Container) GetHealthManager(ctx context.Context) *health.HealthManager 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 双重检查
+	// Double-check
 	if c.healthManager != nil {
 		return c.healthManager
 	}
@@ -107,7 +110,7 @@ func (c *Container) GetHealthManager(ctx context.Context) *health.HealthManager 
 	return c.healthManager
 }
 
-// GetWorkflowManager 返回工作流管理器实例，如果不存在则创建
+// GetWorkflowManager Returns the workflow manager instance, creating it if it doesn't exist
 func (c *Container) GetWorkflowManager(ctx context.Context) (*manager.WorkflowManager, error) {
 	c.mu.RLock()
 	if c.workflowManager != nil {
@@ -120,18 +123,18 @@ func (c *Container) GetWorkflowManager(ctx context.Context) (*manager.WorkflowMa
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 双重检查
+	// Double-check
 	if c.workflowManager != nil {
 		return c.workflowManager, nil
 	}
 
-	// 工作流管理器需要服务管理器
+	// Workflow manager needs service manager
 	serviceManager := c.GetServiceManager(ctx)
 
-	// 获取工作流工厂
+	// Get workflow factories
 	factories := workflow.RegisterWorkflowFactories()
 
-	// 创建工作流管理器
+	// Create workflow manager
 	workflowManager, err := manager.NewWorkflowManagerWithDI(ctx, serviceManager, factories...)
 	if err != nil {
 		return nil, err
@@ -141,18 +144,18 @@ func (c *Container) GetWorkflowManager(ctx context.Context) (*manager.WorkflowMa
 	return workflowManager, nil
 }
 
-// RegisterServices 注册所有服务到管理器
+// RegisterServices Registers all services to the manager
 func (c *Container) RegisterServices(ctx context.Context) error {
-	// 获取依赖
+	// Get dependencies
 	sm := c.GetServiceManager(ctx)
 	da := c.GetDataAccessor(ctx)
 
-	// 创建服务
+	// Create services
 	confluenceService := service.NewConfluenceService("ConfluenceServiceA", "A", da, c.version)
 	websocketService := service.NewWebSocketService("WebSocketServiceA", "A", c.version)
 	badgeDBService := service.NewBadgeDBService("BadgeDBService", "Global", "/tmp/badges.db", c.version)
 
-	// 注册服务
+	// Register services
 	services := []service.Service{
 		confluenceService,
 		websocketService,
@@ -170,7 +173,7 @@ func (c *Container) RegisterServices(ctx context.Context) error {
 	return nil
 }
 
-// GetService 返回指定名称的服务实例
+// GetService Returns the service instance with the specified name
 func (c *Container) GetService(name string) (service.Service, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

@@ -20,16 +20,19 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	// 其他必要的导入
 )
 
 const (
-	// 应用版本
+	// Application version
 	appVersion = "1.0.0"
-	// 优雅关闭超时 - 总体超时
+	// Application name
+	appName = "service-workflow"
+	// Graceful shutdown timeout - overall timeout
 	shutdownTimeout = 30 * time.Second
-	// 服务停止超时 - 每个服务的超时
+	// Service stop timeout - per service timeout
 	serviceShutdownTimeout = 10 * time.Second
+
+	appStartOperationName = "startup"
 )
 
 func main() {
@@ -38,6 +41,7 @@ func main() {
 
 	// Log application start
 	logger.WithFields(logrus.Fields{
+		"name":    appName,
 		"version": appVersion,
 		"pid":     os.Getpid(),
 	}).Info("Application starting")
@@ -49,7 +53,6 @@ func main() {
 	cancelCtx, cancel := context.WithCancel(rootCtx)
 	defer cancel()
 
-	appName := "service-workflow"
 	rootCtx = appctx.WithServiceName(rootCtx, appName)
 
 	logger.InfoWithContext(rootCtx, "Initializing application")
@@ -57,19 +60,19 @@ func main() {
 	// Set up signal handling for graceful shutdown
 	signalChan := setupSignalHandling(rootCtx, cancel)
 
-	// 创建依赖注入容器
+	// Create dependency injection container
 	container := di.NewContainer(appVersion)
-	startCtx := appctx.WithOperationName(rootCtx, "startup")
+	startCtx := appctx.WithOperationName(rootCtx, appStartOperationName)
 
-	// 初始化依赖
+	// Initialize dependencies
 	serviceManager := container.GetServiceManager(startCtx)
 
-	// 注册所有服务
+	// Register all services
 	if err := container.RegisterServices(startCtx); err != nil {
 		logger.WithContextError(rootCtx, err).Fatal("Failed to register services")
 	}
 
-	// 启动所有服务
+	// Start all services
 	if err := serviceManager.StartAll(startCtx); err != nil {
 		logger.WithContextError(rootCtx, err).Fatal("Failed to start services")
 	}
@@ -97,10 +100,10 @@ func main() {
 		logger.WithContextError(rootCtx, err).Fatal("Failed to set up message listeners")
 	}
 
-	// 创建健康检查管理器
+	// Create health check manager
 	healthManager := container.GetHealthManager(rootCtx)
 
-	// 创建HTTP管理服务器
+	// Create HTTP management server
 	adminServer := createAdminServer(rootCtx, serviceManager, workflowManager, healthManager)
 
 	// Track when HTTP server is done
@@ -270,30 +273,30 @@ func setupMessageListeners(ctx context.Context, serviceManager *manager.ServiceM
 	})
 }
 
-// 创建HTTP管理服务器
+// Create HTTP management server
 func createAdminServer(ctx context.Context, serviceManager *manager.ServiceManager, workflowManager *manager.WorkflowManager, healthManager *health.HealthManager) *http.Server {
 	ctx = appctx.WithOperationName(ctx, "create_admin_server")
 	logger.InfoWithContext(ctx, "Creating admin server")
 
-	// 创建HTTP路由
+	// Create HTTP router
 	mux := http.NewServeMux()
 
-	// 添加健康检查端点
+	// Add health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		healthCheck(w, r, serviceManager, healthManager)
 	})
 
-	// 添加服务管理端点
+	// Add service management endpoint
 	mux.HandleFunc("/services", func(w http.ResponseWriter, r *http.Request) {
 		servicesList(w, r, serviceManager)
 	})
 
-	// 添加工作流端点
+	// Add workflow endpoint
 	mux.HandleFunc("/workflows", func(w http.ResponseWriter, r *http.Request) {
 		workflowsList(w, r, workflowManager)
 	})
 
-	// 配置HTTP服务器 with timeout settings
+	// Configure HTTP server with timeout settings
 	server := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
@@ -311,7 +314,7 @@ func createAdminServer(ctx context.Context, serviceManager *manager.ServiceManag
 func healthCheck(w http.ResponseWriter, r *http.Request, serviceManager *manager.ServiceManager, healthManager *health.HealthManager) {
 	ctx := appctx.FromRequest(r)
 
-	// 创建系统健康报告
+	// Create system health report
 	report := health.Report{
 		ServiceName:  "system",
 		Status:       health.StatusUp,
@@ -321,10 +324,10 @@ func healthCheck(w http.ResponseWriter, r *http.Request, serviceManager *manager
 		RefreshedAt:  time.Now(),
 	}
 
-	// 检查服务状态
+	// Check service status
 	allServices := serviceManager.ListServices(ctx)
 
-	// 添加服务状态到报告
+	// Add service status to report
 	for _, service := range allServices {
 		result := health.CheckResult{
 			Name:      "service." + service.GetName(),
@@ -345,7 +348,7 @@ func healthCheck(w http.ResponseWriter, r *http.Request, serviceManager *manager
 		report.CheckResults = append(report.CheckResults, result)
 	}
 
-	// 根据服务状态确定总体状态
+	// Determine overall status based on service status
 	for _, result := range report.CheckResults {
 		if result.Status == health.StatusDown {
 			report.Status = health.StatusDegraded
@@ -353,28 +356,28 @@ func healthCheck(w http.ResponseWriter, r *http.Request, serviceManager *manager
 		}
 	}
 
-	// 设置适当的状态码
+	// Set appropriate status code
 	if report.Status != health.StatusUp {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	// 设置内容类型
+	// Set content type
 	w.Header().Set("Content-Type", "application/json")
 
-	// 将健康报告编码为JSON
+	// Encode health report to JSON
 	if err := json.NewEncoder(w).Encode(report); err != nil {
 		logger.WithContextError(ctx, err).Error("Failed to encode health report")
 	}
 }
 
-// servicesList 处理服务列表请求
+// servicesList handles service list requests
 func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manager.ServiceManager) {
 	ctx := appctx.FromRequest(r)
 	logger.InfoWithContext(ctx, "Handling services list request")
 
-	// 创建服务信息列表
+	// Create service info list
 	type ServiceInfo struct {
 		Name     string                 `json:"name"`
 		Running  bool                   `json:"running"`
@@ -393,14 +396,14 @@ func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manage
 			Type:    fmt.Sprintf("%T", svc),
 		}
 
-		// 获取服务指标
+		// Get service metrics
 		if metricProvider, ok := svc.(interface {
 			GetMetrics(ctx context.Context) map[string]interface{}
 		}); ok {
 			info.Metrics = metricProvider.GetMetrics(ctx)
 		}
 
-		// 获取关联工作流
+		// Get associated workflow
 		if workflowProvider, ok := svc.(interface {
 			GetWorkflowName() string
 		}); ok {
@@ -410,7 +413,7 @@ func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manage
 		serviceInfos = append(serviceInfos, info)
 	}
 
-	// 设置响应头
+	// Set response header
 	w.Header().Set("Content-Type", "application/json")
 
 	// Encode with error handling
@@ -424,12 +427,12 @@ func workflowsList(w http.ResponseWriter, r *http.Request, workflowManager *mana
 	ctx := appctx.FromRequest(r)
 	logger.InfoWithContext(ctx, "Handling workflows list request")
 
-	// 创建工作流信息列表
+	// Create workflow info list
 	type WorkflowInfo struct {
 		Name string `json:"name"`
 	}
 
-	// 获取所有注册的工作流
+	// Get all registered workflows
 	workflowNames := workflowManager.ListWorkflows(ctx)
 	workflowInfos := make([]WorkflowInfo, 0, len(workflowNames))
 
@@ -437,7 +440,7 @@ func workflowsList(w http.ResponseWriter, r *http.Request, workflowManager *mana
 		workflowInfos = append(workflowInfos, WorkflowInfo{Name: name})
 	}
 
-	// 设置响应头
+	// Set response header
 	w.Header().Set("Content-Type", "application/json")
 
 	// Encode with error handling
