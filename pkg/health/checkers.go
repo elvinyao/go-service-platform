@@ -16,8 +16,9 @@ type MemoryUsageChecker struct {
 }
 
 // Check implements the Checker interface
-func (c *MemoryUsageChecker) Check(ctx context.Context) CheckResult {
-	result := NewCheckResult("memory-usage", CategoryResources, LevelWarning)
+func (c *MemoryUsageChecker) Check(ctx context.Context) *CheckResult {
+	result := NewCheckResult("memory-usage", CategoryResources)
+	result.Level = LevelWarning
 
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
@@ -27,9 +28,9 @@ func (c *MemoryUsageChecker) Check(ctx context.Context) CheckResult {
 	usedMem := float64(memStats.Alloc)
 	memUsagePercent := (usedMem / totalMem) * 100.0
 
-	result.AddDetail("total_memory_bytes", fmt.Sprintf("%d", memStats.Sys))
-	result.AddDetail("used_memory_bytes", fmt.Sprintf("%d", memStats.Alloc))
-	result.AddDetail("usage_percent", fmt.Sprintf("%.2f%%", memUsagePercent))
+	result.AddDetail("total_memory_bytes", memStats.Sys)
+	result.AddDetail("used_memory_bytes", memStats.Alloc)
+	result.AddDetail("usage_percent", memUsagePercent)
 
 	if memUsagePercent >= c.ThresholdCriticalPercent {
 		result.SetStatus(StatusDegraded, fmt.Sprintf("Memory usage critical: %.2f%%", memUsagePercent))
@@ -51,18 +52,19 @@ func NewMemoryUsageChecker() *MemoryUsageChecker {
 	}
 }
 
-// GoroutineCountChecker checks the number of goroutines
+// GoroutineCountChecker checks the number of active goroutines
 type GoroutineCountChecker struct {
 	ThresholdWarning  int
 	ThresholdCritical int
 }
 
 // Check implements the Checker interface
-func (c *GoroutineCountChecker) Check(ctx context.Context) CheckResult {
-	result := NewCheckResult("goroutine-count", CategoryResources, LevelWarning)
+func (c *GoroutineCountChecker) Check(ctx context.Context) *CheckResult {
+	result := NewCheckResult("goroutine-count", CategoryResources)
+	result.Level = LevelWarning
 
 	count := runtime.NumGoroutine()
-	result.AddDetail("count", fmt.Sprintf("%d", count))
+	result.AddDetail("count", count)
 
 	if count >= c.ThresholdCritical {
 		result.SetStatus(StatusDegraded, fmt.Sprintf("Goroutine count critical: %d", count))
@@ -84,7 +86,7 @@ func NewGoroutineCountChecker() *GoroutineCountChecker {
 	}
 }
 
-// ConnectivityChecker checks connectivity to a host
+// ConnectivityChecker checks connectivity to a host:port
 type ConnectivityChecker struct {
 	Host            string
 	Port            string
@@ -93,48 +95,48 @@ type ConnectivityChecker struct {
 }
 
 // Check implements the Checker interface
-func (c *ConnectivityChecker) Check(ctx context.Context) CheckResult {
-	result := NewCheckResult("connectivity-"+c.Host, CategoryConnectivity, LevelCritical)
+func (c *ConnectivityChecker) Check(ctx context.Context) *CheckResult {
+	result := NewCheckResult("connectivity-"+c.Host+":"+c.Port, CategoryConnectivity)
+	result.Level = LevelCritical
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMs)*time.Millisecond)
-	defer cancel()
+	timeout := time.Duration(c.TimeoutMs) * time.Millisecond
+	start := time.Now()
 
-	startTime := time.Now()
+	// Try to connect
+	conn, err := net.DialTimeout("tcp", c.Host+":"+c.Port, timeout)
+	elapsed := time.Since(start)
 
-	// Try to connect to the host
-	var d net.Dialer
-	conn, err := d.DialContext(timeoutCtx, "tcp", net.JoinHostPort(c.Host, c.Port))
-
-	latency := time.Since(startTime).Milliseconds()
-	result.AddDetail("latency_ms", fmt.Sprintf("%d", latency))
+	result.AddDetail("latency_ms", elapsed.Milliseconds())
 
 	if err != nil {
 		result.SetStatus(StatusDown, fmt.Sprintf("Failed to connect to %s:%s: %v", c.Host, c.Port, err))
-	} else {
-		defer conn.Close()
+		result.Complete()
+		return result
+	}
+	defer conn.Close()
 
-		if latency > int64(c.ExpectedLatency) {
-			result.SetStatus(StatusDegraded, fmt.Sprintf("High latency connecting to %s:%s: %dms", c.Host, c.Port, latency))
-		} else {
-			result.SetStatus(StatusUp, fmt.Sprintf("Successfully connected to %s:%s in %dms", c.Host, c.Port, latency))
-		}
+	// Check latency
+	if elapsed.Milliseconds() > int64(c.ExpectedLatency) {
+		result.SetStatus(StatusDegraded, fmt.Sprintf("High latency connecting to %s:%s: %dms", c.Host, c.Port, elapsed.Milliseconds()))
+	} else {
+		result.SetStatus(StatusUp, fmt.Sprintf("Successfully connected to %s:%s in %dms", c.Host, c.Port, elapsed.Milliseconds()))
 	}
 
 	result.Complete()
 	return result
 }
 
-// NewConnectivityChecker creates a new connectivity checker with default timeout
+// NewConnectivityChecker creates a new connectivity checker with default settings
 func NewConnectivityChecker(host, port string) *ConnectivityChecker {
 	return &ConnectivityChecker{
 		Host:            host,
 		Port:            port,
 		TimeoutMs:       1000,
-		ExpectedLatency: 200,
+		ExpectedLatency: 500,
 	}
 }
 
-// HTTPEndpointChecker checks connectivity to an HTTP endpoint
+// HTTPEndpointChecker checks an HTTP endpoint
 type HTTPEndpointChecker struct {
 	URL             string
 	Method          string
@@ -144,42 +146,43 @@ type HTTPEndpointChecker struct {
 }
 
 // Check implements the Checker interface
-func (c *HTTPEndpointChecker) Check(ctx context.Context) CheckResult {
-	result := NewCheckResult("http-"+c.URL, CategoryConnectivity, LevelCritical)
+func (c *HTTPEndpointChecker) Check(ctx context.Context) *CheckResult {
+	result := NewCheckResult("http-"+c.URL, CategoryConnectivity)
+	result.Level = LevelWarning
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMs)*time.Millisecond)
-	defer cancel()
+	client := &http.Client{
+		Timeout: time.Duration(c.TimeoutMs) * time.Millisecond,
+	}
 
-	req, err := http.NewRequestWithContext(timeoutCtx, c.Method, c.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, c.Method, c.URL, nil)
 	if err != nil {
 		result.SetStatus(StatusDown, fmt.Sprintf("Failed to create request for %s: %v", c.URL, err))
 		result.Complete()
 		return result
 	}
 
-	startTime := time.Now()
-	client := &http.Client{}
+	start := time.Now()
 	resp, err := client.Do(req)
+	elapsed := time.Since(start)
 
-	latency := time.Since(startTime).Milliseconds()
-	result.AddDetail("latency_ms", fmt.Sprintf("%d", latency))
+	result.AddDetail("latency_ms", elapsed.Milliseconds())
 
 	if err != nil {
 		result.SetStatus(StatusDown, fmt.Sprintf("Failed to connect to %s: %v", c.URL, err))
+		result.Complete()
+		return result
+	}
+	defer resp.Body.Close()
+
+	result.AddDetail("status_code", resp.StatusCode)
+
+	// Check status code
+	if resp.StatusCode != c.ExpectedStatus {
+		result.SetStatus(StatusDegraded, fmt.Sprintf("Unexpected status code from %s: %d (expected %d)", c.URL, resp.StatusCode, c.ExpectedStatus))
+	} else if elapsed.Milliseconds() > int64(c.ExpectedLatency) {
+		result.SetStatus(StatusDegraded, fmt.Sprintf("High latency from %s: %dms", c.URL, elapsed.Milliseconds()))
 	} else {
-		defer resp.Body.Close()
-
-		result.AddDetail("status_code", fmt.Sprintf("%d", resp.StatusCode))
-
-		if resp.StatusCode != c.ExpectedStatus {
-			result.SetStatus(StatusDegraded, fmt.Sprintf("Unexpected status code from %s: expected %d, got %d",
-				c.URL, c.ExpectedStatus, resp.StatusCode))
-		} else if latency > int64(c.ExpectedLatency) {
-			result.SetStatus(StatusDegraded, fmt.Sprintf("High latency from %s: %dms", c.URL, latency))
-		} else {
-			result.SetStatus(StatusUp, fmt.Sprintf("Successfully connected to %s in %dms with status %d",
-				c.URL, latency, resp.StatusCode))
-		}
+		result.SetStatus(StatusUp, fmt.Sprintf("Successfully connected to %s in %dms", c.URL, elapsed.Milliseconds()))
 	}
 
 	result.Complete()
@@ -193,11 +196,11 @@ func NewHTTPEndpointChecker(url string) *HTTPEndpointChecker {
 		Method:          http.MethodGet,
 		TimeoutMs:       2000,
 		ExpectedStatus:  http.StatusOK,
-		ExpectedLatency: 500,
+		ExpectedLatency: 1000,
 	}
 }
 
-// DependencyChecker checks if a dependency service is healthy
+// DependencyChecker checks the health of a dependency service
 type DependencyChecker struct {
 	ServiceName string
 	Reporter    Reporter
@@ -205,30 +208,32 @@ type DependencyChecker struct {
 }
 
 // Check implements the Checker interface
-func (c *DependencyChecker) Check(ctx context.Context) CheckResult {
-	result := NewCheckResult("dependency-"+c.ServiceName, CategoryDependency, c.Level)
+func (c *DependencyChecker) Check(ctx context.Context) *CheckResult {
+	result := NewCheckResult("dependency-"+c.ServiceName, CategoryDependency)
+	result.Level = c.Level
 
-	// Get health report from the dependency
-	report := c.Reporter.HealthCheck(ctx)
+	// Create a report for the dependency
+	report := &Report{
+		ServiceName: c.ServiceName,
+		Status:      StatusUnknown,
+		RefreshedAt: time.Now(),
+	}
 
-	// Add details from dependency
+	// Get the health report from the reporter
+	c.Reporter.ReportHealth(ctx, report)
+
+	// Map the dependency status to our result
 	result.AddDetail("dependency_status", string(report.Status))
-	result.AddDetail("dependency_checks", fmt.Sprintf("%d", len(report.CheckResults)))
 
-	// Set status based on dependency status
 	switch report.Status {
 	case StatusUp:
 		result.SetStatus(StatusUp, fmt.Sprintf("Dependency %s is healthy", c.ServiceName))
 	case StatusDegraded:
 		result.SetStatus(StatusDegraded, fmt.Sprintf("Dependency %s is degraded", c.ServiceName))
 	case StatusDown:
-		if c.Level == LevelCritical {
-			result.SetStatus(StatusDown, fmt.Sprintf("Critical dependency %s is down", c.ServiceName))
-		} else {
-			result.SetStatus(StatusDegraded, fmt.Sprintf("Dependency %s is down", c.ServiceName))
-		}
+		result.SetStatus(StatusDown, fmt.Sprintf("Dependency %s is down", c.ServiceName))
 	default:
-		result.SetStatus(StatusUnknown, fmt.Sprintf("Dependency %s health status is unknown", c.ServiceName))
+		result.SetStatus(StatusUnknown, fmt.Sprintf("Dependency %s status is unknown", c.ServiceName))
 	}
 
 	result.Complete()
@@ -244,7 +249,7 @@ func NewDependencyChecker(serviceName string, reporter Reporter, level Level) *D
 	}
 }
 
-// DataAccessChecker checks data access functionality
+// DataAccessChecker checks data access operations
 type DataAccessChecker struct {
 	Name        string
 	AccessFn    func(ctx context.Context) error
@@ -253,23 +258,29 @@ type DataAccessChecker struct {
 }
 
 // Check implements the Checker interface
-func (c *DataAccessChecker) Check(ctx context.Context) CheckResult {
-	result := NewCheckResult("data-access-"+c.Name, CategoryData, LevelCritical)
+func (c *DataAccessChecker) Check(ctx context.Context) *CheckResult {
+	result := NewCheckResult("data-access-"+c.Name, CategoryData)
+	result.Level = LevelCritical
 
-	// Set a timeout for the data access operation
+	// Create a timeout context
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMs)*time.Millisecond)
 	defer cancel()
 
-	startTime := time.Now()
+	start := time.Now()
 	err := c.AccessFn(timeoutCtx)
-	latency := time.Since(startTime).Milliseconds()
+	elapsed := time.Since(start)
 
-	result.AddDetail("latency_ms", fmt.Sprintf("%d", latency))
+	result.AddDetail("latency_ms", elapsed.Milliseconds())
+	result.AddDetail("description", c.Description)
 
 	if err != nil {
-		result.SetStatus(StatusDown, fmt.Sprintf("Data access failed: %v", err))
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			result.SetStatus(StatusDegraded, fmt.Sprintf("Data access to %s timed out after %dms", c.Name, c.TimeoutMs))
+		} else {
+			result.SetStatus(StatusDown, fmt.Sprintf("Data access to %s failed: %v", c.Name, err))
+		}
 	} else {
-		result.SetStatus(StatusUp, c.Description)
+		result.SetStatus(StatusUp, fmt.Sprintf("Data access to %s successful in %dms", c.Name, elapsed.Milliseconds()))
 	}
 
 	result.Complete()

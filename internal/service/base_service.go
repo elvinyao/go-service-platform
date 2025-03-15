@@ -49,7 +49,7 @@ func (s *BaseService) GetType() string {
 }
 
 // IsRunning returns whether the service is running
-func (s *BaseService) IsRunning() bool {
+func (s *BaseService) IsRunning(ctx context.Context) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.running
@@ -102,42 +102,50 @@ func (s *BaseService) RegisterHealthChecks() []health.Checker {
 	return checkers
 }
 
-// HealthCheck performs all health checks and returns a consolidated report
-func (s *BaseService) HealthCheck(ctx context.Context) health.Report {
-	ctx = appctx.WithServiceName(ctx, s.name)
-	ctx = appctx.WithOperationName(ctx, "health_check")
-
-	logger.DebugfWithContext(ctx, "Running health check for service: %s", s.name)
-
+// GetMetrics returns basic metrics for the service
+func (s *BaseService) GetMetrics(ctx context.Context) map[string]interface{} {
 	s.mu.RLock()
-	version := s.version
-	startTime := s.startTime
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
 
-	// Create new report
-	report := health.NewReport(s.name, startTime, version)
+	metrics := make(map[string]interface{})
+	metrics["running"] = s.running
+	metrics["type"] = s.serviceType
+	metrics["workflow"] = s.workflow
+
+	if !s.startTime.IsZero() {
+		metrics["uptime_seconds"] = time.Since(s.startTime).Seconds()
+		metrics["start_time"] = s.startTime.Format(time.RFC3339)
+	}
+
+	return metrics
+}
+
+// ReportHealth reports health status to the provided report
+func (s *BaseService) ReportHealth(ctx context.Context, report *health.Report) {
+	ctx = appctx.WithServiceName(ctx, s.name)
+	ctx = appctx.WithOperationName(ctx, "health_report")
+
+	logger.DebugfWithContext(ctx, "Reporting health for service: %s", s.name)
 
 	// Get all registered health checkers
 	checkers := s.RegisterHealthChecks()
 
+	// Convert checkers to check functions
+	checkFuncs := make([]func(context.Context) *health.CheckResult, 0, len(checkers))
+	for _, checker := range checkers {
+		checkFuncs = append(checkFuncs, func(ctx context.Context) *health.CheckResult {
+			return checker.Check(ctx)
+		})
+	}
+
 	// Run checks in parallel
-	results := health.RunChecksParallel(ctx, checkers)
+	results := health.RunChecksParallel(ctx, checkFuncs)
 
 	// Add results to report
 	for _, result := range results {
-		report.AddResult(result)
+		checkResult := *result // 转换为值类型
+		report.CheckResults = append(report.CheckResults, checkResult)
 	}
-
-	report.Complete()
-
-	// Log results
-	if !report.IsHealthy() {
-		logger.WarnfWithContext(ctx, "Health check for service %s returned status: %s", s.name, report.Status)
-	} else {
-		logger.DebugfWithContext(ctx, "Health check for service %s successful", s.name)
-	}
-
-	return report
 }
 
 // serviceRunningChecker checks if a service is running
@@ -146,16 +154,14 @@ type serviceRunningChecker struct {
 }
 
 // Check implements the Checker interface
-func (c *serviceRunningChecker) Check(ctx context.Context) health.CheckResult {
-	result := health.NewCheckResult("service-running", health.CategoryConnectivity, health.LevelCritical)
+func (c *serviceRunningChecker) Check(ctx context.Context) *health.CheckResult {
+	result := health.NewCheckResult("service-running", health.CategoryConnectivity)
+	result.Level = health.LevelCritical
 
-	isRunning := c.service.IsRunning()
-	result.AddDetail("running", fmt.Sprintf("%v", isRunning))
-
-	if isRunning {
-		result.SetStatus(health.StatusUp, "Service is running")
+	if c.service.IsRunning(ctx) {
+		result.SetStatus(health.StatusUp, fmt.Sprintf("Service %s is running", c.service.GetName()))
 	} else {
-		result.SetStatus(health.StatusDown, "Service is not running")
+		result.SetStatus(health.StatusDown, fmt.Sprintf("Service %s is not running", c.service.GetName()))
 	}
 
 	result.Complete()

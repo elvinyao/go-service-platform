@@ -59,16 +59,28 @@ const (
 	CategorySecurity Category = "SECURITY"
 )
 
+// ServiceChecker 定义了可以被健康检查的服务接口
+type ServiceChecker interface {
+	// IsRunning 返回服务是否运行中
+	IsRunning(ctx context.Context) bool
+
+	// GetName 返回服务名称
+	GetName() string
+
+	// GetMetrics 返回服务指标
+	GetMetrics(ctx context.Context) map[string]interface{}
+}
+
 // CheckResult represents the result of a single health check
 type CheckResult struct {
-	Name        string            `json:"name"`
-	Status      Status            `json:"status"`
-	Description string            `json:"description"`
-	Category    Category          `json:"category"`
-	Level       Level             `json:"level"`
-	Details     map[string]string `json:"details,omitempty"`
-	Timestamp   time.Time         `json:"timestamp"`
-	Duration    time.Duration     `json:"duration"`
+	Name        string                 `json:"name"`
+	Status      Status                 `json:"status"`
+	Description string                 `json:"description"`
+	Category    Category               `json:"category"`
+	Level       Level                  `json:"level"`
+	Details     map[string]interface{} `json:"details,omitempty"`
+	Timestamp   time.Time              `json:"timestamp"`
+	Duration    time.Duration          `json:"duration"`
 }
 
 // Report represents the overall health of a service
@@ -87,28 +99,51 @@ type Report struct {
 // Checker defines the interface for components that can perform health checks
 type Checker interface {
 	// Check performs the health check and returns the result
-	Check(ctx context.Context) CheckResult
+	Check(ctx context.Context) *CheckResult
 }
 
 // Reporter defines the interface for services that can report their health
 type Reporter interface {
-	// HealthCheck performs all health checks and returns a consolidated report
-	HealthCheck(ctx context.Context) Report
+	// ReportHealth performs all health checks and returns a consolidated report
+	ReportHealth(ctx context.Context, report *Report)
 }
 
 // DefaultThresholds defines default thresholds for various metrics
 var DefaultThresholds = struct {
-	ResponseTimeMs   int64
-	CPUUsagePercent  float64
-	MemUsagePercent  float64
-	ErrorRatePercent float64
-	MinConnections   int
+	// CPU thresholds
+	CPUWarning  float64
+	CPUCritical float64
+
+	// Memory thresholds
+	MemoryWarning  float64
+	MemoryCritical float64
+
+	// Disk thresholds
+	DiskWarning  float64
+	DiskCritical float64
+
+	// Response time thresholds (ms)
+	ResponseTimeWarning  int64
+	ResponseTimeCritical int64
+
+	// Error rate thresholds (%)
+	ErrorRateWarning  float64
+	ErrorRateCritical float64
 }{
-	ResponseTimeMs:   500,  // 500ms
-	CPUUsagePercent:  80.0, // 80%
-	MemUsagePercent:  80.0, // 80%
-	ErrorRatePercent: 5.0,  // 5%
-	MinConnections:   1,    // At least 1 connection
+	CPUWarning:  0.7, // 70%
+	CPUCritical: 0.9, // 90%
+
+	MemoryWarning:  0.8,  // 80%
+	MemoryCritical: 0.95, // 95%
+
+	DiskWarning:  0.8,  // 80%
+	DiskCritical: 0.95, // 95%
+
+	ResponseTimeWarning:  500,  // 500ms
+	ResponseTimeCritical: 1000, // 1s
+
+	ErrorRateWarning:  5,  // 5%
+	ErrorRateCritical: 10, // 10%
 }
 
 // DetermineStatus determines the overall status based on check results
@@ -149,15 +184,15 @@ func DetermineStatus(results []CheckResult) Status {
 	return StatusUp
 }
 
-// NewCheckResult creates a new CheckResult with standard fields set
-func NewCheckResult(name string, category Category, level Level) CheckResult {
-	return CheckResult{
+// NewCheckResult creates a new check result with default values
+func NewCheckResult(name string, category Category) *CheckResult {
+	return &CheckResult{
 		Name:      name,
 		Category:  category,
-		Level:     level,
+		Level:     LevelInfo,
 		Status:    StatusUnknown,
 		Timestamp: time.Now(),
-		Details:   make(map[string]string),
+		Details:   make(map[string]interface{}),
 	}
 }
 
@@ -169,10 +204,10 @@ func (cr *CheckResult) SetStatus(status Status, description string) {
 	}
 }
 
-// AddDetail adds a key-value detail to the check result
-func (cr *CheckResult) AddDetail(key, value string) {
+// AddDetail adds a detail to the check result
+func (cr *CheckResult) AddDetail(key string, value interface{}) {
 	if cr.Details == nil {
-		cr.Details = make(map[string]string)
+		cr.Details = make(map[string]interface{})
 	}
 	cr.Details[key] = value
 }
@@ -221,38 +256,43 @@ func (r *Report) IsHealthy() bool {
 	return r.Status == StatusUp
 }
 
-// RunChecksParallel runs all checkers in parallel and collects results
-func RunChecksParallel(ctx context.Context, checkers []Checker) []CheckResult {
-	results := make([]CheckResult, len(checkers))
+// RunChecksParallel runs multiple health checks in parallel and returns the results
+func RunChecksParallel(ctx context.Context, checks []func(context.Context) *CheckResult) []*CheckResult {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	// Create a channel to collect results
-	resultCh := make(chan struct {
-		index  int
-		result CheckResult
-	})
+	var results []*CheckResult
+	resultCh := make(chan *CheckResult, len(checks))
 
-	// Run each check in its own goroutine
-	for i, checker := range checkers {
-		go func(idx int, chk Checker) {
-			result := chk.Check(ctx)
-			resultCh <- struct {
-				index  int
-				result CheckResult
-			}{idx, result}
-		}(i, checker)
+	// Start all checks in parallel
+	for _, check := range checks {
+		go func(check func(context.Context) *CheckResult) {
+			resultCh <- check(ctx)
+		}(check)
 	}
 
-	// Collect all results
-	for i := 0; i < len(checkers); i++ {
+	// Collect results with timeout
+	timeout := time.After(10 * time.Second)
+	for i := 0; i < len(checks); i++ {
 		select {
+		case result := <-resultCh:
+			results = append(results, result)
+		case <-timeout:
+			// Timeout occurred, mark remaining checks as unknown
+			result := NewCheckResult("timeout", CategoryConnectivity)
+			result.Level = LevelCritical
+			result.SetStatus(StatusUnknown, "Health check timed out")
+			result.Complete()
+			results = append(results, result)
+			return results
 		case <-ctx.Done():
 			// Context was cancelled, mark remaining checks as unknown
-			res := NewCheckResult("cancelled", CategoryConnectivity, LevelCritical)
+			res := NewCheckResult("cancelled", CategoryConnectivity)
+			res.Level = LevelCritical
 			res.SetStatus(StatusUnknown, "Health check was cancelled")
 			res.Complete()
-			return []CheckResult{res}
-		case r := <-resultCh:
-			results[r.index] = r.result
+			results = append(results, res)
+			return results
 		}
 	}
 

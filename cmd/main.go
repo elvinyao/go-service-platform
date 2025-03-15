@@ -2,16 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
-	"project/internal/dataaccess"
 	"project/internal/manager"
 	"project/internal/model"
 	"project/internal/service"
-	"project/internal/workflow"
 	appctx "project/pkg/context"
+	"project/pkg/di"
 	"project/pkg/errors"
 	"project/pkg/health"
 	"project/pkg/logger"
@@ -42,14 +42,22 @@ func main() {
 	// Set up signal handling for graceful shutdown
 	setupSignalHandling(rootCtx, cancel)
 
-	// Initialize dependencies
-	serviceManager := initServiceManager(rootCtx)
-	dataAccessor := initDataAccessor(rootCtx)
+	// 创建依赖注入容器
+	container := di.NewContainer(appVersion)
 
-	// Register and start services
+	// 初始化依赖
 	startCtx := appctx.WithOperationName(rootCtx, "startup")
-	if err := registerAndStartServices(startCtx, serviceManager, dataAccessor); err != nil {
-		logger.WithContextError(rootCtx, err).Error("Failed to register and start services")
+	serviceManager := container.GetServiceManager(startCtx)
+
+	// 注册服务
+	if err := container.RegisterServices(startCtx); err != nil {
+		logger.WithContextError(rootCtx, err).Error("Failed to register services")
+		os.Exit(1)
+	}
+
+	// 启动所有服务
+	if err := serviceManager.StartAll(startCtx); err != nil {
+		logger.WithContextError(rootCtx, err).Error("Failed to start services")
 		os.Exit(1)
 	}
 
@@ -58,7 +66,7 @@ func main() {
 	go monitorServices(monitorCtx, serviceManager)
 
 	// Initialize and setup workflow manager
-	workflowManager, err := initWorkflowManager(rootCtx, serviceManager)
+	workflowManager, err := container.GetWorkflowManager(rootCtx)
 	if err != nil {
 		logger.WithContextError(rootCtx, err).Error("Failed to initialize workflow manager")
 		shutdown(rootCtx, serviceManager)
@@ -72,8 +80,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 创建健康检查管理器
+	healthManager := container.GetHealthManager(rootCtx)
+
 	// 创建HTTP管理服务器
-	adminServer := createAdminServer(rootCtx, serviceManager, workflowManager)
+	adminServer := createAdminServer(rootCtx, serviceManager, workflowManager, healthManager)
 	go func() {
 		if err := adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.WithContextError(rootCtx, err).Fatal("Admin server failed")
@@ -135,80 +146,6 @@ func monitorServices(ctx context.Context, serviceManager *manager.ServiceManager
 	logger.InfoWithContext(ctx, "Service monitoring stopped")
 }
 
-// Initialize service manager
-func initServiceManager(ctx context.Context) *manager.ServiceManager {
-	ctx = appctx.WithOperationName(ctx, "init_service_manager")
-	logger.InfoWithContext(ctx, "Initializing service manager")
-	return manager.NewServiceManager(appVersion)
-}
-
-// Initialize data accessor
-func initDataAccessor(ctx context.Context) *dataaccess.CacheDataAccessor {
-	ctx = appctx.WithOperationName(ctx, "init_data_accessor")
-	logger.InfoWithContext(ctx, "Initializing data accessor")
-	return dataaccess.NewCacheDataAccessor()
-}
-
-// Register and start services
-func registerAndStartServices(ctx context.Context, serviceManager *manager.ServiceManager, dataAccessor dataaccess.DataAccessor) error {
-	return logger.LogOperation(ctx, "register_and_start_services", func(ctx context.Context) error {
-		logger.InfoWithContext(ctx, "Registering services")
-
-		services := []service.Service{
-			service.NewConfluenceService("ConfluenceServiceA", "A", dataAccessor, appVersion),
-			service.NewWebSocketService("WebSocketServiceA", "A", appVersion),
-			service.NewBadgeDBService("BadgeDBService", "Global", "/tmp/badges.db", appVersion),
-		}
-
-		for _, svc := range services {
-			serviceManager.RegisterService(svc)
-			logger.InfofWithContext(ctx, "Registered service: %s", svc.GetName())
-		}
-
-		logger.InfoWithContext(ctx, "Starting all services")
-		if err := serviceManager.StartAll(ctx); err != nil {
-			return errors.Wrap(err, "Failed to start services", errors.TypeServiceUnavailable)
-		}
-
-		logger.InfoWithContext(ctx, "All services started successfully")
-		return nil
-	})
-}
-
-// Initialize workflow manager
-func initWorkflowManager(ctx context.Context, serviceManager *manager.ServiceManager) (*manager.WorkflowManager, error) {
-	var wfManager *manager.WorkflowManager
-	var wfError error
-
-	err := logger.LogOperation(ctx, "init_workflow_manager", func(ctx context.Context) error {
-		logger.InfoWithContext(ctx, "Initializing workflow manager")
-		workflowManager := manager.NewWorkflowManager()
-
-		workflowA := workflow.NewWorkflowA(serviceManager)
-
-		if err := workflowManager.RegisterWorkflow(workflowA); err != nil {
-			wfError = errors.Wrap(err, "Failed to register workflow", errors.TypeInternal).
-				WithField("workflow", workflowA.GetName())
-			return wfError
-		}
-
-		logger.InfofWithContext(ctx, "Registered workflow: %s", workflowA.GetName())
-
-		wfManager = workflowManager
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	if wfError != nil {
-		return nil, wfError
-	}
-
-	return wfManager, nil
-}
-
 // Set up message listeners
 func setupMessageListeners(ctx context.Context, serviceManager *manager.ServiceManager, workflowManager *manager.WorkflowManager) error {
 	return logger.LogOperation(ctx, "setup_message_listeners", func(ctx context.Context) error {
@@ -241,24 +178,148 @@ func setupMessageListeners(ctx context.Context, serviceManager *manager.ServiceM
 }
 
 // 创建HTTP管理服务器
-func createAdminServer(ctx context.Context, serviceManager *manager.ServiceManager, workflowManager *manager.WorkflowManager) *http.Server {
+func createAdminServer(ctx context.Context, serviceManager *manager.ServiceManager, workflowManager *manager.WorkflowManager, healthManager *health.HealthManager) *http.Server {
 	ctx = appctx.WithOperationName(ctx, "create_admin_server")
 	logger.InfoWithContext(ctx, "Creating admin server")
 
 	// 创建HTTP路由
 	mux := http.NewServeMux()
 
-	// 创建健康检查处理器
-	healthManager := health.NewHealthManager(30*time.Second, appVersion)
-	healthHandler := health.NewHealthHandler(healthManager)
-	healthHandler.RegisterHTTPHandlers(mux)
+	// 添加健康检查端点
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		healthCheck(w, r, serviceManager, healthManager)
+	})
 
-	// 返回配置好的服务器
+	// 添加服务管理端点
+	mux.HandleFunc("/services", func(w http.ResponseWriter, r *http.Request) {
+		servicesList(w, r, serviceManager)
+	})
+
+	// 添加工作流端点
+	mux.HandleFunc("/workflows", func(w http.ResponseWriter, r *http.Request) {
+		workflowsList(w, r, workflowManager)
+	})
+
+	// 配置HTTP服务器
 	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
+		Addr:              ":8080",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	logger.InfoWithContext(ctx, "Admin server created at :8080")
+	logger.InfoWithContext(ctx, "Admin server created successfully")
 	return server
+}
+
+// healthCheck 处理健康检查请求
+func healthCheck(w http.ResponseWriter, r *http.Request, serviceManager *manager.ServiceManager, healthManager *health.HealthManager) {
+	ctx := appctx.FromRequest(r)
+
+	// 创建系统健康报告
+	report := health.Report{
+		ServiceName:  "system",
+		Status:       health.StatusUp,
+		CheckResults: []health.CheckResult{},
+		StartTime:    time.Now(),
+		Version:      appVersion,
+		RefreshedAt:  time.Now(),
+	}
+
+	// 检查服务状态
+	allServices := serviceManager.ListServices(ctx)
+
+	// 添加服务状态到报告
+	for _, service := range allServices {
+		result := health.CheckResult{
+			Name:      "service." + service.GetName(),
+			Status:    health.StatusUnknown,
+			Category:  health.CategoryDependency,
+			Level:     health.LevelCritical,
+			Timestamp: time.Now(),
+		}
+
+		if service.IsRunning(ctx) {
+			result.Status = health.StatusUp
+			result.Description = "Service is running"
+		} else {
+			result.Status = health.StatusDown
+			result.Description = "Service is not running"
+		}
+
+		report.CheckResults = append(report.CheckResults, result)
+	}
+
+	// 根据服务状态确定总体状态
+	for _, result := range report.CheckResults {
+		if result.Status == health.StatusDown {
+			report.Status = health.StatusDegraded
+			break
+		}
+	}
+
+	// 设置适当的状态码
+	if report.Status != health.StatusUp {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	// 设置内容类型
+	w.Header().Set("Content-Type", "application/json")
+
+	// 将健康报告编码为JSON
+	if err := json.NewEncoder(w).Encode(report); err != nil {
+		logger.WithContextError(ctx, err).Error("Failed to encode health report")
+	}
+}
+
+// servicesList 处理服务列表请求
+func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manager.ServiceManager) {
+	ctx := appctx.FromRequest(r)
+
+	// 获取所有服务
+	services := serviceManager.ListServices(ctx)
+
+	// 创建简化的服务信息列表
+	type ServiceInfo struct {
+		Name     string                 `json:"name"`
+		Running  bool                   `json:"running"`
+		Workflow string                 `json:"workflow"`
+		Type     string                 `json:"type"`
+		Metrics  map[string]interface{} `json:"metrics,omitempty"`
+	}
+
+	serviceInfos := make([]ServiceInfo, 0, len(services))
+
+	for _, svc := range services {
+		info := ServiceInfo{
+			Name:     svc.GetName(),
+			Running:  svc.IsRunning(ctx),
+			Workflow: svc.GetWorkflow(),
+			Type:     svc.GetType(),
+			Metrics:  svc.GetMetrics(ctx),
+		}
+
+		serviceInfos = append(serviceInfos, info)
+	}
+
+	// 设置内容类型
+	w.Header().Set("Content-Type", "application/json")
+
+	// 将服务列表编码为JSON
+	if err := json.NewEncoder(w).Encode(serviceInfos); err != nil {
+		logger.WithContextError(ctx, err).Error("Failed to encode services list")
+	}
+}
+
+// workflowsList 处理工作流列表请求
+func workflowsList(w http.ResponseWriter, r *http.Request, workflowManager *manager.WorkflowManager) {
+	// 设置内容类型
+	w.Header().Set("Content-Type", "application/json")
+
+	// 暂时只返回简单消息，因为WorkflowManager尚未提供获取所有工作流的方法
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
+		ctx := appctx.FromRequest(r)
+		logger.WithContextError(ctx, err).Error("Failed to encode workflows response")
+	}
 }

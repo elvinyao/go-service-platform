@@ -4,15 +4,13 @@ import (
 	"context"
 	"fmt"
 	"project/internal/config"
+	"project/pkg/health"
 
 	"github.com/mattermost/mattermost-server/v6/model"
 )
 
 type MattermostService struct {
-	name     string
-	workflow string
-	running  bool
-
+	*BaseService
 	client   *model.Client4
 	wsClient *model.WebSocketClient
 	config   config.MattermostConfig
@@ -20,19 +18,17 @@ type MattermostService struct {
 }
 
 // NewMattermostService creates a new Mattermost service
-func NewMattermostService(name, workflow string, config config.MattermostConfig) *MattermostService {
+func NewMattermostService(name, workflow string, config config.MattermostConfig, version string) *MattermostService {
 	return &MattermostService{
-		name:     name,
-		workflow: workflow,
-		config:   config,
-		msgChan:  make(chan *model.WebSocketEvent, 100),
-		running:  false,
+		BaseService: NewBaseService(name, workflow, "mattermost", version),
+		config:      config,
+		msgChan:     make(chan *model.WebSocketEvent, 100),
 	}
 }
 
 // Start implements Service interface
 func (s *MattermostService) Start(ctx context.Context) error {
-	if s.running {
+	if s.IsRunning(ctx) {
 		return nil
 	}
 
@@ -49,71 +45,91 @@ func (s *MattermostService) Start(ctx context.Context) error {
 		}
 	}
 
-	// Setup websocket connection
-	s.wsClient, _ = model.NewWebSocketClient(s.config.WebsocketURL, s.client.AuthToken)
-
-	// Start listening for websocket events
+	// Initialize WebSocket client
+	var err error
+	s.wsClient, err = model.NewWebSocketClient4(s.config.WebsocketURL, s.client.AuthToken)
+	if err != nil {
+		return fmt.Errorf("failed to create WebSocket client: %w", err)
+	}
 	s.wsClient.Listen()
 
-	s.running = true
+	// Set up event handlers
+	s.wsClient.EventChannel = s.msgChan
+
+	// Start message processing goroutine
+	go s.processMessages(ctx)
+
+	s.LockRunning(true)
 	return nil
 }
 
 // Stop implements Service interface
-func (s *MattermostService) Stop() error {
-	if !s.running {
+func (s *MattermostService) Stop(ctx context.Context) error {
+	if !s.IsRunning(ctx) {
 		return nil
 	}
 
+	// Close WebSocket connection
 	if s.wsClient != nil {
 		s.wsClient.Close()
+		s.wsClient = nil
 	}
 
-	s.running = false
+	// Clear client
+	s.client = nil
+
+	s.LockRunning(false)
 	return nil
 }
 
 // Restart implements Service interface
 func (s *MattermostService) Restart(ctx context.Context) error {
-	err := s.Stop()
-	if err != nil {
+	if err := s.Stop(ctx); err != nil {
 		return err
 	}
 	return s.Start(ctx)
 }
 
-// GetName implements Service interface
-func (s *MattermostService) GetName() string {
-	return s.name
-}
-
-// GetWorkflow implements Service interface
-func (s *MattermostService) GetWorkflow() string {
-	return s.workflow
-}
-
-// GetType implements Service interface
-func (s *MattermostService) GetType() string {
-	return "Mattermost"
-}
-
-// IsRunning implements Service interface
-func (s *MattermostService) IsRunning() bool {
-	return s.running
-}
-
-// GetMetrics implements Service interface
-func (s *MattermostService) GetMetrics() map[string]interface{} {
-	return map[string]interface{}{
-		"running": s.running,
+// processMessages handles incoming WebSocket messages
+func (s *MattermostService) processMessages(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-s.msgChan:
+			if !ok {
+				return
+			}
+			// Process the event
+			fmt.Printf("Received event: %v\n", event.EventType())
+		}
 	}
 }
 
-// Configure implements Service interface
-func (s *MattermostService) Configure(cfg interface{}) error {
-	if mattermostConfig, ok := cfg.(config.MattermostConfig); ok {
-		s.config = mattermostConfig
-		return nil
+// ReportHealth implements the Reporter interface
+func (s *MattermostService) ReportHealth(ctx context.Context, report *health.Report) {
+	// Use the base service's implementation
+	s.BaseService.ReportHealth(ctx, report)
+
+	// Add Mattermost-specific health checks
+	result := health.NewCheckResult("mattermost-connection", health.CategoryConnectivity)
+	result.Level = health.LevelCritical
+
+	if s.client == nil || s.wsClient == nil {
+		result.SetStatus(health.StatusDown, "Mattermost client not initialized")
+	} else {
+		// Simple connection check - if we have a client, consider it up
+		// In a real implementation, you would perform more robust checks
+		result.SetStatus(health.StatusUp, "Mattermost WebSocket connection established")
+
+		// Add connection details
+		result.AddDetail("server_url", s.config.ServerURL)
+		result.AddDetail("websocket_url", s.config.WebsocketURL)
 	}
-	return nil
+
+	result.Complete()
+
+	// Add result to report
+	checkResult := *result
+	report.CheckResults = append(report.CheckResults, checkResult)
 }

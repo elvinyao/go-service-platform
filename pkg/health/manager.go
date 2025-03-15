@@ -2,184 +2,303 @@ package health
 
 import (
 	"context"
+	appctx "project/pkg/context"
+	"project/pkg/logger"
 	"sync"
 	"time"
 )
 
-// HealthManager manages health checks across multiple services
+// HealthManager 管理系统健康检查
 type HealthManager struct {
-	reporters     map[string]Reporter
-	cachedReports map[string]Report
-	cacheTTL      time.Duration
-	mu            sync.RWMutex
-	startTime     time.Time
-	version       string
+	mu               sync.RWMutex
+	checkers         []Checker
+	reporters        []Reporter
+	refreshInterval  time.Duration
+	lastRefresh      time.Time
+	lastReport       *Report
+	version          string
+	serviceInstances map[string]ServiceChecker
+	startTime        time.Time
 }
 
-// NewHealthManager creates a new health manager
-func NewHealthManager(cacheTTL time.Duration, version string) *HealthManager {
-	if cacheTTL <= 0 {
-		cacheTTL = 30 * time.Second // Default TTL
-	}
-
+// NewHealthManager 创建一个新的健康检查管理器
+func NewHealthManager(refreshInterval time.Duration, version string) *HealthManager {
 	return &HealthManager{
-		reporters:     make(map[string]Reporter),
-		cachedReports: make(map[string]Report),
-		cacheTTL:      cacheTTL,
-		startTime:     time.Now(),
-		version:       version,
+		checkers:         make([]Checker, 0),
+		reporters:        make([]Reporter, 0),
+		refreshInterval:  refreshInterval,
+		version:          version,
+		serviceInstances: make(map[string]ServiceChecker),
+		startTime:        time.Now(),
 	}
 }
 
-// RegisterReporter registers a service for health checks
-func (m *HealthManager) RegisterReporter(serviceName string, reporter Reporter) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.reporters[serviceName] = reporter
+// RegisterChecker 注册一个健康检查器
+func (h *HealthManager) RegisterChecker(checker Checker) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.checkers = append(h.checkers, checker)
 }
 
-// UnregisterReporter removes a service from health checks
-func (m *HealthManager) UnregisterReporter(serviceName string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.reporters, serviceName)
-	delete(m.cachedReports, serviceName)
+// RegisterReporter 注册一个健康报告器
+func (h *HealthManager) RegisterReporter(reporter Reporter) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.reporters = append(h.reporters, reporter)
 }
 
-// GetServiceHealth gets the health of a specific service
-func (m *HealthManager) GetServiceHealth(ctx context.Context, serviceName string) (Report, bool) {
-	m.mu.RLock()
-	reporter, exists := m.reporters[serviceName]
-	if !exists {
-		m.mu.RUnlock()
-		return Report{}, false
-	}
+// RegisterService 注册一个服务进行健康检查
+func (h *HealthManager) RegisterService(service ServiceChecker) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	// Check if we have a cached report that's still valid
-	cachedReport, hasCached := m.cachedReports[serviceName]
-	m.mu.RUnlock()
-
-	if hasCached && time.Since(cachedReport.RefreshedAt) < m.cacheTTL {
-		return cachedReport, true
-	}
-
-	// Cache miss or expired, get a fresh report
-	report := reporter.HealthCheck(ctx)
-
-	// Cache the new report
-	m.mu.Lock()
-	m.cachedReports[serviceName] = report
-	m.mu.Unlock()
-
-	return report, true
+	h.serviceInstances[service.GetName()] = service
 }
 
-// GetAllServicesHealth gets the health of all registered services
-func (m *HealthManager) GetAllServicesHealth(ctx context.Context) map[string]Report {
-	m.mu.RLock()
-	serviceNames := make([]string, 0, len(m.reporters))
-	for name := range m.reporters {
-		serviceNames = append(serviceNames, name)
-	}
-	m.mu.RUnlock()
+// GetHealthReport 获取健康报告
+func (h *HealthManager) GetHealthReport(ctx context.Context) *Report {
+	h.mu.RLock()
 
-	result := make(map[string]Report)
-	for _, name := range serviceNames {
-		if report, exists := m.GetServiceHealth(ctx, name); exists {
-			result[name] = report
-		}
+	// 如果上次刷新时间在刷新间隔内，直接返回上次的报告
+	if time.Since(h.lastRefresh) < h.refreshInterval && h.lastReport != nil {
+		report := h.lastReport
+		h.mu.RUnlock()
+		return report
 	}
 
-	return result
+	h.mu.RUnlock()
+
+	// 需要刷新报告
+	return h.RefreshReport(ctx)
 }
 
-// GetSystemHealth gets the overall system health
-func (m *HealthManager) GetSystemHealth(ctx context.Context) Report {
-	servicesHealth := m.GetAllServicesHealth(ctx)
+// RefreshReport 刷新健康报告
+func (h *HealthManager) RefreshReport(ctx context.Context) *Report {
+	ctx = appctx.WithOperationName(ctx, "health_refresh")
+	startTime := time.Now()
 
-	systemReport := NewReport("system", m.startTime, m.version)
+	logger.DebugWithContext(ctx, "Refreshing health report")
 
-	// Track overall counts
-	var upCount, degradedCount, downCount int
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	// Process each service's health
-	for serviceName, report := range servicesHealth {
-		// Add service status to report
-		serviceResult := NewCheckResult(
-			"service-"+serviceName,
-			CategoryDependency,
-			LevelCritical,
-		)
+	// 创建新的报告
+	report := &Report{
+		ServiceName:  "system",
+		Status:       StatusUp,
+		CheckResults: []CheckResult{},
+		StartTime:    h.startTime,
+		Version:      h.version,
+		RefreshedAt:  time.Now(),
+	}
 
-		serviceResult.SetStatus(report.Status, "Service "+serviceName+" status: "+string(report.Status))
-		systemReport.AddResult(serviceResult)
+	// 运行所有检查器
+	results := h.runCheckers(ctx)
 
-		// Track counts for system status determination
-		switch report.Status {
+	// 添加结果到报告
+	for _, result := range results {
+		checkResult := *result // 转换为值类型
+		report.CheckResults = append(report.CheckResults, checkResult)
+	}
+
+	// 计算总体状态
+	report.Status = h.determineOverallStatus(report.CheckResults)
+
+	// 计算刷新时间
+	report.RefreshElapsed = time.Since(startTime)
+
+	// 保存报告
+	h.lastReport = report
+	h.lastRefresh = time.Now()
+
+	// 通知报告器
+	for _, reporter := range h.reporters {
+		go reporter.ReportHealth(ctx, report)
+	}
+
+	return report
+}
+
+// determineOverallStatus 根据检查结果确定整体状态
+func (h *HealthManager) determineOverallStatus(results []CheckResult) Status {
+	var criticalCount, warningCount, upCount, unknownCount int
+
+	for _, result := range results {
+		switch result.Status {
 		case StatusUp:
 			upCount++
 		case StatusDegraded:
-			degradedCount++
+			if result.Level == LevelCritical {
+				criticalCount++
+			} else {
+				warningCount++
+			}
 		case StatusDown:
-			downCount++
+			criticalCount++
+		case StatusUnknown:
+			unknownCount++
 		}
 	}
 
-	// Add counts to metadata
-	if systemReport.Metadata == nil {
-		systemReport.Metadata = make(map[string]interface{})
-	}
-	systemReport.Metadata["service_count"] = len(servicesHealth)
-	systemReport.Metadata["services_up"] = upCount
-	systemReport.Metadata["services_degraded"] = degradedCount
-	systemReport.Metadata["services_down"] = downCount
-
-	// Determine overall system status
-	if downCount > 0 {
-		systemReport.Status = StatusDegraded
-		if downCount == len(servicesHealth) {
-			systemReport.Status = StatusDown
-		}
-	} else if degradedCount > 0 {
-		systemReport.Status = StatusDegraded
-	} else if upCount == len(servicesHealth) && upCount > 0 {
-		systemReport.Status = StatusUp
-	} else {
-		systemReport.Status = StatusUnknown
+	// 确定整体状态
+	if criticalCount > 0 {
+		return StatusDegraded
+	} else if warningCount > 0 {
+		return StatusDegraded
+	} else if upCount > 0 && upCount == len(results) {
+		return StatusUp
+	} else if unknownCount > 0 && unknownCount == len(results) {
+		return StatusUnknown
 	}
 
-	systemReport.Complete()
-	return systemReport
+	return StatusUnknown
 }
 
-// RefreshCache forces a refresh of all cached health reports
-func (m *HealthManager) RefreshCache(ctx context.Context) {
-	m.mu.RLock()
-	serviceNames := make([]string, 0, len(m.reporters))
-	for name := range m.reporters {
-		serviceNames = append(serviceNames, name)
-	}
-	m.mu.RUnlock()
+// runCheckers 运行所有健康检查器
+func (h *HealthManager) runCheckers(ctx context.Context) []*CheckResult {
+	ctx = appctx.WithOperationName(ctx, "run_health_checks")
 
-	// Refresh all services in parallel
-	var wg sync.WaitGroup
-	for _, name := range serviceNames {
-		wg.Add(1)
-		go func(serviceName string) {
-			defer wg.Done()
-			m.mu.RLock()
-			reporter, exists := m.reporters[serviceName]
-			m.mu.RUnlock()
+	// 收集所有检查
+	var checks []func(context.Context) *CheckResult
 
-			if exists {
-				report := reporter.HealthCheck(ctx)
+	// 添加系统检查
+	checks = append(checks, h.systemChecks()...)
 
-				m.mu.Lock()
-				m.cachedReports[serviceName] = report
-				m.mu.Unlock()
+	// 添加服务检查
+	checks = append(checks, h.serviceChecks()...)
+
+	// 添加已注册的检查器
+	for _, checker := range h.checkers {
+		checkFunc := func(checker Checker) func(context.Context) *CheckResult {
+			return func(ctx context.Context) *CheckResult {
+				return checker.Check(ctx)
 			}
-		}(name)
+		}(checker)
+
+		checks = append(checks, checkFunc)
 	}
 
-	wg.Wait()
+	// 并行运行所有检查
+	return RunChecksParallel(ctx, checks)
+}
+
+// systemChecks 返回系统级别的健康检查
+func (h *HealthManager) systemChecks() []func(context.Context) *CheckResult {
+	checks := []func(context.Context) *CheckResult{
+		h.checkMemory,
+		h.checkCPU,
+		h.checkDiskSpace,
+	}
+
+	return checks
+}
+
+// serviceChecks 返回服务级别的健康检查
+func (h *HealthManager) serviceChecks() []func(context.Context) *CheckResult {
+	var checks []func(context.Context) *CheckResult
+
+	for name, svc := range h.serviceInstances {
+		checkFunc := func(name string, svc ServiceChecker) func(context.Context) *CheckResult {
+			return func(ctx context.Context) *CheckResult {
+				ctx = appctx.WithOperationName(ctx, "check_service_"+name)
+				result := NewCheckResult("service."+name, CategoryDependency)
+				result.Level = LevelCritical
+
+				if !svc.IsRunning(ctx) {
+					result.SetStatus(StatusDown, "Service is not running")
+				} else {
+					result.SetStatus(StatusUp, "Service is running")
+
+					// 添加指标
+					metrics := svc.GetMetrics(ctx)
+					for k, v := range metrics {
+						result.AddDetail(k, v)
+					}
+				}
+
+				result.Complete()
+				return result
+			}
+		}(name, svc)
+
+		checks = append(checks, checkFunc)
+	}
+
+	return checks
+}
+
+// 系统健康检查
+
+// checkMemory 检查系统内存使用情况
+func (h *HealthManager) checkMemory(ctx context.Context) *CheckResult {
+	ctx = appctx.WithOperationName(ctx, "check_memory")
+	result := NewCheckResult("system.memory", CategoryResources)
+	result.Level = LevelWarning
+
+	// 模拟内存检查 - 实际实现中应使用系统API获取真实数据
+	memoryUsage := 0.6 // 60% 使用率
+
+	result.AddDetail("usage_percent", memoryUsage*100)
+
+	if memoryUsage > DefaultThresholds.MemoryCritical {
+		result.SetStatus(StatusDegraded, "Memory usage is critical")
+		result.Level = LevelCritical
+	} else if memoryUsage > DefaultThresholds.MemoryWarning {
+		result.SetStatus(StatusDegraded, "Memory usage is high")
+	} else {
+		result.SetStatus(StatusUp, "Memory usage is normal")
+	}
+
+	result.Complete()
+	return result
+}
+
+// checkCPU 检查CPU使用情况
+func (h *HealthManager) checkCPU(ctx context.Context) *CheckResult {
+	ctx = appctx.WithOperationName(ctx, "check_cpu")
+	result := NewCheckResult("system.cpu", CategoryResources)
+	result.Level = LevelWarning
+
+	// 模拟CPU检查 - 实际实现中应使用系统API获取真实数据
+	cpuUsage := 0.3 // 30% 使用率
+
+	result.AddDetail("usage_percent", cpuUsage*100)
+
+	if cpuUsage > DefaultThresholds.CPUCritical {
+		result.SetStatus(StatusDegraded, "CPU usage is critical")
+		result.Level = LevelCritical
+	} else if cpuUsage > DefaultThresholds.CPUWarning {
+		result.SetStatus(StatusDegraded, "CPU usage is high")
+	} else {
+		result.SetStatus(StatusUp, "CPU usage is normal")
+	}
+
+	result.Complete()
+	return result
+}
+
+// checkDiskSpace 检查磁盘空间使用情况
+func (h *HealthManager) checkDiskSpace(ctx context.Context) *CheckResult {
+	ctx = appctx.WithOperationName(ctx, "check_disk")
+	result := NewCheckResult("system.disk", CategoryResources)
+	result.Level = LevelWarning
+
+	// 模拟磁盘检查 - 实际实现中应使用系统API获取真实数据
+	diskUsage := 0.7 // 70% 使用率
+
+	result.AddDetail("usage_percent", diskUsage*100)
+
+	if diskUsage > DefaultThresholds.DiskCritical {
+		result.SetStatus(StatusDegraded, "Disk usage is critical")
+		result.Level = LevelCritical
+	} else if diskUsage > DefaultThresholds.DiskWarning {
+		result.SetStatus(StatusDegraded, "Disk usage is high")
+	} else {
+		result.SetStatus(StatusUp, "Disk usage is normal")
+	}
+
+	result.Complete()
+	return result
 }

@@ -12,11 +12,11 @@ type Service interface {
 	GetName() string
 	GetWorkflow() string
 	GetType() string
-	IsRunning() bool
+	IsRunning(ctx context.Context) bool
 	GetMetrics(ctx context.Context) map[string]interface{}
 	Configure(ctx context.Context, config interface{}) error
 
 	// Health check methods
 	RegisterHealthChecks() []health.Checker
-	HealthCheck(ctx context.Context) health.Report
+	ReportHealth(ctx context.Context, report *health.Report)
 }

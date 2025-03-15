@@ -46,7 +46,7 @@ func (s *BadgeDBService) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.IsRunning() {
+	if s.IsRunning(ctx) {
 		logger.InfofWithContext(ctx, "Service %s is already running", s.GetName())
 		return nil
 	}
@@ -83,7 +83,7 @@ func (s *BadgeDBService) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.IsRunning() {
+	if !s.IsRunning(ctx) {
 		logger.InfofWithContext(ctx, "Service %s is not running", s.GetName())
 		return nil
 	}
@@ -104,6 +104,12 @@ func (s *BadgeDBService) Stop(ctx context.Context) error {
 // Restart implements Service interface with context support
 func (s *BadgeDBService) Restart(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "restart_service")
+
+	if !s.IsRunning(ctx) {
+		logger.InfofWithContext(ctx, "Service %s is not running, starting it", s.GetName())
+		return s.Start(ctx)
+	}
+
 	logger.InfofWithContext(ctx, "Restarting service: %s", s.GetName())
 
 	if err := s.Stop(ctx); err != nil {
@@ -129,14 +135,15 @@ func (s *BadgeDBService) GetProcessingMethod(messageType string) (string, error)
 // GetBadge retrieves a badge by ID
 func (s *BadgeDBService) GetBadge(ctx context.Context, id string) (model.Badge, error) {
 	ctx = appctx.WithOperationName(ctx, "get_badge")
+
+	if !s.IsRunning(ctx) {
+		return model.Badge{}, fmt.Errorf("service not running")
+	}
+
 	logger.DebugfWithContext(ctx, "Getting badge with ID: %s", id)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if !s.IsRunning() {
-		return model.Badge{}, fmt.Errorf("service is not running")
-	}
 
 	data, ok := s.db[id]
 	if !ok {
@@ -154,14 +161,15 @@ func (s *BadgeDBService) GetBadge(ctx context.Context, id string) (model.Badge, 
 // SaveBadge saves a badge to the database
 func (s *BadgeDBService) SaveBadge(ctx context.Context, badge model.Badge) error {
 	ctx = appctx.WithOperationName(ctx, "save_badge")
+
+	if !s.IsRunning(ctx) {
+		return fmt.Errorf("service not running")
+	}
+
 	logger.DebugfWithContext(ctx, "Saving badge with ID: %s", badge.ID)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if !s.IsRunning() {
-		return fmt.Errorf("service is not running")
-	}
 
 	s.db[badge.ID] = badge
 
@@ -203,7 +211,7 @@ func (s *BadgeDBService) GetMetrics(ctx context.Context) map[string]interface{} 
 	defer s.mu.Unlock()
 
 	return map[string]interface{}{
-		"running":     s.IsRunning(),
+		"running":     s.IsRunning(ctx),
 		"db_entries":  len(s.db),
 		"last_backup": s.lastBackup.Format(time.RFC3339),
 	}
@@ -239,25 +247,30 @@ type badgeDBAccessChecker struct {
 	service *BadgeDBService
 }
 
-// Check implements the health.Checker interface
-func (c *badgeDBAccessChecker) Check(ctx context.Context) health.CheckResult {
-	result := health.NewCheckResult("database-access", health.CategoryData, health.LevelCritical)
+// Check implements the Checker interface
+func (c *badgeDBAccessChecker) Check(ctx context.Context) *health.CheckResult {
+	result := health.NewCheckResult("badgedb-access", health.CategoryData)
+	result.Level = health.LevelCritical
 
-	// Get a test badge to verify DB access
-	_, err := c.service.GetBadge(ctx, "test")
-
-	if err != nil && err.Error() != "badge not found: test" {
-		// If error is not just "badge not found", it's a real error
-		result.SetStatus(health.StatusDown, fmt.Sprintf("Database access error: %v", err))
-	} else {
-		result.SetStatus(health.StatusUp, "Database is accessible")
+	// Check if service is running
+	if !c.service.IsRunning(ctx) {
+		result.SetStatus(health.StatusDown, "BadgeDB service is not running")
+		result.Complete()
+		return result
 	}
 
-	// Add details
-	c.service.mu.Lock()
-	result.AddDetail("db_entries", fmt.Sprintf("%d", len(c.service.db)))
-	c.service.mu.Unlock()
+	// Check database access
+	_, err := c.service.GetBadge(ctx, "test-badge-id")
+	if err != nil {
+		// It's ok if the badge doesn't exist, we just want to check access
+		if err.Error() != "badge not found" {
+			result.SetStatus(health.StatusDegraded, fmt.Sprintf("Database access error: %v", err))
+			result.Complete()
+			return result
+		}
+	}
 
+	result.SetStatus(health.StatusUp, "Database access is working")
 	result.Complete()
 	return result
 }
@@ -267,33 +280,34 @@ type badgeDBBackupChecker struct {
 	service *BadgeDBService
 }
 
-// Check implements the health.Checker interface
-func (c *badgeDBBackupChecker) Check(ctx context.Context) health.CheckResult {
-	result := health.NewCheckResult("database-backup", health.CategoryData, health.LevelWarning)
+// Check implements the Checker interface
+func (c *badgeDBBackupChecker) Check(ctx context.Context) *health.CheckResult {
+	result := health.NewCheckResult("badgedb-backup", health.CategoryData)
+	result.Level = health.LevelWarning
 
-	c.service.mu.Lock()
-	lastBackup := c.service.lastBackup
-	c.service.mu.Unlock()
-
-	// If backup has never happened
-	if lastBackup.IsZero() {
-		result.SetStatus(health.StatusDegraded, "No database backup has been performed")
+	// Check if service is running
+	if !c.service.IsRunning(ctx) {
+		result.SetStatus(health.StatusDown, "BadgeDB service is not running")
 		result.Complete()
 		return result
 	}
 
-	// Check how long since last backup
-	backupAge := time.Since(lastBackup)
-	result.AddDetail("last_backup", lastBackup.Format(time.RFC3339))
-	result.AddDetail("backup_age_minutes", fmt.Sprintf("%.2f", backupAge.Minutes()))
+	// Check last backup time
+	c.service.mu.Lock()
+	lastBackup := c.service.lastBackup
+	c.service.mu.Unlock()
 
-	// Thresholds: Warning after 30 minutes, critical after 120 minutes
-	if backupAge > 120*time.Minute {
-		result.SetStatus(health.StatusDegraded, fmt.Sprintf("Database backup is too old: %.2f minutes", backupAge.Minutes()))
-	} else if backupAge > 30*time.Minute {
-		result.SetStatus(health.StatusDegraded, fmt.Sprintf("Database backup is getting old: %.2f minutes", backupAge.Minutes()))
+	if lastBackup.IsZero() {
+		result.SetStatus(health.StatusDegraded, "No backup has been performed")
 	} else {
-		result.SetStatus(health.StatusUp, fmt.Sprintf("Database backup is recent: %.2f minutes ago", backupAge.Minutes()))
+		backupAge := time.Since(lastBackup)
+		result.AddDetail("last_backup_age_hours", backupAge.Hours())
+
+		if backupAge > 24*time.Hour {
+			result.SetStatus(health.StatusDegraded, fmt.Sprintf("Backup is too old: %v", backupAge))
+		} else {
+			result.SetStatus(health.StatusUp, fmt.Sprintf("Last backup was %v ago", backupAge))
+		}
 	}
 
 	result.Complete()

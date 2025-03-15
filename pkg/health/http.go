@@ -1,10 +1,12 @@
 package health
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	appctx "project/pkg/context"
 	"project/pkg/logger"
+	"time"
 )
 
 // HealthHandler provides HTTP handlers for health check endpoints
@@ -25,7 +27,7 @@ func (h *HealthHandler) HandleSystemHealth(w http.ResponseWriter, r *http.Reques
 	ctx = appctx.WithOperationName(ctx, "system_health")
 
 	// Get system health
-	report := h.manager.GetSystemHealth(ctx)
+	report := h.manager.GetHealthReport(ctx)
 
 	// Set response status code based on health status
 	statusCode := http.StatusOK
@@ -51,33 +53,59 @@ func (h *HealthHandler) HandleSystemHealth(w http.ResponseWriter, r *http.Reques
 // HandleServiceHealth handles service-specific health check requests
 func (h *HealthHandler) HandleServiceHealth(w http.ResponseWriter, r *http.Request) {
 	ctx := appctx.FromRequest(r)
+	ctx = appctx.WithOperationName(ctx, "service_health")
 
-	// Get service name from URL
+	// Get service name from query parameter
 	serviceName := r.URL.Query().Get("service")
 	if serviceName == "" {
-		http.Error(w, "Service name is required", http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "Missing required query parameter 'service'"}`))
 		return
 	}
-
-	ctx = appctx.WithOperationName(ctx, "service_health")
-	ctx = appctx.WithServiceName(ctx, serviceName)
 
 	// Get service health
-	report, found := h.manager.GetServiceHealth(ctx, serviceName)
-	if !found {
-		http.Error(w, "Service not found", http.StatusNotFound)
+	serviceInstance, exists := h.getServiceByName(ctx, serviceName)
+	if !exists {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error": "Service not found"}`))
 		return
 	}
+
+	// Create service health report
+	report := &Report{
+		ServiceName: serviceName,
+		StartTime:   h.manager.startTime,
+		Version:     h.manager.version,
+		RefreshedAt: time.Now(),
+	}
+
+	// Add service check result
+	result := NewCheckResult("service."+serviceName, CategoryDependency)
+	result.Level = LevelCritical
+
+	if serviceInstance.IsRunning(ctx) {
+		result.SetStatus(StatusUp, "Service is running")
+
+		// Add metrics
+		metrics := serviceInstance.GetMetrics(ctx)
+		for k, v := range metrics {
+			result.AddDetail(k, v)
+		}
+	} else {
+		result.SetStatus(StatusDown, "Service is not running")
+	}
+
+	result.Complete()
+
+	// Add result to report
+	checkResult := *result
+	report.CheckResults = append(report.CheckResults, checkResult)
+	report.Status = result.Status
 
 	// Set response status code based on health status
 	statusCode := http.StatusOK
-	switch report.Status {
-	case StatusDegraded:
+	if report.Status != StatusUp {
 		statusCode = http.StatusServiceUnavailable
-	case StatusDown:
-		statusCode = http.StatusServiceUnavailable
-	case StatusUnknown:
-		statusCode = http.StatusInternalServerError
 	}
 
 	// Set content type
@@ -90,48 +118,57 @@ func (h *HealthHandler) HandleServiceHealth(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// HandleReadinessCheck handles readiness probe requests
-// Returns 200 if the system is ready to accept traffic
+// HandleReadinessCheck handles readiness check requests
 func (h *HealthHandler) HandleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 	ctx := appctx.FromRequest(r)
 	ctx = appctx.WithOperationName(ctx, "readiness_check")
 
 	// Get system health
-	report := h.manager.GetSystemHealth(ctx)
+	report := h.manager.GetHealthReport(ctx)
 
-	// System is ready if it's UP or DEGRADED (can still handle some traffic)
-	if report.Status == StatusUp || report.Status == StatusDegraded {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	} else {
+	// For readiness, we only care if the system is UP or DEGRADED
+	if report.Status == StatusDown || report.Status == StatusUnknown {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("Not Ready"))
+		w.Write([]byte(`{"status": "NOT_READY"}`))
+		return
 	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "READY"}`))
 }
 
-// HandleLivenessCheck handles liveness probe requests
-// Returns 200 if the system is alive at all, even in degraded state
+// HandleLivenessCheck handles liveness check requests
 func (h *HealthHandler) HandleLivenessCheck(w http.ResponseWriter, r *http.Request) {
 	ctx := appctx.FromRequest(r)
 	ctx = appctx.WithOperationName(ctx, "liveness_check")
 
 	// Get system health
-	report := h.manager.GetSystemHealth(ctx)
+	report := h.manager.GetHealthReport(ctx)
 
-	// System is alive if it's not completely DOWN
-	if report.Status != StatusDown {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	} else {
+	// For liveness, we only care if the system is completely DOWN
+	if report.Status == StatusDown {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("Not Alive"))
+		w.Write([]byte(`{"status": "DOWN"}`))
+		return
 	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "UP"}`))
 }
 
-// RegisterHTTPHandlers registers all health check handlers to the provided mux
+// RegisterHTTPHandlers registers all health check handlers with the provided mux
 func (h *HealthHandler) RegisterHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/health", h.HandleSystemHealth)
 	mux.HandleFunc("/health/service", h.HandleServiceHealth)
-	mux.HandleFunc("/health/ready", h.HandleReadinessCheck)
-	mux.HandleFunc("/health/live", h.HandleLivenessCheck)
+	mux.HandleFunc("/health/readiness", h.HandleReadinessCheck)
+	mux.HandleFunc("/health/liveness", h.HandleLivenessCheck)
+}
+
+// getServiceByName returns a service by name from the health manager
+func (h *HealthHandler) getServiceByName(ctx context.Context, name string) (ServiceChecker, bool) {
+	h.manager.mu.RLock()
+	defer h.manager.mu.RUnlock()
+
+	service, exists := h.manager.serviceInstances[name]
+	return service, exists
 }
