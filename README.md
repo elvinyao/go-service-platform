@@ -1,31 +1,35 @@
-# Go Service Workflow
+# Go Service Platform
 
-一个基于Go语言开发的微服务工作流系统，用于处理和协调不同服务之间的消息传递和业务流程。
+A microservice workflow platform built with Go, designed for handling and coordinating message passing and business processes between different services.
 
-## 系统架构
+## System Architecture
 
-### 目录结构
+### Directory Structure
 ```
 .
-├── cmd/            # 主程序入口
-├── internal/       # 内部包
-│   ├── config/      # 配置定义
-│   ├── connections/ # 连接管理
-│   ├── dataaccess/  # 数据访问层
-│   ├── interfaces/  # 接口定义
-│   ├── manager/     # 管理器组件
-│   ├── messaging/   # 消息处理
-│   ├── model/       # 数据模型
-│   ├── service/     # 服务实现
-│   └── workflow/    # 工作流定义
-├── pkg/            # 公共包
-│   └── logger/      # 日志组件
-├── config/         # 配置文件
-├── bin/           # 编译输出目录
-└── .vscode/       # VSCode配置
+├── cmd/            # Main program entry point
+├── internal/       # Internal packages
+│   ├── config/      # Configuration definitions
+│   ├── connections/ # Connection management
+│   ├── dataaccess/  # Data access layer
+│   ├── interfaces/  # Interface definitions
+│   ├── manager/     # Manager components
+│   ├── messaging/   # Message processing
+│   ├── model/       # Data models
+│   ├── service/     # Service implementations
+│   └── workflow/    # Workflow definitions
+├── pkg/            # Public packages
+│   ├── context/     # Context utilities
+│   ├── di/          # Dependency injection
+│   ├── errors/      # Error handling
+│   ├── health/      # Health checking
+│   └── logger/      # Logging components
+├── config/         # Configuration files
+├── bin/            # Compilation output directory
+└── .vscode/        # VSCode configuration
 ```
 
-### 系统架构图
+### System Architecture Diagram
 
 ```
 +----------------------+     +-------------------------+     +----------------------+
@@ -51,97 +55,91 @@
                            +-------------------------+
 ```
 
-### 组件关系
+### Core Components
+
+1. **Service Manager (ServiceManager)**
+   - Responsible for service registration, startup, shutdown, and monitoring
+   - Provides service discovery and retrieval functionality
+   - Supports service health checks and automatic restart
+   - Manages graceful startup and shutdown sequences
+
+2. **Workflow Manager (WorkflowManager)**
+   - Manages different workflows
+   - Handles message dispatching and routing
+   - Coordinates interactions between different services
+   - Provides workflow listing and retrieval functionality
+
+3. **Data Access Layer (DataAccessor)**
+   - Provides a unified data access interface
+   - Implements caching mechanisms
+   - Supports data storage and retrieval operations
+
+4. **Logging System**
+   - Implemented with structured JSON logging
+   - Supports context-aware logging with request IDs and tracing
+   - Configurable via environment variables
+   - Supports file rotation and multiple output destinations
+   - Provides operation timing and error details
+
+5. **Context Package**
+   - Extends standard Go context with application-specific fields
+   - Supports request ID, trace ID, user ID, and operation tracking
+   - Enables context propagation throughout the application
+   - Provides timeout and deadline handling
+
+6. **Health Monitoring**
+   - Provides health check endpoints for services
+   - Reports service status and performance metrics
+   - Supports both critical and non-critical dependency checks
+
+### Component Relationships
 
 1. **WebSocket Service** 
-   - 接收外部消息并转发到工作流管理器
-   - 通过回调机制与工作流管理器集成
+   - Receives external messages and forwards them to the workflow manager
+   - Integrates with the workflow manager through callback mechanisms
 
 2. **Mattermost Service**
-   - 与Mattermost系统集成
-   - 提供实时消息处理功能
-   - 通过Websocket与Mattermost服务器通信
+   - Integrates with Mattermost systems
+   - Provides real-time message processing
+   - Communicates with Mattermost servers via Websocket
 
 3. **Workflow Manager**
-   - 注册和管理多个工作流
-   - 将消息分发到合适的工作流处理器
-   - 通过服务管理器访问其他服务
+   - Registers and manages multiple workflows
+   - Dispatches messages to appropriate workflow processors
+   - Accesses other services through the service manager
 
 4. **Service Manager**
-   - 集中管理所有服务的生命周期
-   - 提供服务发现功能
-   - 监控服务健康状态并自动重启
+   - Centrally manages the lifecycle of all services
+   - Provides service discovery functionality
+   - Monitors service health and automatically restarts services
+   - Coordinates graceful shutdown sequence
 
 5. **Cache Data Accessor**
-   - 为Confluence服务提供缓存支持
-   - 基于BigCache实现高性能缓存
-   - 通过接口隔离缓存实现细节
+   - Provides caching support for Confluence services
+   - Implements high-performance cache
+   - Isolates cache implementation details through interfaces
 
 6. **BadgeDB Service**
-   - 全局服务，被所有工作流共享
-   - 提供处理方法查询功能
-   - 与工作流之间通过服务管理器通信
+   - Global service shared by all workflows
+   - Provides method query functionality
+   - Communicates with workflows through the service manager
 
-### 核心组件
+## Business Architecture
 
-1. **服务管理器 (ServiceManager)**
-   - 负责服务的注册、启动、停止和监控
-   - 提供服务发现和获取功能
-   - 支持服务健康检查和自动重启
-
-2. **工作流管理器 (WorkflowManager)**
-   - 管理不同的工作流程
-   - 处理消息的分发和路由
-   - 协调不同服务之间的交互
-
-3. **数据访问层 (DataAccessor)**
-   - 提供统一的数据访问接口
-   - 实现了基于BigCache的缓存机制
-   - 支持数据的存取操作
-
-4. **日志系统**
-   - 基于logrus实现
-   - 支持不同级别的日志记录
-   - 可配置的输出格式
-
-### 服务类型
-
-1. **Confluence服务**
-   - 负责与Confluence系统交互
-   - 支持数据获取和处理
-   - 可配置工作流关联
-
-2. **WebSocket服务**
-   - 处理实时消息通信
-   - 支持消息订阅和推送
-   - 集成消息处理回调
-
-3. **BadgeDB服务**
-   - 处理徽章相关的数据库操作
-   - 提供处理方法的查询
-   - 全局服务支持
-
-4. **Mattermost服务**
-   - 提供与Mattermost平台的集成
-   - 支持通过API和WebSocket与Mattermost通信
-   - 处理频道消息和用户事件
-
-## 业务架构
-
-### 业务架构图
+### Business Architecture Diagram
 
 ```
 +-------------------+     +-----------------+     +-------------------+
 |                   |     |                 |     |                   |
-|  外部客户端        +---->+  WebSocket服务  +---->+  Mattermost服务   |
+|  External Client  +---->+  WebSocket Svc  +---->+  Mattermost Svc   |
 |                   |     |                 |     |                   |
 +-------------------+     +--------+--------+     +-------------------+
                                    |
-                                   | 消息
+                                   | Messages
                                    v
 +-------------------+     +--------+--------+     +-------------------+
 |                   |     |                 |     |                   |
-|  Confluence系统   <-----+    工作流A       +---->+     BadgeDB数据库  |
+|  Confluence System+<----+   Workflow A    +---->+  BadgeDB Database |
 |                   |     |                 |     |                   |
 +-------------------+     +-----------------+     +-------------------+
         ^
@@ -149,118 +147,47 @@
         |
 +-------+----------+
 |                  |
-|  缓存数据访问层    |
-|                  |
+|  Cache Data      |
+|  Access Layer    |
 +------------------+
 ```
 
-### 消息流转
-1. WebSocket或Mattermost服务接收外部消息
-2. 消息被转发到工作流管理器
-3. 工作流管理器根据消息类型选择合适的工作流
-4. 工作流处理消息并协调相关服务
+### Message Flow
+1. WebSocket or Mattermost service receives external messages
+2. Messages are forwarded to the workflow manager
+3. The workflow manager selects appropriate workflows based on message type
+4. Workflows process messages and coordinate related services
+5. All operations are logged with context information and timing metrics
 
-### 工作流处理流程
-1. **消息接收**
-   - WebSocket/Mattermost服务接收外部消息
-   - 消息通过回调函数传递给工作流管理器
-   - 工作流管理器将消息分发给注册的工作流
+### Workflow Processing Flow
+1. **Message Reception**
+   - WebSocket/Mattermost service receives external messages
+   - Messages are passed to the workflow manager via callbacks
+   - The workflow manager dispatches messages to registered workflows
 
-2. **消息处理 (WorkflowA示例)**
-   - 获取BadgeDB服务，查询消息类型对应的处理方法
-   - 根据处理方法查找对应的Confluence服务
-   - 调用Confluence服务获取数据
-   - 记录处理结果到日志
+2. **Message Processing (WorkflowA example)**
+   - Get BadgeDB service to query processing method for message type
+   - Find corresponding Confluence service based on processing method
+   - Call Confluence service to get data
+   - Record processing results to logs with contextual information
 
-3. **数据缓存**
-   - Confluence服务使用缓存数据访问层存储数据
-   - 缓存基于BigCache实现，支持高性能读写
-   - 缓存数据有过期时间，自动清理过期数据
+3. **Data Caching**
+   - Confluence service uses cache data access layer to store data
+   - Cache supports high-performance read/write operations
+   - Cached data has expiration time with automatic cleanup
 
-### 工作流处理
-1. **WorkflowA**
-   - 接收消息并解析类型
-   - 查询BadgeDB获取处理方式
-   - 调用对应的Confluence服务处理数据
-   - 记录处理结果
+### Configuration Management
+- Configuration structures divided into specific service configuration objects
+- Each service's configuration passed through interfaces for type safety
+- Support for dynamic configuration updates (via Configure method)
 
-### 配置管理
-- 配置结构分为多个特定服务配置对象
-- 每个服务的配置通过接口进行类型安全的传递
-- 支持动态配置更新（通过Configure方法）
-
-## 技术栈
-
-- Go 1.22.5
-- 依赖管理：Go Modules
-- 缓存：BigCache v3.1.0
-- 日志：Logrus v1.9.3
-- Mattermost API：mattermost-server/v6 包
-
-## 服务接口规范
-
-所有服务都实现了统一的Service接口，包括以下方法：
-
-```go
-type Service interface {
-	Start(ctx context.Context) error
-	Stop() error
-	Restart(ctx context.Context) error
-	GetName() string
-	GetWorkflow() string
-	GetType() string
-	IsRunning() bool
-	GetMetrics() map[string]interface{} // 提供服务指标
-	Configure(config interface{}) error // 支持动态配置
-}
-```
-
-## 开发环境
-
-### 要求
-- Go 1.22.5 或更高版本
-- VSCode（可选，已配置调试设置）
-
-### 调试
-- 使用VSCode的Go插件
-- 已配置launch.json用于调试
-- 调试输出位于bin目录
-
-## 启动方式
-
-```bash
-# 编译
-go build -o bin/service-workflow cmd/main.go
-
-# 运行
-./bin/service-workflow
-```
-
-## 扩展性
-
-1. **新增服务**
-   - 实现Service接口（包括新增的GetMetrics和Configure方法）
-   - 在main.go中的registerAndStartServices函数中注册
-   - 服务需实现所有必要的接口方法以确保兼容性
-
-2. **新增工作流**
-   - 实现Workflow接口
-   - 在main.go中的initWorkflowManager函数中注册
-   - 设计合适的消息处理逻辑
-
-3. **数据访问扩展**
-   - 实现DataAccessor接口
-   - 注入到需要的服务中
-
-这个系统设计良好，具有高度的可扩展性和模块化特性。通过接口定义和依赖注入，使得各个组件之间松耦合，易于测试和维护。系统的监控和错误处理机制也比较完善，能够保证服务的稳定运行。服务接口的扩展支持了更丰富的功能，包括指标收集和动态配置。
-
-## New Features
+## Advanced Features
 
 ### Structured Logging
 
-The platform now includes improved structured logging with the following features:
+The platform includes a comprehensive structured logging system with the following features:
 
-- **JSON Formatted Logs**: All logs are now in JSON format by default for better parsing and indexing in log management systems
+- **JSON Formatted Logs**: All logs are in JSON format by default for better parsing and indexing in log management systems
 - **Context-aware Logging**: Logs include request IDs, trace IDs, and other contextual information
 - **Configurable Log Levels**: Easily configure log levels via environment variables
 - **File Rotation**: Support for log file rotation based on size and time
@@ -270,37 +197,15 @@ The platform now includes improved structured logging with the following feature
 
 Environment variables for configuring logging:
 
-- `LOG_LEVEL`: Set the log level (debug, info, warn, error, fatal)
+- `LOG_LEVEL`: Set the log level (debug, info, warn, error, fatal, panic, trace)
 - `LOG_FORMAT`: Log format (json or text)
 - `LOG_TIME_FORMAT`: Timestamp format
 - `LOG_CALLER_INFO`: Include caller information (true/false)
 - `LOG_OUTPUT`: Output destination (stdout, stderr, or file path)
 
-Example usage:
-
-```go
-// Initialize logger with environment variables
-logger.InitFromEnv()
-
-// Log with structured fields
-logger.WithFields(logrus.Fields{
-    "version": appVersion,
-    "pid":     os.Getpid(),
-}).Info("Application starting")
-
-// Context-aware logging
-logger.InfoWithContext(ctx, "Operation completed")
-
-// Log operations with timing metrics
-err := logger.LogOperation(ctx, "database_query", func(ctx context.Context) error {
-    // Operation code here
-    return nil
-})
-```
-
 ### Graceful Shutdown
 
-The platform now includes a robust graceful shutdown mechanism:
+The platform includes a robust graceful shutdown mechanism:
 
 - **Signal Handling**: Properly handles SIGINT, SIGTERM, and SIGQUIT signals
 - **Shutdown Sequence**: Implements a coordinated shutdown sequence to ensure resources are released properly
@@ -311,18 +216,276 @@ The platform now includes a robust graceful shutdown mechanism:
 The shutdown sequence follows this order:
 
 1. Stop monitoring services first to avoid log spam during shutdown
-2. Shutdown HTTP servers
-3. Stop all application services
-4. Release resources
+2. Shutdown HTTP servers with proper timeouts
+3. Stop all application services with graceful termination
+4. Release resources and complete final logging
 
-Example configuration:
+## Developer Guide
 
-```go
-// Set shutdown timeouts
-const (
-    shutdownTimeout = 30 * time.Second        // Overall shutdown timeout
-    serviceShutdownTimeout = 10 * time.Second // Per-service shutdown timeout
-)
+### Getting Started
+
+#### Prerequisites
+- Go 1.22.5 or higher
+- VSCode (optional, configured with debugging settings)
+
+#### Building and Running
+```bash
+# Build the application
+go build -o bin/service-workflow cmd/main.go
+
+# Run with environment variables
+LOG_LEVEL=debug LOG_FORMAT=json ./bin/service-workflow
 ```
 
-## Using This Platform
+### Creating a New Service
+
+1. **Define the service interface** in `internal/interfaces/`:
+   ```go
+   type MyServiceInterface interface {
+       DoSomething(ctx context.Context, param string) (string, error)
+   }
+   ```
+
+2. **Implement the service** in `internal/service/`:
+   ```go
+   type MyService struct {
+       name      string
+       running   bool
+       config    *MyServiceConfig
+       lock      sync.Mutex
+   }
+
+   func NewMyService(config *MyServiceConfig) *MyService {
+       return &MyService{
+           name:    "MyService",
+           config:  config,
+           running: false,
+       }
+   }
+
+   // Implement Service interface methods
+   func (s *MyService) Start(ctx context.Context) error {
+       logger.InfoWithContext(ctx, "Starting MyService")
+       s.lock.Lock()
+       defer s.lock.Unlock()
+       s.running = true
+       return nil
+   }
+
+   func (s *MyService) Stop(ctx context.Context) error {
+       logger.InfoWithContext(ctx, "Stopping MyService")
+       s.lock.Lock()
+       defer s.lock.Unlock()
+       s.running = false
+       return nil
+   }
+
+   func (s *MyService) GetName() string {
+       return s.name
+   }
+
+   func (s *MyService) IsRunning(ctx context.Context) bool {
+       return s.running
+   }
+
+   // Implement custom service methods
+   func (s *MyService) DoSomething(ctx context.Context, param string) (string, error) {
+       return logger.LogOperation(ctx, "do_something", func(opCtx context.Context) error {
+           // Implementation goes here
+           return nil
+       })
+   }
+   ```
+
+3. **Register the service** in the service manager:
+   ```go
+   // In internal/manager/service_manager.go or appropriate registration location
+   myServiceConfig := config.GetMyServiceConfig()
+   myService := service.NewMyService(myServiceConfig)
+   serviceManager.RegisterService(myService)
+   ```
+
+### Creating a New Workflow
+
+1. **Implement the Workflow interface** in `internal/workflow/`:
+   ```go
+   type MyWorkflow struct {
+       name           string
+       serviceManager *manager.ServiceManager
+   }
+
+   func NewMyWorkflow(serviceManager *manager.ServiceManager) *MyWorkflow {
+       return &MyWorkflow{
+           name:           "MyWorkflow",
+           serviceManager: serviceManager,
+       }
+   }
+
+   func (w *MyWorkflow) GetName() string {
+       return w.name
+   }
+
+   func (w *MyWorkflow) ProcessMessage(ctx context.Context, msg model.Message) error {
+       ctx = appctx.WithOperationName(ctx, "process_message")
+       logger.InfoWithContext(ctx, "Processing message in MyWorkflow")
+
+       // Process message based on type
+       switch msg.Type {
+       case "type1":
+           return w.handleType1Message(ctx, msg)
+       case "type2":
+           return w.handleType2Message(ctx, msg)
+       default:
+           return errors.New(errors.TypeInvalidInput, "Unsupported message type", nil)
+       }
+   }
+
+   func (w *MyWorkflow) handleType1Message(ctx context.Context, msg model.Message) error {
+       // Implementation goes here
+       return nil
+   }
+   ```
+
+2. **Create a workflow factory** in `internal/workflow/factories.go`:
+   ```go
+   func CreateMyWorkflow(serviceManager *manager.ServiceManager) (interfaces.Workflow, error) {
+       return NewMyWorkflow(serviceManager), nil
+   }
+
+   func RegisterWorkflowFactories() []manager.WorkflowFactory {
+       return []manager.WorkflowFactory{
+           CreateWorkflowA,
+           CreateMyWorkflow, // Add your new workflow factory
+       }
+   }
+   ```
+
+3. **Register the workflow** with the workflow manager:
+   ```go
+   // This typically happens in the DI container setup
+   workflowManager, err := manager.NewWorkflowManagerWithDI(
+       ctx, 
+       serviceManager, 
+       workflow.RegisterWorkflowFactories()...
+   )
+   ```
+
+### Using Structured Logging
+
+```go
+// Basic logging with context
+logger.InfoWithContext(ctx, "Operation started")
+
+// Logging with additional fields
+logger.WithContextFields(ctx, logrus.Fields{
+    "customer_id": customerId,
+    "operation":   "data_sync",
+}).Info("Syncing customer data")
+
+// Logging errors with context
+if err != nil {
+    logger.WithContextError(ctx, err).Error("Failed to process data")
+}
+
+// Timing operations with automatic logging
+err := logger.LogOperation(ctx, "database_query", func(opCtx context.Context) error {
+    // Operation implementation
+    results, err := db.Query(opCtx, queryString)
+    return err
+})
+
+// Timing operations with minimal logging (only duration)
+err := logger.LogTimingOperation(ctx, "cache_lookup", func(opCtx context.Context) error {
+    // Operation implementation
+    return nil
+})
+```
+
+### Implementing Graceful Shutdown
+
+For services that need custom shutdown logic:
+
+```go
+func (s *MyService) Stop(ctx context.Context) error {
+    logger.InfoWithContext(ctx, "Stopping MyService gracefully")
+    
+    // Create a done channel to signal completion
+    done := make(chan struct{})
+    
+    // Perform cleanup in a goroutine
+    go func() {
+        // Close connections
+        s.closeConnections()
+        
+        // Finish pending operations
+        s.finishPendingOperations()
+        
+        // Signal completion
+        close(done)
+    }()
+    
+    // Wait for completion or timeout
+    select {
+    case <-done:
+        logger.InfoWithContext(ctx, "MyService stopped successfully")
+    case <-ctx.Done():
+        logger.WarnWithContext(ctx, "MyService shutdown timed out")
+    }
+    
+    s.running = false
+    return nil
+}
+```
+
+### Error Handling Best Practices
+
+```go
+// Creating typed errors
+if userID == "" {
+    return errors.New(errors.TypeInvalidInput, "User ID cannot be empty", nil)
+}
+
+// Adding fields to errors
+if err != nil {
+    return errors.Wrap(err, "Failed to fetch user data", errors.TypeServiceUnavailable).
+        WithField("user_id", userID).
+        WithField("source", "database")
+}
+
+// Handling errors with proper logging
+if err != nil {
+    logger.WithContextError(ctx, err).Error("Operation failed")
+    // Handle the error based on type
+    switch errors.GetErrorType(err) {
+    case errors.TypeNotFound:
+        // Handle not found
+    case errors.TypeServiceUnavailable:
+        // Handle service unavailable
+    default:
+        // Handle other errors
+    }
+}
+```
+
+## Technology Stack
+
+- Go 1.22.5+
+- Dependency Management: Go Modules
+- Logging: Logrus v1.9.3
+- Context Management: Custom implementation
+
+## Service Interface Standard
+
+All services implement a unified Service interface, including the following methods:
+
+```go
+type Service interface {
+    Start(ctx context.Context) error
+    Stop(ctx context.Context) error
+    GetName() string
+    IsRunning(ctx context.Context) bool
+    // Additional methods may be required by specific service types
+}
+```
+
+This platform is designed for high extensibility and modularity. Through interface definitions and dependency injection, components are loosely coupled, making them easy to test and maintain. The monitoring and error handling mechanisms are robust, ensuring stable service operation. The structured logging system provides comprehensive visibility into system operations.
