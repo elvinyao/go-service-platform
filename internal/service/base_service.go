@@ -55,19 +55,23 @@ func (s *BaseService) IsRunning(ctx context.Context) bool {
 	return s.running
 }
 
-// setRunning sets the running state (must be called with lock held)
-func (s *BaseService) setRunning(running bool) {
-	if running && !s.running {
+// internal/service/base_service.go
+func (s *BaseService) setRunningLocked(r bool) {
+	if r && !s.running {
 		s.startTime = time.Now()
 	}
-	s.running = running
+	s.running = r
 }
 
-// LockRunning sets the running state with lock protection
-func (s *BaseService) LockRunning(running bool) {
+// Thread-safe setter
+func (s *BaseService) setRunning(r bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.setRunning(running)
+	s.setRunningLocked(r)
+}
+
+func (s *BaseService) LockRunning(r bool) {
+	s.setRunning(r)
 }
 
 // AddHealthChecker adds a custom health checker

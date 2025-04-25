@@ -40,7 +40,7 @@ func (s *MattermostService) Start(ctx context.Context) error {
 		s.client.SetToken(s.config.APIToken)
 	} else {
 		_, _, resp := s.client.Login(s.config.Username, s.config.Password)
-		if resp.Error != nil {
+		if resp != nil {
 			return fmt.Errorf("mattermost login error: %s", resp.Error())
 		}
 	}
