@@ -10,9 +10,15 @@ func CreateWorkflowA(serviceManager *manager.ServiceManager) (interfaces.Workflo
 	return NewWorkflowA(serviceManager), nil
 }
 
+// CreateWorkflowC creates a WorkflowC instance for event-driven notifications
+func CreateWorkflowC(serviceManager *manager.ServiceManager) (interfaces.Workflow, error) {
+	return NewWorkflowC(serviceManager), nil
+}
+
 // RegisterWorkflowFactories 返回所有工作流工厂函数
 func RegisterWorkflowFactories() []manager.WorkflowFactory {
 	return []manager.WorkflowFactory{
 		CreateWorkflowA,
+		CreateWorkflowC,
 	}
 }

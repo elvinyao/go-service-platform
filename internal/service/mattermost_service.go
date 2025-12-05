@@ -106,6 +106,54 @@ func (s *MattermostService) processMessages(ctx context.Context) {
 	}
 }
 
+// SendMessage sends a message to the default configured channel
+func (s *MattermostService) SendMessage(ctx context.Context, message string) error {
+	return s.SendMessageToChannel(ctx, s.config.Channel, message)
+}
+
+// SendMessageToChannel sends a message to a specific channel
+func (s *MattermostService) SendMessageToChannel(ctx context.Context, channelID, message string) error {
+	if !s.IsRunning(ctx) {
+		return fmt.Errorf("mattermost service is not running")
+	}
+
+	if s.client == nil {
+		return fmt.Errorf("mattermost client is not initialized")
+	}
+
+	if channelID == "" {
+		return fmt.Errorf("channel ID is required")
+	}
+
+	post := &model.Post{
+		ChannelId: channelID,
+		Message:   message,
+	}
+
+	_, _, err := s.client.CreatePost(post)
+	if err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
+	}
+
+	return nil
+}
+
+// GetChannelID returns the default configured channel ID
+func (s *MattermostService) GetChannelID() string {
+	return s.config.Channel
+}
+
+// Configure implements Service interface
+func (s *MattermostService) Configure(ctx context.Context, cfg interface{}) error {
+	newConfig, ok := cfg.(config.MattermostConfig)
+	if !ok {
+		return fmt.Errorf("invalid configuration type for MattermostService")
+	}
+
+	s.config = newConfig
+	return nil
+}
+
 // ReportHealth implements the Reporter interface
 func (s *MattermostService) ReportHealth(ctx context.Context, report *health.Report) {
 	// Use the base service's implementation

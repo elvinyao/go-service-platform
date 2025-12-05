@@ -2,6 +2,8 @@ package di
 
 import (
 	"context"
+	"os"
+	"project/internal/config"
 	"project/internal/dataaccess"
 	"project/internal/manager"
 	"project/internal/service"
@@ -150,16 +152,38 @@ func (c *Container) RegisterServices(ctx context.Context) error {
 	sm := c.GetServiceManager(ctx)
 	da := c.GetDataAccessor(ctx)
 
-	// Create services
+	// Create existing services
 	confluenceService := service.NewConfluenceService("ConfluenceServiceA", "A", da, c.version)
 	websocketService := service.NewWebSocketService("WebSocketServiceA", "A", c.version)
 	badgeDBService := service.NewBadgeDBService("BadgeDBService", "Global", "/tmp/badges.db", c.version)
 
-	// Register services
+	// Create MattermostService with configuration from environment
+	mmConfig := config.MattermostConfig{
+		ServerURL:    getEnvOrDefault("MATTERMOST_SERVER_URL", "https://mattermost.example.com"),
+		APIToken:     getEnvOrDefault("MATTERMOST_API_TOKEN", ""),
+		Channel:      getEnvOrDefault("MATTERMOST_CHANNEL", ""),
+		Username:     getEnvOrDefault("MATTERMOST_USERNAME", ""),
+		Password:     getEnvOrDefault("MATTERMOST_PASSWORD", ""),
+		WebsocketURL: getEnvOrDefault("MATTERMOST_WS_URL", "wss://mattermost.example.com"),
+	}
+	mattermostService := service.NewMattermostService("MattermostService", "Global", mmConfig, c.version)
+
+	// Create ConfluenceSettingsService for WorkflowC
+	settingsConfig := config.ConfluenceSettingsConfig{
+		PageID:          getEnvOrDefault("CONFLUENCE_SETTINGS_PAGE_ID", ""),
+		RefreshInterval: 5 * time.Minute,
+		APIEndpoint:     getEnvOrDefault("CONFLUENCE_API_ENDPOINT", "https://confluence.example.com/api"),
+		SpaceKey:        getEnvOrDefault("CONFLUENCE_SPACE_KEY", ""),
+	}
+	confluenceSettingsService := service.NewConfluenceSettingsService("ConfluenceSettingsService", "B", da, settingsConfig, c.version)
+
+	// Register all services
 	services := []service.Service{
 		confluenceService,
 		websocketService,
 		badgeDBService,
+		mattermostService,
+		confluenceSettingsService,
 	}
 
 	c.mu.Lock()
@@ -171,6 +195,14 @@ func (c *Container) RegisterServices(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// getEnvOrDefault returns the environment variable value or a default
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }
 
 // GetService Returns the service instance with the specified name
