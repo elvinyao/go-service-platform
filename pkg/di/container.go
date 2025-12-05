@@ -158,22 +158,24 @@ func (c *Container) RegisterServices(ctx context.Context) error {
 	badgeDBService := service.NewBadgeDBService("BadgeDBService", "Global", "/tmp/badges.db", c.version)
 
 	// Create MattermostService with configuration from environment
+	// Defaults point to fake API servers for development
 	mmConfig := config.MattermostConfig{
-		ServerURL:    getEnvOrDefault("MATTERMOST_SERVER_URL", "https://mattermost.example.com"),
-		APIToken:     getEnvOrDefault("MATTERMOST_API_TOKEN", ""),
-		Channel:      getEnvOrDefault("MATTERMOST_CHANNEL", ""),
+		ServerURL:    getEnvOrDefault("MATTERMOST_SERVER_URL", "http://localhost:8091"),
+		APIToken:     getEnvOrDefault("MATTERMOST_API_TOKEN", "test-token-123"),
+		Channel:      getEnvOrDefault("MATTERMOST_CHANNEL", "test-channel-1"),
 		Username:     getEnvOrDefault("MATTERMOST_USERNAME", ""),
 		Password:     getEnvOrDefault("MATTERMOST_PASSWORD", ""),
-		WebsocketURL: getEnvOrDefault("MATTERMOST_WS_URL", "wss://mattermost.example.com"),
+		WebsocketURL: getEnvOrDefault("MATTERMOST_WS_URL", "ws://localhost:8092"),
 	}
 	mattermostService := service.NewMattermostService("MattermostService", "Global", mmConfig, c.version)
 
 	// Create ConfluenceSettingsService for WorkflowC
+	// Defaults point to fake API servers for development
 	settingsConfig := config.ConfluenceSettingsConfig{
-		PageID:          getEnvOrDefault("CONFLUENCE_SETTINGS_PAGE_ID", ""),
+		PageID:          getEnvOrDefault("CONFLUENCE_SETTINGS_PAGE_ID", "settings-page-1"),
 		RefreshInterval: 5 * time.Minute,
-		APIEndpoint:     getEnvOrDefault("CONFLUENCE_API_ENDPOINT", "https://confluence.example.com/api"),
-		SpaceKey:        getEnvOrDefault("CONFLUENCE_SPACE_KEY", ""),
+		APIEndpoint:     getEnvOrDefault("CONFLUENCE_API_ENDPOINT", "http://localhost:8090"),
+		SpaceKey:        getEnvOrDefault("CONFLUENCE_SPACE_KEY", "TEST"),
 	}
 	confluenceSettingsService := service.NewConfluenceSettingsService("ConfluenceSettingsService", "B", da, settingsConfig, c.version)
 

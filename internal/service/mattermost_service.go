@@ -38,26 +38,30 @@ func (s *MattermostService) Start(ctx context.Context) error {
 	// Login either by token or username/password
 	if s.config.APIToken != "" {
 		s.client.SetToken(s.config.APIToken)
-	} else {
-		_, _, resp := s.client.Login(s.config.Username, s.config.Password)
-		if resp != nil {
-			return fmt.Errorf("mattermost login error: %s", resp.Error())
+	} else if s.config.Username != "" {
+		_, _, err := s.client.Login(s.config.Username, s.config.Password)
+		if err != nil {
+			// Log warning but don't fail - service can still work for sending
+			fmt.Printf("Warning: Mattermost login failed: %v\n", err)
 		}
 	}
 
-	// Initialize WebSocket client
-	var err error
-	s.wsClient, err = model.NewWebSocketClient4(s.config.WebsocketURL, s.client.AuthToken)
-	if err != nil {
-		return fmt.Errorf("failed to create WebSocket client: %w", err)
-	}
-	s.wsClient.Listen()
+	// Try to initialize WebSocket client (non-blocking)
+	// If it fails, we still mark service as running for HTTP API usage
+	go func() {
+		wsClient, err := model.NewWebSocketClient4(s.config.WebsocketURL, s.client.AuthToken)
+		if err != nil {
+			fmt.Printf("Warning: Failed to create WebSocket client: %v (HTTP API still available)\n", err)
+			return
+		}
 
-	// Set up event handlers
-	s.wsClient.EventChannel = s.msgChan
+		s.wsClient = wsClient
+		s.wsClient.Listen()
+		s.wsClient.EventChannel = s.msgChan
 
-	// Start message processing goroutine
-	go s.processMessages(ctx)
+		// Start message processing goroutine
+		go s.processMessages(ctx)
+	}()
 
 	s.LockRunning(true)
 	return nil
