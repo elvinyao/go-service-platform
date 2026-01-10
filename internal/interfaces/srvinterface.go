@@ -14,12 +14,12 @@ type ServiceManager interface {
 	StopAll(ctx context.Context) error
 	MonitorServices(ctx context.Context)
 
-	// 获取所有服务列表
+	// Get all services list
 	ListServices(ctx context.Context) []service.Service
 
 	// Health check methods
 	GetServiceHealth(ctx context.Context, serviceName string) (health.Report, bool)
 	GetAllServicesHealth(ctx context.Context) map[string]health.Report
 	GetSystemHealth(ctx context.Context) health.Report
-	// 其他方法
+	// Other methods
 }

@@ -147,7 +147,7 @@ func (s *BaseService) ReportHealth(ctx context.Context, report *health.Report) {
 
 	// Add results to report
 	for _, result := range results {
-		checkResult := *result // 转换为值类型
+		checkResult := *result // Convert to value type
 		report.CheckResults = append(report.CheckResults, checkResult)
 	}
 }

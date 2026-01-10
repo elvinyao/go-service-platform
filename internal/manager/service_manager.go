@@ -20,7 +20,7 @@ type ServiceManager struct {
 	startTime time.Time
 }
 
-// 确保 ServiceManager 实现了 interfaces.ServiceManager 接口
+// Ensure ServiceManager implements the interfaces.ServiceManager interface
 var _ interfaces.ServiceManager = (*ServiceManager)(nil)
 
 func NewServiceManager(version string) *ServiceManager {
@@ -57,15 +57,15 @@ func (sm *ServiceManager) RegisterService(s service.Service) {
 
 	sm.services[serviceName] = s
 
-	// 将服务注册到健康检查管理器
+	// Register the service with the health check manager
 	sm.healthMgr.RegisterService(s)
 }
 
-// GetServiceHealth 获取特定服务的健康信息
+// GetServiceHealth retrieves health information for a specific service
 func (sm *ServiceManager) GetServiceHealth(ctx context.Context, serviceName string) (health.Report, bool) {
 	ctx = appctx.WithOperationName(ctx, "get_service_health")
 
-	// 创建服务健康报告
+	// Create service health report
 	report := health.Report{
 		ServiceName: serviceName,
 		StartTime:   sm.startTime,
@@ -73,7 +73,7 @@ func (sm *ServiceManager) GetServiceHealth(ctx context.Context, serviceName stri
 		RefreshedAt: time.Now(),
 	}
 
-	// 获取服务
+	// Get service
 	sm.mu.Lock()
 	svc, exists := sm.services[serviceName]
 	sm.mu.Unlock()
@@ -82,7 +82,7 @@ func (sm *ServiceManager) GetServiceHealth(ctx context.Context, serviceName stri
 		return report, false
 	}
 
-	// 添加服务健康检查结果
+	// Add service health check results
 	result := health.CheckResult{
 		Name:        "service." + serviceName,
 		Status:      health.StatusUnknown,
@@ -106,7 +106,7 @@ func (sm *ServiceManager) GetServiceHealth(ctx context.Context, serviceName stri
 	return report, true
 }
 
-// GetAllServicesHealth 获取所有服务的健康信息
+// GetAllServicesHealth retrieves health information for all services
 func (sm *ServiceManager) GetAllServicesHealth(ctx context.Context) map[string]health.Report {
 	ctx = appctx.WithOperationName(ctx, "get_all_services_health")
 
@@ -128,13 +128,13 @@ func (sm *ServiceManager) GetAllServicesHealth(ctx context.Context) map[string]h
 	return result
 }
 
-// GetSystemHealth 获取系统整体健康状态
+// GetSystemHealth retrieves overall system health status
 func (sm *ServiceManager) GetSystemHealth(ctx context.Context) health.Report {
 	ctx = appctx.WithOperationName(ctx, "get_system_health")
 
 	reports := sm.GetAllServicesHealth(ctx)
 
-	// 创建系统健康报告
+	// Create system health report
 	report := health.Report{
 		ServiceName: "system",
 		Status:      health.StatusUp,
@@ -144,11 +144,11 @@ func (sm *ServiceManager) GetSystemHealth(ctx context.Context) health.Report {
 		Metadata:    make(map[string]interface{}),
 	}
 
-	// 处理服务健康状态
+	// Process service health status
 	var upCount, degradedCount, downCount int
 
 	for serviceName, serviceReport := range reports {
-		// 添加服务状态到报告
+		// Add service status to report
 		result := health.CheckResult{
 			Name:        "service." + serviceName,
 			Status:      serviceReport.Status,
@@ -160,7 +160,7 @@ func (sm *ServiceManager) GetSystemHealth(ctx context.Context) health.Report {
 
 		report.CheckResults = append(report.CheckResults, result)
 
-		// 统计服务状态
+		// Count service status
 		switch serviceReport.Status {
 		case health.StatusUp:
 			upCount++
@@ -171,13 +171,13 @@ func (sm *ServiceManager) GetSystemHealth(ctx context.Context) health.Report {
 		}
 	}
 
-	// 添加统计信息到元数据
+	// Add statistics to metadata
 	report.Metadata["service_count"] = len(reports)
 	report.Metadata["services_up"] = upCount
 	report.Metadata["services_degraded"] = degradedCount
 	report.Metadata["services_down"] = downCount
 
-	// 确定整体系统状态
+	// Determine overall system status
 	if downCount > 0 {
 		report.Status = health.StatusDegraded
 		if downCount == len(reports) {
@@ -410,7 +410,7 @@ func (sm *ServiceManager) StopAll(ctx context.Context) error {
 	return nil
 }
 
-// ListServices 返回所有注册的服务
+// ListServices returns all registered services
 func (sm *ServiceManager) ListServices(ctx context.Context) []service.Service {
 	ctx = appctx.WithOperationName(ctx, "list_services")
 	logger.DebugWithContext(ctx, "Listing all services")
@@ -426,4 +426,4 @@ func (sm *ServiceManager) ListServices(ctx context.Context) []service.Service {
 	return services
 }
 
-// 其他方法，例如根据工作流和类型获取服务
+// Other methods, such as getting services by workflow and type

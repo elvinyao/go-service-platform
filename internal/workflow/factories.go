@@ -5,7 +5,7 @@ import (
 	"project/internal/manager"
 )
 
-// CreateWorkflowA 创建WorkflowA实例
+// CreateWorkflowA creates a WorkflowA instance
 func CreateWorkflowA(serviceManager *manager.ServiceManager) (interfaces.Workflow, error) {
 	return NewWorkflowA(serviceManager), nil
 }
@@ -15,7 +15,7 @@ func CreateWorkflowC(serviceManager *manager.ServiceManager) (interfaces.Workflo
 	return NewWorkflowC(serviceManager), nil
 }
 
-// RegisterWorkflowFactories 返回所有工作流工厂函数
+// RegisterWorkflowFactories returns all workflow factory functions
 func RegisterWorkflowFactories() []manager.WorkflowFactory {
 	return []manager.WorkflowFactory{
 		CreateWorkflowA,

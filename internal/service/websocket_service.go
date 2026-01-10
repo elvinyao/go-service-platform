@@ -155,37 +155,37 @@ func (s *WebSocketService) Configure(ctx context.Context, config interface{}) er
 
 	logger.InfofWithContext(ctx, "Configuring service: %s", s.GetName())
 
-	// 解析配置
+	// Parse configuration
 	_, ok := config.(map[string]interface{})
 	if !ok {
 		return errors.New(errors.TypeInvalidInput, "Invalid configuration format", nil)
 	}
 
-	// 在实际实现中，这里会处理WebSocket服务的配置
-	// 例如：最大连接数、心跳间隔等
+	// In actual implementation, this would handle WebSocket service configuration
+	// For example: max connections, heartbeat interval, etc.
 
 	logger.InfofWithContext(ctx, "Service %s configured successfully", s.GetName())
 	return nil
 }
 
-// websocketConnectionChecker 检查WebSocket连接状态
+// websocketConnectionChecker checks WebSocket connection status
 type websocketConnectionChecker struct {
 	service *WebSocketService
 }
 
-// Check 实现Checker接口
+// Check implements the Checker interface
 func (c *websocketConnectionChecker) Check(ctx context.Context) *health.CheckResult {
 	result := health.NewCheckResult("websocket-connections", health.CategoryConnectivity)
 	result.Level = health.LevelWarning
 
-	// 检查服务是否运行
+	// Check if service is running
 	if !c.service.IsRunning(ctx) {
 		result.SetStatus(health.StatusDown, "WebSocket service is not running")
 		result.Complete()
 		return result
 	}
 
-	// 获取连接数
+	// Get connection count
 	c.service.mu.Lock()
 	connections := c.service.connections
 	lastMessage := c.service.lastMessage
@@ -193,14 +193,14 @@ func (c *websocketConnectionChecker) Check(ctx context.Context) *health.CheckRes
 
 	result.AddDetail("connections", connections)
 
-	// 检查连接数
+	// Check connection count
 	if connections == 0 {
 		result.SetStatus(health.StatusDegraded, "No active WebSocket connections")
 	} else {
 		result.SetStatus(health.StatusUp, fmt.Sprintf("Active WebSocket connections: %d", connections))
 	}
 
-	// 检查最后消息时间
+	// Check last message time
 	if !lastMessage.IsZero() {
 		messageAge := time.Since(lastMessage)
 		result.AddDetail("last_message_age_minutes", messageAge.Minutes())

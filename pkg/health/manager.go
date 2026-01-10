@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// HealthManager 管理系统健康检查
+// HealthManager manages system health checks
 type HealthManager struct {
 	mu               sync.RWMutex
 	checkers         []Checker
@@ -21,7 +21,7 @@ type HealthManager struct {
 	startTime        time.Time
 }
 
-// NewHealthManager 创建一个新的健康检查管理器
+// NewHealthManager creates a new health check manager
 func NewHealthManager(refreshInterval time.Duration, version string) *HealthManager {
 	return &HealthManager{
 		checkers:         make([]Checker, 0),
@@ -33,7 +33,7 @@ func NewHealthManager(refreshInterval time.Duration, version string) *HealthMana
 	}
 }
 
-// RegisterChecker 注册一个健康检查器
+// RegisterChecker registers a health checker
 func (h *HealthManager) RegisterChecker(checker Checker) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -41,7 +41,7 @@ func (h *HealthManager) RegisterChecker(checker Checker) {
 	h.checkers = append(h.checkers, checker)
 }
 
-// RegisterReporter 注册一个健康报告器
+// RegisterReporter registers a health reporter
 func (h *HealthManager) RegisterReporter(reporter Reporter) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -49,7 +49,7 @@ func (h *HealthManager) RegisterReporter(reporter Reporter) {
 	h.reporters = append(h.reporters, reporter)
 }
 
-// RegisterService 注册一个服务进行健康检查
+// RegisterService registers a service for health checking
 func (h *HealthManager) RegisterService(service ServiceChecker) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -57,11 +57,11 @@ func (h *HealthManager) RegisterService(service ServiceChecker) {
 	h.serviceInstances[service.GetName()] = service
 }
 
-// GetHealthReport 获取健康报告
+// GetHealthReport retrieves the health report
 func (h *HealthManager) GetHealthReport(ctx context.Context) *Report {
 	h.mu.RLock()
 
-	// 如果上次刷新时间在刷新间隔内，直接返回上次的报告
+	// If the last refresh was within the refresh interval, return the cached report
 	if time.Since(h.lastRefresh) < h.refreshInterval && h.lastReport != nil {
 		report := h.lastReport
 		h.mu.RUnlock()
@@ -70,11 +70,11 @@ func (h *HealthManager) GetHealthReport(ctx context.Context) *Report {
 
 	h.mu.RUnlock()
 
-	// 需要刷新报告
+	// Need to refresh the report
 	return h.RefreshReport(ctx)
 }
 
-// RefreshReport 刷新健康报告
+// RefreshReport refreshes the health report
 func (h *HealthManager) RefreshReport(ctx context.Context) *Report {
 	ctx = appctx.WithOperationName(ctx, "health_refresh")
 	startTime := time.Now()
@@ -84,7 +84,7 @@ func (h *HealthManager) RefreshReport(ctx context.Context) *Report {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// 创建新的报告
+	// Create new report
 	report := &Report{
 		ServiceName:  "system",
 		Status:       StatusUp,
@@ -94,26 +94,26 @@ func (h *HealthManager) RefreshReport(ctx context.Context) *Report {
 		RefreshedAt:  time.Now(),
 	}
 
-	// 运行所有检查器
+	// Run all checkers
 	results := h.runCheckers(ctx)
 
-	// 添加结果到报告
+	// Add results to report
 	for _, result := range results {
-		checkResult := *result // 转换为值类型
+		checkResult := *result // Convert to value type
 		report.CheckResults = append(report.CheckResults, checkResult)
 	}
 
-	// 计算总体状态
+	// Calculate overall status
 	report.Status = h.determineOverallStatus(report.CheckResults)
 
-	// 计算刷新时间
+	// Calculate refresh time
 	report.RefreshElapsed = time.Since(startTime)
 
-	// 保存报告
+	// Save report
 	h.lastReport = report
 	h.lastRefresh = time.Now()
 
-	// 通知报告器
+	// Notify reporters
 	for _, reporter := range h.reporters {
 		go reporter.ReportHealth(ctx, report)
 	}
@@ -121,7 +121,7 @@ func (h *HealthManager) RefreshReport(ctx context.Context) *Report {
 	return report
 }
 
-// determineOverallStatus 根据检查结果确定整体状态
+// determineOverallStatus determines the overall status based on check results
 func (h *HealthManager) determineOverallStatus(results []CheckResult) Status {
 	var criticalCount, warningCount, upCount, unknownCount int
 
@@ -142,7 +142,7 @@ func (h *HealthManager) determineOverallStatus(results []CheckResult) Status {
 		}
 	}
 
-	// 确定整体状态
+	// Determine overall status
 	if criticalCount > 0 {
 		return StatusDegraded
 	} else if warningCount > 0 {
@@ -156,20 +156,20 @@ func (h *HealthManager) determineOverallStatus(results []CheckResult) Status {
 	return StatusUnknown
 }
 
-// runCheckers 运行所有健康检查器
+// runCheckers runs all health checkers
 func (h *HealthManager) runCheckers(ctx context.Context) []*CheckResult {
 	ctx = appctx.WithOperationName(ctx, "run_health_checks")
 
-	// 收集所有检查
+	// Collect all checks
 	var checks []func(context.Context) *CheckResult
 
-	// 添加系统检查
+	// Add system checks
 	checks = append(checks, h.systemChecks()...)
 
-	// 添加服务检查
+	// Add service checks
 	checks = append(checks, h.serviceChecks()...)
 
-	// 添加已注册的检查器
+	// Add registered checkers
 	for _, checker := range h.checkers {
 		checkFunc := func(checker Checker) func(context.Context) *CheckResult {
 			return func(ctx context.Context) *CheckResult {
@@ -180,11 +180,11 @@ func (h *HealthManager) runCheckers(ctx context.Context) []*CheckResult {
 		checks = append(checks, checkFunc)
 	}
 
-	// 并行运行所有检查
+	// Run all checks in parallel
 	return RunChecksParallel(ctx, checks)
 }
 
-// systemChecks 返回系统级别的健康检查
+// systemChecks returns system-level health checks
 func (h *HealthManager) systemChecks() []func(context.Context) *CheckResult {
 	checks := []func(context.Context) *CheckResult{
 		h.checkMemory,
@@ -195,7 +195,7 @@ func (h *HealthManager) systemChecks() []func(context.Context) *CheckResult {
 	return checks
 }
 
-// serviceChecks 返回服务级别的健康检查
+// serviceChecks returns service-level health checks
 func (h *HealthManager) serviceChecks() []func(context.Context) *CheckResult {
 	var checks []func(context.Context) *CheckResult
 
@@ -211,7 +211,7 @@ func (h *HealthManager) serviceChecks() []func(context.Context) *CheckResult {
 				} else {
 					result.SetStatus(StatusUp, "Service is running")
 
-					// 添加指标
+					// Add metrics
 					metrics := svc.GetMetrics(ctx)
 					for k, v := range metrics {
 						result.AddDetail(k, v)
@@ -229,16 +229,16 @@ func (h *HealthManager) serviceChecks() []func(context.Context) *CheckResult {
 	return checks
 }
 
-// 系统健康检查
+// System health checks
 
-// checkMemory 检查系统内存使用情况
+// checkMemory checks system memory usage
 func (h *HealthManager) checkMemory(ctx context.Context) *CheckResult {
 	ctx = appctx.WithOperationName(ctx, "check_memory")
 	result := NewCheckResult("system.memory", CategoryResources)
 	result.Level = LevelWarning
 
-	// 模拟内存检查 - 实际实现中应使用系统API获取真实数据
-	memoryUsage := 0.6 // 60% 使用率
+	// Simulate memory check - in actual implementation, use system API to get real data
+	memoryUsage := 0.6 // 60% usage
 
 	result.AddDetail("usage_percent", memoryUsage*100)
 
@@ -255,14 +255,14 @@ func (h *HealthManager) checkMemory(ctx context.Context) *CheckResult {
 	return result
 }
 
-// checkCPU 检查CPU使用情况
+// checkCPU checks CPU usage
 func (h *HealthManager) checkCPU(ctx context.Context) *CheckResult {
 	ctx = appctx.WithOperationName(ctx, "check_cpu")
 	result := NewCheckResult("system.cpu", CategoryResources)
 	result.Level = LevelWarning
 
-	// 模拟CPU检查 - 实际实现中应使用系统API获取真实数据
-	cpuUsage := 0.3 // 30% 使用率
+	// Simulate CPU check - in actual implementation, use system API to get real data
+	cpuUsage := 0.3 // 30% usage
 
 	result.AddDetail("usage_percent", cpuUsage*100)
 
@@ -279,14 +279,14 @@ func (h *HealthManager) checkCPU(ctx context.Context) *CheckResult {
 	return result
 }
 
-// checkDiskSpace 检查磁盘空间使用情况
+// checkDiskSpace checks disk space usage
 func (h *HealthManager) checkDiskSpace(ctx context.Context) *CheckResult {
 	ctx = appctx.WithOperationName(ctx, "check_disk")
 	result := NewCheckResult("system.disk", CategoryResources)
 	result.Level = LevelWarning
 
-	// 模拟磁盘检查 - 实际实现中应使用系统API获取真实数据
-	diskUsage := 0.7 // 70% 使用率
+	// Simulate disk check - in actual implementation, use system API to get real data
+	diskUsage := 0.7 // 70% usage
 
 	result.AddDetail("usage_percent", diskUsage*100)
 

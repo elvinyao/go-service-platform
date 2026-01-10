@@ -9,7 +9,7 @@ import (
 	"project/pkg/logger"
 	"sync"
 	"time"
-	// 其他必要的导入
+	// Other necessary imports
 )
 
 // BadgeDBService manages badge data

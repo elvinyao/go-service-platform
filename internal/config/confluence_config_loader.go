@@ -7,10 +7,10 @@ import (
 )
 
 type ConfluenceConfigLoader struct {
-	client          interface{} // Confluence客户端
+	client          interface{} // Confluence client
 	pageID          string
 	refreshInterval time.Duration
 	cache           *cache.Cache
 }
 
-// 实现方法
+// Implementation methods

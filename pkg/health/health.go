@@ -59,15 +59,15 @@ const (
 	CategorySecurity Category = "SECURITY"
 )
 
-// ServiceChecker 定义了可以被健康检查的服务接口
+// ServiceChecker defines the interface for services that can be health checked
 type ServiceChecker interface {
-	// IsRunning 返回服务是否运行中
+	// IsRunning returns whether the service is running
 	IsRunning(ctx context.Context) bool
 
-	// GetName 返回服务名称
+	// GetName returns the service name
 	GetName() string
 
-	// GetMetrics 返回服务指标
+	// GetMetrics returns service metrics
 	GetMetrics(ctx context.Context) map[string]interface{}
 }
 

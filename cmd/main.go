@@ -310,7 +310,7 @@ func createAdminServer(ctx context.Context, serviceManager *manager.ServiceManag
 	return server
 }
 
-// healthCheck 处理健康检查请求
+// healthCheck handles health check requests
 func healthCheck(w http.ResponseWriter, r *http.Request, serviceManager *manager.ServiceManager, healthManager *health.HealthManager) {
 	ctx := appctx.FromRequest(r)
 
@@ -422,7 +422,7 @@ func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manage
 	}
 }
 
-// workflowsList 处理工作流列表请求
+// workflowsList handles workflow list requests
 func workflowsList(w http.ResponseWriter, r *http.Request, workflowManager *manager.WorkflowManager) {
 	ctx := appctx.FromRequest(r)
 	logger.InfoWithContext(ctx, "Handling workflows list request")

@@ -7,4 +7,4 @@ type ConnectionManager struct {
 	mu          sync.RWMutex
 }
 
-// 实现方法
+// Implementation methods

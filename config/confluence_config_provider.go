@@ -1,7 +1,7 @@
 package config
 
 type ConfluenceConfigProvider struct {
-	// 实现字段
+	// Implementation fields
 }
 
-// 实现接口方法
+// Implementation interface methods

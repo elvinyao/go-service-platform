@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-// WorkflowFactory 定义了创建工作流的函数类型
+// WorkflowFactory defines the function type for creating workflows
 type WorkflowFactory func(serviceManager *ServiceManager) (interfaces.Workflow, error)
 
 type WorkflowManager struct {
@@ -24,14 +24,14 @@ func NewWorkflowManager() *WorkflowManager {
 	}
 }
 
-// NewWorkflowManagerWithDI 使用依赖注入创建工作流管理器并注册默认工作流
+// NewWorkflowManagerWithDI creates a workflow manager using dependency injection and registers default workflows
 func NewWorkflowManagerWithDI(ctx context.Context, serviceManager *ServiceManager, factories ...WorkflowFactory) (*WorkflowManager, error) {
 	ctx = appctx.WithOperationName(ctx, "create_workflow_manager")
 	logger.InfoWithContext(ctx, "Creating workflow manager with DI")
 
 	manager := NewWorkflowManager()
 
-	// 注册所有工厂提供的工作流
+	// Register all workflows provided by factories
 	for _, factory := range factories {
 		workflow, err := factory(serviceManager)
 		if err != nil {
@@ -71,7 +71,7 @@ func (wm *WorkflowManager) RegisterWorkflow(w interfaces.Workflow) error {
 	return nil
 }
 
-// GetWorkflow 根据名称获取工作流
+// GetWorkflow retrieves a workflow by name
 func (wm *WorkflowManager) GetWorkflow(name string) (interfaces.Workflow, bool) {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
@@ -80,13 +80,13 @@ func (wm *WorkflowManager) GetWorkflow(name string) (interfaces.Workflow, bool) 
 	return workflow, exists
 }
 
-// DispatchMessage 分发消息到适当的工作流
+// DispatchMessage dispatches a message to the appropriate workflow
 func (wm *WorkflowManager) DispatchMessage(ctx context.Context, msg model.Message) error {
 	ctx = appctx.WithOperationName(ctx, "dispatch_message")
 	logger.InfofWithContext(ctx, "Dispatching message of type: %s", msg.Type)
 
-	// 简单版本，将消息分发到所有工作流
-	// 在真实实现中，可能需要更复杂的路由逻辑
+	// Simple version, dispatch message to all workflows
+	// In a real implementation, more complex routing logic may be needed
 
 	wm.mu.Lock()
 	workflows := make([]interfaces.Workflow, 0, len(wm.workflows))
@@ -99,7 +99,7 @@ func (wm *WorkflowManager) DispatchMessage(ctx context.Context, msg model.Messag
 		return errors.New(errors.TypeNotFound, "No workflows registered to process messages", nil)
 	}
 
-	// 处理错误
+	// Handle errors
 	var lastErr error
 	for _, wf := range workflows {
 		wfCtx := appctx.WithServiceName(ctx, wf.GetName())
@@ -108,13 +108,13 @@ func (wm *WorkflowManager) DispatchMessage(ctx context.Context, msg model.Messag
 				"Workflow %s failed to process message", wf.GetName())
 			lastErr = err
 		} else {
-			// 至少有一个工作流成功处理了消息
+			// At least one workflow successfully processed the message
 			logger.InfofWithContext(wfCtx, "Workflow %s successfully processed message", wf.GetName())
 			return nil
 		}
 	}
 
-	// 如果执行到这里，表示所有工作流都失败了
+	// If we reach here, all workflows failed
 	return errors.Wrap(lastErr, "All workflows failed to process message", errors.TypeServiceUnavailable)
 }
 

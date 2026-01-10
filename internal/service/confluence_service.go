@@ -10,7 +10,7 @@ import (
 	"project/pkg/logger"
 	"sync"
 	"time"
-	// 其他必要的导入
+	// Other necessary imports
 )
 
 type ConfluenceService struct {
@@ -48,14 +48,14 @@ func (s *ConfluenceService) Start(ctx context.Context) error {
 
 	logger.InfofWithContext(ctx, "Starting service: %s", s.GetName())
 
-	// 初始化服务
+	// Initialize service
 	data, err := s.fetchData(ctx)
 	if err != nil {
 		logger.WithContextError(ctx, err).Errorf("Failed to fetch initial data for service %s", s.GetName())
 		return errors.Wrap(err, "Failed to fetch initial data", errors.TypeServiceUnavailable)
 	}
 
-	// 缓存初始数据
+	// Cache initial data
 	err = s.dataAccessor.SetData("confluence_data", data)
 	if err != nil {
 		logger.WithContextError(ctx, err).Warnf("Failed to cache initial data for service %s", s.GetName())
@@ -109,7 +109,7 @@ func (s *ConfluenceService) FetchData(ctx context.Context) (map[string]interface
 
 	logger.InfofWithContext(ctx, "Fetching data from Confluence API")
 
-	// 检查缓存
+	// Check cache
 	cacheKey := "confluence_data"
 	cachedData, err := s.dataAccessor.GetData(cacheKey)
 	if err == nil && cachedData != nil {
@@ -119,13 +119,13 @@ func (s *ConfluenceService) FetchData(ctx context.Context) (map[string]interface
 		}
 	}
 
-	// 从API获取数据
+	// Fetch data from API
 	data, err := s.fetchData(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 缓存数据
+	// Cache data
 	err = s.dataAccessor.SetData(cacheKey, data)
 	if err != nil {
 		logger.WithContextError(ctx, err).Warn("Failed to cache Confluence data")
@@ -139,7 +139,7 @@ func (s *ConfluenceService) Configure(ctx context.Context, config interface{}) e
 
 	logger.InfofWithContext(ctx, "Configuring service: %s", s.GetName())
 
-	// 解析配置
+	// Parse configuration
 	cfg, ok := config.(map[string]interface{})
 	if !ok {
 		return errors.New(errors.TypeInvalidInput, "Invalid configuration format", nil)
@@ -148,7 +148,7 @@ func (s *ConfluenceService) Configure(ctx context.Context, config interface{}) e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 更新API端点
+	// Update API endpoint
 	if endpoint, ok := cfg["api_endpoint"].(string); ok && endpoint != "" {
 		s.apiEndpoint = endpoint
 		logger.DebugfWithContext(ctx, "Updated API endpoint to: %s", endpoint)
@@ -179,21 +179,21 @@ func (s *ConfluenceService) GetMetrics(ctx context.Context) map[string]interface
 	return metrics
 }
 
-// 内部方法
+// Internal methods
 
 func (s *ConfluenceService) fetchData(ctx context.Context) (map[string]interface{}, error) {
-	// 模拟从Confluence API获取数据
-	// 在实际实现中，这里会调用真实的API
+	// Simulate fetching data from Confluence API
+	// In actual implementation, this would call the real API
 
-	// 模拟API延迟
+	// Simulate API delay
 	time.Sleep(100 * time.Millisecond)
 
-	// 更新最后获取时间
+	// Update last fetch time
 	s.mu.Lock()
 	s.lastFetch = time.Now()
 	s.mu.Unlock()
 
-	// 返回模拟数据
+	// Return simulated data
 	return map[string]interface{}{
 		"pages":  []string{"Page1", "Page2", "Page3"},
 		"users":  []string{"User1", "User2"},
@@ -201,24 +201,24 @@ func (s *ConfluenceService) fetchData(ctx context.Context) (map[string]interface
 	}, nil
 }
 
-// confluenceApiChecker 检查Confluence API连接
+// confluenceApiChecker checks Confluence API connection
 type confluenceApiChecker struct {
 	service *ConfluenceService
 }
 
-// Check 实现Checker接口
+// Check implements the Checker interface
 func (c *confluenceApiChecker) Check(ctx context.Context) *health.CheckResult {
 	result := health.NewCheckResult("confluence-api", health.CategoryConnectivity)
 	result.Level = health.LevelCritical
 
-	// 检查服务是否运行
+	// Check if service is running
 	if !c.service.IsRunning(ctx) {
 		result.SetStatus(health.StatusDown, "Confluence service is not running")
 		result.Complete()
 		return result
 	}
 
-	// 尝试获取数据
+	// Try to fetch data
 	_, err := c.service.fetchData(ctx)
 	if err != nil {
 		result.SetStatus(health.StatusDown, fmt.Sprintf("Failed to connect to Confluence API: %v", err))
@@ -226,7 +226,7 @@ func (c *confluenceApiChecker) Check(ctx context.Context) *health.CheckResult {
 		return result
 	}
 
-	// 检查上次获取时间
+	// Check last fetch time
 	c.service.mu.Lock()
 	lastFetch := c.service.lastFetch
 	c.service.mu.Unlock()

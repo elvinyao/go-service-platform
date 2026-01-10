@@ -11,7 +11,7 @@ type WorkerPool struct {
 }
 
 func NewWorkerPool(workers int) *WorkerPool {
-	// 实现
+	// Implementation
 	return &WorkerPool{
 		workers: workers,
 		queue:   make(chan Task),

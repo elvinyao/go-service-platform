@@ -10,4 +10,4 @@ type MattermostMessageTransformer struct {
 	config    config.MattermostConfig
 }
 
-// 实现方法
+// Implementation methods
