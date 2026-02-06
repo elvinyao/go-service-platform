@@ -154,7 +154,12 @@ func (c *Container) RegisterServices(ctx context.Context) error {
 
 	// Create existing services
 	confluenceService := service.NewConfluenceService("ConfluenceServiceA", "A", da, c.version)
-	websocketService := service.NewWebSocketService("WebSocketServiceA", "A", c.version)
+	wsConfig := config.WebSocketConfig{
+		ServerURL:         getEnvOrDefault("WEBSOCKET_SERVER_URL", "ws://localhost:8093"),
+		Path:              getEnvOrDefault("WEBSOCKET_PATH", "/ws"),
+		ReconnectInterval: 5 * time.Second,
+	}
+	websocketService := service.NewWebSocketService("WebSocketServiceA", "A", wsConfig, c.version)
 	badgeDBService := service.NewBadgeDBService("BadgeDBService", "Global", "/tmp/badges.db", c.version)
 
 	// Create MattermostService with configuration from environment

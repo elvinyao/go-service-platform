@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"project/internal/config"
 	"project/internal/dataaccess"
 	appctx "project/pkg/context"
@@ -22,6 +25,22 @@ type SettingRule struct {
 	Enabled     bool   `json:"enabled"`
 }
 
+// confluencePage represents the Confluence REST API page response
+type confluencePage struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Body  struct {
+		Storage struct {
+			Value string `json:"value"`
+		} `json:"storage"`
+	} `json:"body"`
+}
+
+// confluenceSettings represents the parsed settings from the page body
+type confluenceSettings struct {
+	Rules []SettingRule `json:"rules"`
+}
+
 // ConfluenceSettingsService manages settings from Confluence with periodic refresh
 type ConfluenceSettingsService struct {
 	*BaseService
@@ -32,6 +51,7 @@ type ConfluenceSettingsService struct {
 	lastRefresh  time.Time
 	stopRefresh  chan struct{}
 	refreshDone  chan struct{}
+	httpClient   *http.Client
 }
 
 // NewConfluenceSettingsService creates a new ConfluenceSettingsService
@@ -43,6 +63,7 @@ func NewConfluenceSettingsService(name, workflow string, da dataaccess.DataAcces
 		settings:     make([]SettingRule, 0),
 		stopRefresh:  make(chan struct{}),
 		refreshDone:  make(chan struct{}),
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
 	}
 
 	// Add custom health checker
@@ -165,33 +186,39 @@ func (s *ConfluenceSettingsService) refreshSettingsLocked(ctx context.Context) e
 	return nil
 }
 
-// fetchSettingsFromConfluence simulates fetching settings from Confluence API
+// fetchSettingsFromConfluence fetches settings from the Confluence REST API
 func (s *ConfluenceSettingsService) fetchSettingsFromConfluence(ctx context.Context) ([]SettingRule, error) {
-	// Simulate API call delay
-	time.Sleep(50 * time.Millisecond)
+	url := s.config.APIEndpoint + "/rest/api/content/" + s.config.PageID
 
-	// In a real implementation, you would:
-	// 1. Call Confluence API to get the page content
-	// 2. Parse the content (JSON/structured table) to extract rules
-	// 3. Return the parsed rules
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, errors.New(errors.TypeServiceUnavailable, fmt.Sprintf("failed to create request: %v", err), err)
+	}
 
-	// For demonstration, return sample rules
-	return []SettingRule{
-		{
-			EventType:   "AAA",
-			Pattern:     ".*",
-			ChannelID:   "default-channel",
-			MessageTmpl: "Event AAA received: %s",
-			Enabled:     true,
-		},
-		{
-			EventType:   "BBB",
-			Pattern:     "important.*",
-			ChannelID:   "alerts-channel",
-			MessageTmpl: "Important event: %s",
-			Enabled:     true,
-		},
-	}, nil
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, errors.New(errors.TypeServiceUnavailable, fmt.Sprintf("failed to fetch Confluence page: %v", err), err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, errors.New(errors.TypeServiceUnavailable,
+			fmt.Sprintf("Confluence API returned status %d: %s", resp.StatusCode, string(body)), nil)
+	}
+
+	var page confluencePage
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return nil, errors.New(errors.TypeInvalidInput, fmt.Sprintf("failed to decode Confluence page: %v", err), err)
+	}
+
+	var settings confluenceSettings
+	if err := json.Unmarshal([]byte(page.Body.Storage.Value), &settings); err != nil {
+		return nil, errors.New(errors.TypeInvalidInput, fmt.Sprintf("failed to parse settings from page body: %v", err), err)
+	}
+
+	logger.InfofWithContext(ctx, "Fetched %d setting rules from Confluence page %s", len(settings.Rules), s.config.PageID)
+	return settings.Rules, nil
 }
 
 // GetSettings returns all current settings

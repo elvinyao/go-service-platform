@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"project/internal/config"
 	"project/internal/model"
 	appctx "project/pkg/context"
 	"project/pkg/errors"
@@ -10,6 +11,8 @@ import (
 	"project/pkg/logger"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type WebSocketService struct {
@@ -18,13 +21,20 @@ type WebSocketService struct {
 	messageHandler func(msg model.Message)
 	connections    int
 	lastMessage    time.Time
+	config         config.WebSocketConfig
+	conn           *websocket.Conn
+	stopChan       chan struct{}
+	done           chan struct{}
 }
 
-func NewWebSocketService(name, workflow string, version string) *WebSocketService {
+func NewWebSocketService(name, workflow string, cfg config.WebSocketConfig, version string) *WebSocketService {
 	s := &WebSocketService{
 		BaseService: NewBaseService(name, workflow, "websocket", version),
 		connections: 0,
 		lastMessage: time.Time{},
+		config:      cfg,
+		stopChan:    make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 
 	// Add custom health checkers
@@ -46,34 +56,120 @@ func (s *WebSocketService) Start(ctx context.Context) error {
 
 	logger.InfofWithContext(ctx, "Starting service: %s", s.GetName())
 
-	// Initialize websocket server
-	// In a real implementation, you would set up websocket listeners here
-
-	// Mark as running
+	// Mark as running first
 	s.setRunning(true)
+
+	// Reset channels for a fresh start
+	s.stopChan = make(chan struct{})
+	s.done = make(chan struct{})
+
+	// Launch WebSocket connection goroutine
+	go s.connectLoop(ctx)
+
 	logger.InfofWithContext(ctx, "Service %s started successfully", s.GetName())
 	return nil
+}
+
+func (s *WebSocketService) connectLoop(ctx context.Context) {
+	defer close(s.done)
+
+	url := s.config.ServerURL + s.config.Path
+
+	for {
+		select {
+		case <-s.stopChan:
+			return
+		default:
+		}
+
+		logger.InfofWithContext(ctx, "WebSocket connecting to %s", url)
+		conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+		if err != nil {
+			logger.WarnfWithContext(ctx, "WebSocket dial error: %v, retrying in %v", err, s.config.ReconnectInterval)
+			select {
+			case <-s.stopChan:
+				return
+			case <-time.After(s.config.ReconnectInterval):
+				continue
+			}
+		}
+
+		s.mu.Lock()
+		s.conn = conn
+		s.connections = 1
+		s.mu.Unlock()
+
+		logger.InfofWithContext(ctx, "WebSocket connected to %s", url)
+
+		// Read loop
+		for {
+			var msg model.Message
+			err := conn.ReadJSON(&msg)
+			if err != nil {
+				logger.WarnfWithContext(ctx, "WebSocket read error: %v", err)
+				break
+			}
+
+			// Skip system messages (e.g. welcome message from fake server)
+			if msg.Type == "system" {
+				logger.DebugfWithContext(ctx, "Skipping system message: %s", msg.Content)
+				continue
+			}
+
+			logger.DebugfWithContext(ctx, "WebSocket received message: type=%s", msg.Type)
+			s.ProcessIncomingMessage(ctx, msg)
+		}
+
+		// Connection lost — clean up and retry
+		conn.Close()
+		s.mu.Lock()
+		s.conn = nil
+		s.connections = 0
+		s.mu.Unlock()
+
+		logger.InfofWithContext(ctx, "WebSocket disconnected, reconnecting in %v", s.config.ReconnectInterval)
+
+		select {
+		case <-s.stopChan:
+			return
+		case <-time.After(s.config.ReconnectInterval):
+		}
+	}
 }
 
 func (s *WebSocketService) Stop(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "stop_service")
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if !s.IsRunning(ctx) {
+		s.mu.Unlock()
 		logger.InfofWithContext(ctx, "Service %s is not running", s.GetName())
 		return nil
 	}
 
 	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
 
-	// Close websocket connections
-	// In a real implementation, you would close all connections here
-	s.connections = 0
+	// Signal goroutine to stop
+	close(s.stopChan)
 
-	// Mark as not running
+	// Close connection if active
+	if s.conn != nil {
+		s.conn.Close()
+		s.conn = nil
+	}
+
+	s.connections = 0
 	s.setRunning(false)
+	s.mu.Unlock()
+
+	// Wait for goroutine to finish
+	select {
+	case <-s.done:
+	case <-time.After(5 * time.Second):
+		logger.WarnfWithContext(ctx, "Timeout waiting for WebSocket goroutine to stop")
+	}
+
 	logger.InfofWithContext(ctx, "Service %s stopped successfully", s.GetName())
 	return nil
 }

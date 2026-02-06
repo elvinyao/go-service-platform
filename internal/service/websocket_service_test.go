@@ -5,11 +5,20 @@ import (
 	"testing"
 	"time"
 
+	"project/internal/config"
 	"project/internal/model"
 	"project/pkg/health"
 
 	"github.com/stretchr/testify/assert"
 )
+
+func testWebSocketConfig() config.WebSocketConfig {
+	return config.WebSocketConfig{
+		ServerURL:         "ws://localhost:0",
+		Path:              "/ws",
+		ReconnectInterval: 1 * time.Second,
+	}
+}
 
 func TestNewWebSocketService(t *testing.T) {
 	// Arrange
@@ -18,7 +27,7 @@ func TestNewWebSocketService(t *testing.T) {
 	version := "1.0.0"
 
 	// Act
-	service := NewWebSocketService(name, workflow, version)
+	service := NewWebSocketService(name, workflow, testWebSocketConfig(), version)
 
 	// Assert
 	assert.NotNil(t, service)
@@ -46,7 +55,7 @@ func TestNewWebSocketService(t *testing.T) {
 
 func TestWebSocketService_StartStop(t *testing.T) {
 	// Arrange
-	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", "1.0.0")
+	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", testWebSocketConfig(), "1.0.0")
 	ctx := context.Background()
 
 	// Act - Start
@@ -66,7 +75,7 @@ func TestWebSocketService_StartStop(t *testing.T) {
 
 func TestWebSocketService_Restart(t *testing.T) {
 	// Arrange
-	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", "1.0.0")
+	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", testWebSocketConfig(), "1.0.0")
 	ctx := context.Background()
 
 	// Act - Start first
@@ -79,11 +88,21 @@ func TestWebSocketService_Restart(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.True(t, service.IsRunning(ctx))
+
+	// Clean up
+	service.Stop(ctx)
 }
 
 func TestWebSocketService_OnMessage(t *testing.T) {
 	// Arrange
-	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", "1.0.0")
+	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", testWebSocketConfig(), "1.0.0")
+	ctx := context.Background()
+
+	// Start the service so ProcessIncomingMessage doesn't reject
+	err := service.Start(ctx)
+	assert.NoError(t, err)
+	defer service.Stop(ctx)
+
 	messageReceived := false
 
 	// Create a message handler
@@ -106,22 +125,25 @@ func TestWebSocketService_OnMessage(t *testing.T) {
 	}
 
 	// Act - Process a message
-	ctx := context.Background()
-	err := service.ProcessIncomingMessage(ctx, message)
+	err = service.ProcessIncomingMessage(ctx, message)
 
 	// Assert
 	assert.NoError(t, err)
+
+	// Give the goroutine a moment to execute the handler
+	time.Sleep(50 * time.Millisecond)
 	assert.True(t, messageReceived)
 	assert.False(t, service.lastMessage.IsZero())
 }
 
 func TestWebSocketService_GetMetrics(t *testing.T) {
 	// Arrange
-	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", "1.0.0")
+	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", testWebSocketConfig(), "1.0.0")
 	ctx := context.Background()
 
 	// Start the service to get meaningful metrics
 	service.Start(ctx)
+	defer service.Stop(ctx)
 
 	// Set some connection count for testing
 	service.connections = 5
@@ -144,7 +166,7 @@ func TestWebSocketService_GetMetrics(t *testing.T) {
 
 func TestWebSocketService_Configure(t *testing.T) {
 	// Arrange
-	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", "1.0.0")
+	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", testWebSocketConfig(), "1.0.0")
 	ctx := context.Background()
 
 	// Simple config object
@@ -162,7 +184,7 @@ func TestWebSocketService_Configure(t *testing.T) {
 
 func TestWebSocketService_ReportHealth(t *testing.T) {
 	// Arrange
-	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", "1.0.0")
+	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", testWebSocketConfig(), "1.0.0")
 	ctx := context.Background()
 	report := &health.Report{
 		ServiceName:  "TestWebSocketService",
