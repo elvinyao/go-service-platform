@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -208,18 +209,10 @@ func (s *FakeMattermostServer) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		token := r.Header.Get("Authorization")
-		if token == "" {
-			token = r.Header.Get("Token")
-		}
-		if token == "" {
+		token, ok := extractAuthToken(r.Header.Get("Authorization"), r.Header.Get("Token"))
+		if !ok {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
-		}
-
-		// Remove "Bearer " prefix if present
-		if len(token) > 7 && token[:7] == "Bearer " {
-			token = token[7:]
 		}
 
 		s.mu.RLock()
@@ -233,6 +226,24 @@ func (s *FakeMattermostServer) authMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func extractAuthToken(authHeader, tokenHeader string) (string, bool) {
+	authHeader = strings.TrimSpace(authHeader)
+	if authHeader != "" {
+		parts := strings.Fields(authHeader)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && parts[1] != "" {
+			return parts[1], true
+		}
+		return "", false
+	}
+
+	tokenHeader = strings.TrimSpace(tokenHeader)
+	if tokenHeader != "" {
+		return tokenHeader, true
+	}
+
+	return "", false
 }
 
 // handleLogin handles user login
