@@ -1,9 +1,10 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-This repository is a Go service platform (`module project`) with two entrypoints:
+This repository is a Go service platform (`module project`) with one primary entrypoint:
 - `cmd/main.go`: main service runtime.
-- `cmd/fakeapi/main.go`: local fake Confluence/Mattermost/WebSocket servers for development.
+
+The fake API servers are extracted into a separate Go project under `fake-server/`.
 
 Core application code lives in `internal/` (`service`, `manager`, `workflow`, `messaging`, `config`, etc.). Reusable shared libraries live in `pkg/` (`logger`, `health`, `errors`, `di`, `context`). Runtime config is in `config/config.yaml`, and Kubernetes manifests are in `deploy/k8s/`. Tests are colocated with implementation files as `*_test.go`.
 
@@ -11,7 +12,7 @@ Core application code lives in `internal/` (`service`, `manager`, `workflow`, `m
 - `go mod download` - fetch dependencies.
 - `go build -o bin/service-workflow ./cmd/main.go` - build the main binary.
 - `go run ./cmd/main.go` - run the service directly.
-- `go run ./cmd/fakeapi/main.go -h` - view fake API options and run local test endpoints.
+- `cd fake-server && go run ./cmd/fake-server -h` - run standalone fake servers and view options.
 - `go test ./...` - run all unit tests across the module.
 - `docker build -t service-workflow .` - build the production image from `Dockerfile`.
 
