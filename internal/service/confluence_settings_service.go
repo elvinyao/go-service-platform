@@ -106,17 +106,22 @@ func (s *ConfluenceSettingsService) Stop(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "stop_service")
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if !s.IsRunning(ctx) {
+		s.mu.Unlock()
 		logger.InfofWithContext(ctx, "Service %s is not running", s.GetName())
 		return nil
 	}
 
 	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
 
-	// Stop periodic refresh
+	// Signal the refresh goroutine to stop and mark as not running
 	close(s.stopRefresh)
+	s.setRunningLocked(false)
+
+	// Release the lock BEFORE waiting, so periodicRefresh can finish
+	// its current cycle and see the stop signal
+	s.mu.Unlock()
 
 	// Wait for refresh goroutine to complete with timeout
 	select {
@@ -126,7 +131,6 @@ func (s *ConfluenceSettingsService) Stop(ctx context.Context) error {
 		logger.WarnfWithContext(ctx, "Timeout waiting for periodic refresh to stop")
 	}
 
-	s.setRunningLocked(false)
 	logger.InfofWithContext(ctx, "Service %s stopped successfully", s.GetName())
 	return nil
 }

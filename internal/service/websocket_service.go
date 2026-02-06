@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"net"
 	"project/internal/config"
 	"project/internal/model"
 	appctx "project/pkg/context"
@@ -73,6 +74,20 @@ func (s *WebSocketService) Start(ctx context.Context) error {
 func (s *WebSocketService) connectLoop(ctx context.Context) {
 	defer close(s.done)
 
+	// Create a context that cancels when stopChan is closed.
+	// This lets us cancel blocking Dial calls immediately on Stop().
+	dialCtx, dialCancel := context.WithCancel(context.Background())
+	go func() {
+		<-s.stopChan
+		dialCancel()
+	}()
+
+	dialer := websocket.Dialer{
+		NetDialContext: (&net.Dialer{
+			Timeout: 10 * time.Second,
+		}).DialContext,
+	}
+
 	url := s.config.ServerURL + s.config.Path
 
 	for {
@@ -83,8 +98,14 @@ func (s *WebSocketService) connectLoop(ctx context.Context) {
 		}
 
 		logger.InfofWithContext(ctx, "WebSocket connecting to %s", url)
-		conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+		conn, _, err := dialer.DialContext(dialCtx, url, nil)
 		if err != nil {
+			// If stopped, exit immediately
+			select {
+			case <-s.stopChan:
+				return
+			default:
+			}
 			logger.WarnfWithContext(ctx, "WebSocket dial error: %v, retrying in %v", err, s.config.ReconnectInterval)
 			select {
 			case <-s.stopChan:
