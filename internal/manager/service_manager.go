@@ -207,6 +207,7 @@ func (sm *ServiceManager) StartAll(ctx context.Context) error {
 	}
 
 	var startErrors []string
+	var errMu sync.Mutex
 	wg := sync.WaitGroup{}
 
 	for _, svc := range sm.services {
@@ -218,7 +219,9 @@ func (sm *ServiceManager) StartAll(ctx context.Context) error {
 
 			if err := sm.startService(serviceCtx, s); err != nil {
 				logger.WithContextError(serviceCtx, err).Errorf("Failed to start service")
+				errMu.Lock()
 				startErrors = append(startErrors, s.GetName())
+				errMu.Unlock()
 			}
 		}(svc)
 	}
@@ -378,6 +381,7 @@ func (sm *ServiceManager) StopAll(ctx context.Context) error {
 	defer sm.mu.Unlock()
 
 	var stopErrors []string
+	var errMu sync.Mutex
 	wg := sync.WaitGroup{}
 
 	for _, svc := range sm.services {
@@ -391,7 +395,9 @@ func (sm *ServiceManager) StopAll(ctx context.Context) error {
 
 			if err := s.Stop(serviceCtx); err != nil {
 				logger.WithContextError(serviceCtx, err).Error("Failed to stop service")
+				errMu.Lock()
 				stopErrors = append(stopErrors, serviceName)
+				errMu.Unlock()
 			} else {
 				logger.DebugfWithContext(serviceCtx, "Service %s stopped successfully", serviceName)
 			}

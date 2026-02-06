@@ -120,6 +120,14 @@ func (h *HealthHandler) HandleServiceHealth(w http.ResponseWriter, r *http.Reque
 
 // HandleReadinessCheck handles readiness check requests
 func (h *HealthHandler) HandleReadinessCheck(w http.ResponseWriter, r *http.Request) {
+	// Immediately fail readiness during shutdown so K8s stops routing traffic
+	if h.manager.IsShuttingDown() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"status": "NOT_READY", "reason": "shutting_down"}`))
+		return
+	}
+
 	ctx := appctx.FromRequest(r)
 	ctx = appctx.WithOperationName(ctx, "readiness_check")
 
@@ -128,11 +136,13 @@ func (h *HealthHandler) HandleReadinessCheck(w http.ResponseWriter, r *http.Requ
 
 	// For readiness, we only care if the system is UP or DEGRADED
 	if report.Status == StatusDown || report.Status == StatusUnknown {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(`{"status": "NOT_READY"}`))
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status": "READY"}`))
 }

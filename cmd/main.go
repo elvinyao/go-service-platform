@@ -31,6 +31,9 @@ const (
 	shutdownTimeout = 30 * time.Second
 	// Service stop timeout - per service timeout
 	serviceShutdownTimeout = 10 * time.Second
+	// Drain period - time to wait after marking as not-ready before shutting down.
+	// This gives K8s time to remove the pod from endpoints after readiness fails.
+	drainPeriod = 5 * time.Second
 
 	appStartOperationName = "startup"
 )
@@ -129,7 +132,7 @@ func main() {
 	defer shutdownCancel()
 
 	// Handle graceful shutdown
-	shutdownSequence(shutdownCtx, serviceManager, adminServer, monitorCancel, &adminServerWg, &monitorWg)
+	shutdownSequence(shutdownCtx, serviceManager, healthManager, adminServer, monitorCancel, &adminServerWg, &monitorWg)
 
 	logger.InfoWithContext(rootCtx, "Application shutdown complete")
 }
@@ -149,26 +152,44 @@ func setupSignalHandling(ctx context.Context, cancel context.CancelFunc) chan os
 	return sigChan
 }
 
-// shutdownSequence performs a coordinated shutdown of all components
+// shutdownSequence performs a coordinated shutdown of all components.
+// The 5-step flow ensures zero-downtime during K8s rolling updates:
+//  1. Mark as shutting down (readiness returns 503)
+//  2. Drain period (wait for K8s to de-register pod from endpoints)
+//  3. Stop service monitoring
+//  4. Shutdown admin HTTP server (complete in-flight requests)
+//  5. Stop all services
 func shutdownSequence(ctx context.Context, serviceManager *manager.ServiceManager,
-	adminServer *http.Server, monitorCancel context.CancelFunc,
+	healthManager *health.HealthManager, adminServer *http.Server,
+	monitorCancel context.CancelFunc,
 	adminWg *sync.WaitGroup, monitorWg *sync.WaitGroup) {
 
 	ctx = appctx.WithOperationName(ctx, "graceful_shutdown")
 	logger.InfoWithContext(ctx, "Starting graceful shutdown sequence")
 
-	// Step 1: Stop the monitoring first to avoid log spam during shutdown
-	logger.InfoWithContext(ctx, "Stopping service monitoring")
+	// Step 1: Mark as shutting down so readiness probe returns 503
+	logger.InfoWithContext(ctx, "Step 1/5: Marking as not ready (readiness will return 503)")
+	healthManager.SetShuttingDown()
+
+	// Step 2: Wait for drain period to let K8s remove pod from endpoints
+	logger.InfofWithContext(ctx, "Step 2/5: Waiting %v for traffic drain", drainPeriod)
+	select {
+	case <-time.After(drainPeriod):
+		logger.InfoWithContext(ctx, "Drain period complete")
+	case <-ctx.Done():
+		logger.WarnWithContext(ctx, "Context cancelled during drain period")
+	}
+
+	// Step 3: Stop service monitoring to avoid log spam during shutdown
+	logger.InfoWithContext(ctx, "Step 3/5: Stopping service monitoring")
 	monitorCancel()
 
-	// Wait for monitoring to complete
 	monitorDone := make(chan struct{})
 	go func() {
 		monitorWg.Wait()
 		close(monitorDone)
 	}()
 
-	// Wait with timeout
 	select {
 	case <-monitorDone:
 		logger.InfoWithContext(ctx, "Service monitoring stopped successfully")
@@ -176,8 +197,8 @@ func shutdownSequence(ctx context.Context, serviceManager *manager.ServiceManage
 		logger.WarnWithContext(ctx, "Timeout waiting for service monitoring to stop")
 	}
 
-	// Step 2: Shutdown the admin HTTP server
-	logger.InfoWithContext(ctx, "Shutting down admin server")
+	// Step 4: Shutdown the admin HTTP server (completes in-flight requests)
+	logger.InfoWithContext(ctx, "Step 4/5: Shutting down admin server")
 	httpShutdownCtx, httpCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer httpCancel()
 
@@ -185,14 +206,12 @@ func shutdownSequence(ctx context.Context, serviceManager *manager.ServiceManage
 		logger.WithContextError(ctx, err).Warn("Admin server shutdown error")
 	}
 
-	// Wait for HTTP server to complete
 	httpDone := make(chan struct{})
 	go func() {
 		adminWg.Wait()
 		close(httpDone)
 	}()
 
-	// Wait with timeout
 	select {
 	case <-httpDone:
 		logger.InfoWithContext(ctx, "Admin server stopped successfully")
@@ -200,8 +219,8 @@ func shutdownSequence(ctx context.Context, serviceManager *manager.ServiceManage
 		logger.WarnWithContext(ctx, "Timeout waiting for admin server to stop")
 	}
 
-	// Step 3: Shutdown all services
-	logger.InfoWithContext(ctx, "Shutting down all services")
+	// Step 5: Shutdown all services
+	logger.InfoWithContext(ctx, "Step 5/5: Shutting down all services")
 	shutdownServices(ctx, serviceManager)
 }
 
@@ -281,10 +300,9 @@ func createAdminServer(ctx context.Context, serviceManager *manager.ServiceManag
 	// Create HTTP router
 	mux := http.NewServeMux()
 
-	// Add health check endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		healthCheck(w, r, serviceManager, healthManager)
-	})
+	// Register health check endpoints: /health, /health/service, /health/readiness, /health/liveness
+	healthHandler := health.NewHealthHandler(healthManager)
+	healthHandler.RegisterHTTPHandlers(mux)
 
 	// Add service management endpoint
 	mux.HandleFunc("/services", func(w http.ResponseWriter, r *http.Request) {
@@ -308,68 +326,6 @@ func createAdminServer(ctx context.Context, serviceManager *manager.ServiceManag
 
 	logger.InfoWithContext(ctx, "Admin server created successfully")
 	return server
-}
-
-// healthCheck handles health check requests
-func healthCheck(w http.ResponseWriter, r *http.Request, serviceManager *manager.ServiceManager, healthManager *health.HealthManager) {
-	ctx := appctx.FromRequest(r)
-
-	// Create system health report
-	report := health.Report{
-		ServiceName:  "system",
-		Status:       health.StatusUp,
-		CheckResults: []health.CheckResult{},
-		StartTime:    time.Now(),
-		Version:      appVersion,
-		RefreshedAt:  time.Now(),
-	}
-
-	// Check service status
-	allServices := serviceManager.ListServices(ctx)
-
-	// Add service status to report
-	for _, service := range allServices {
-		result := health.CheckResult{
-			Name:      "service." + service.GetName(),
-			Status:    health.StatusUnknown,
-			Category:  health.CategoryDependency,
-			Level:     health.LevelCritical,
-			Timestamp: time.Now(),
-		}
-
-		if service.IsRunning(ctx) {
-			result.Status = health.StatusUp
-			result.Description = "Service is running"
-		} else {
-			result.Status = health.StatusDown
-			result.Description = "Service is not running"
-		}
-
-		report.CheckResults = append(report.CheckResults, result)
-	}
-
-	// Determine overall status based on service status
-	for _, result := range report.CheckResults {
-		if result.Status == health.StatusDown {
-			report.Status = health.StatusDegraded
-			break
-		}
-	}
-
-	// Set appropriate status code
-	if report.Status != health.StatusUp {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	} else {
-		w.WriteHeader(http.StatusOK)
-	}
-
-	// Set content type
-	w.Header().Set("Content-Type", "application/json")
-
-	// Encode health report to JSON
-	if err := json.NewEncoder(w).Encode(report); err != nil {
-		logger.WithContextError(ctx, err).Error("Failed to encode health report")
-	}
 }
 
 // servicesList handles service list requests

@@ -5,6 +5,7 @@ import (
 	appctx "project/pkg/context"
 	"project/pkg/logger"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +20,7 @@ type HealthManager struct {
 	version          string
 	serviceInstances map[string]ServiceChecker
 	startTime        time.Time
+	shuttingDown     int32 // atomic: 1 = shutting down
 }
 
 // NewHealthManager creates a new health check manager
@@ -55,6 +57,16 @@ func (h *HealthManager) RegisterService(service ServiceChecker) {
 	defer h.mu.Unlock()
 
 	h.serviceInstances[service.GetName()] = service
+}
+
+// SetShuttingDown marks the system as shutting down, causing readiness checks to fail
+func (h *HealthManager) SetShuttingDown() {
+	atomic.StoreInt32(&h.shuttingDown, 1)
+}
+
+// IsShuttingDown returns true if the system is in the process of shutting down
+func (h *HealthManager) IsShuttingDown() bool {
+	return atomic.LoadInt32(&h.shuttingDown) == 1
 }
 
 // GetHealthReport retrieves the health report
