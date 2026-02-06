@@ -155,13 +155,13 @@ func TestWebSocketService_GetMetrics(t *testing.T) {
 	// Assert
 	assert.NotNil(t, metrics)
 	// Check base metrics
-	assert.Equal(t, service.GetName(), metrics["name"])
 	assert.Equal(t, service.GetType(), metrics["type"])
+	assert.Equal(t, service.GetWorkflow(), metrics["workflow"])
 	assert.Equal(t, service.IsRunning(ctx), metrics["running"])
 
 	// Check websocket specific metrics
 	assert.Equal(t, 5, metrics["connections"].(int))
-	assert.InDelta(t, 10.0, metrics["last_message_seconds"].(float64), 1.0)
+	assert.InDelta(t, 10.0, metrics["last_message_age_seconds"].(float64), 1.0)
 }
 
 func TestWebSocketService_Configure(t *testing.T) {

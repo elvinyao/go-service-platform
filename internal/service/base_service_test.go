@@ -110,8 +110,8 @@ func TestRegisterHealthChecks(t *testing.T) {
 	// Act
 	checkers := service.RegisterHealthChecks()
 
-	// Assert - should contain both the default running checker and our custom one
-	assert.Len(t, checkers, 2)
+	// Assert - should contain 3 base checkers (memory, goroutine, running) + 1 custom
+	assert.Len(t, checkers, 4)
 	// One should be the service running checker
 	foundRunningChecker := false
 	foundCustomChecker := false
@@ -138,8 +138,8 @@ func TestGetMetrics(t *testing.T) {
 
 	// Assert
 	assert.NotNil(t, metrics)
-	assert.Equal(t, service.GetName(), metrics["name"])
 	assert.Equal(t, service.GetType(), metrics["type"])
+	assert.Equal(t, service.GetWorkflow(), metrics["workflow"])
 	assert.Equal(t, service.IsRunning(ctx), metrics["running"])
 	assert.InDelta(t, 10.0, metrics["uptime_seconds"].(float64), 1.0)
 }

@@ -122,6 +122,10 @@ func (c *Container) GetWorkflowManager(ctx context.Context) (*manager.WorkflowMa
 	}
 	c.mu.RUnlock()
 
+	// Resolve dependencies before acquiring write lock to avoid re-entrant RWMutex deadlock
+	serviceManager := c.GetServiceManager(ctx)
+	factories := workflow.RegisterWorkflowFactories()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -129,12 +133,6 @@ func (c *Container) GetWorkflowManager(ctx context.Context) (*manager.WorkflowMa
 	if c.workflowManager != nil {
 		return c.workflowManager, nil
 	}
-
-	// Workflow manager needs service manager
-	serviceManager := c.GetServiceManager(ctx)
-
-	// Get workflow factories
-	factories := workflow.RegisterWorkflowFactories()
 
 	// Create workflow manager
 	workflowManager, err := manager.NewWorkflowManagerWithDI(ctx, serviceManager, factories...)
