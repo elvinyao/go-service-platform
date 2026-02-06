@@ -17,6 +17,7 @@ type ConfluenceService struct {
 	*BaseService
 	dataAccessor dataaccess.DataAccessor
 	mu           sync.Mutex
+	lifecycleMu  sync.Mutex
 	apiEndpoint  string
 	lastFetch    time.Time
 }
@@ -38,66 +39,39 @@ func NewConfluenceService(name, workflow string, da dataaccess.DataAccessor, ver
 func (s *ConfluenceService) Start(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "start_service")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 
-	if s.IsRunning(ctx) {
-		logger.InfofWithContext(ctx, "Service %s is already running", s.GetName())
-		return nil
-	}
-
-	logger.InfofWithContext(ctx, "Starting service: %s", s.GetName())
-
-	// Initialize service
-	data, err := s.fetchData(ctx)
-	if err != nil {
-		logger.WithContextError(ctx, err).Errorf("Failed to fetch initial data for service %s", s.GetName())
-		return errors.Wrap(err, "Failed to fetch initial data", errors.TypeServiceUnavailable)
-	}
-
-	// Cache initial data
-	err = s.dataAccessor.SetData("confluence_data", data)
-	if err != nil {
-		logger.WithContextError(ctx, err).Warnf("Failed to cache initial data for service %s", s.GetName())
-	}
-
-	s.setRunning(true)
-	logger.InfofWithContext(ctx, "Service %s started successfully", s.GetName())
-	return nil
+	return s.startInternal(ctx)
 }
 
 func (s *ConfluenceService) Stop(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "stop_service")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 
-	if !s.IsRunning(ctx) {
-		logger.InfofWithContext(ctx, "Service %s is not running", s.GetName())
-		return nil
-	}
-
-	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
-	s.setRunning(false)
-	logger.InfofWithContext(ctx, "Service %s stopped successfully", s.GetName())
-	return nil
+	return s.stopInternal(ctx)
 }
 
 func (s *ConfluenceService) Restart(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "restart_service")
 
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
 	if !s.IsRunning(ctx) {
 		logger.InfofWithContext(ctx, "Service %s is not running, starting it", s.GetName())
-		return s.Start(ctx)
+		return s.startInternal(ctx)
 	}
 
 	logger.InfofWithContext(ctx, "Restarting service: %s", s.GetName())
 
-	if err := s.Stop(ctx); err != nil {
+	if err := s.stopInternal(ctx); err != nil {
 		return err
 	}
 
-	return s.Start(ctx)
+	return s.startInternal(ctx)
 }
 
 func (s *ConfluenceService) FetchData(ctx context.Context) (map[string]interface{}, error) {
@@ -199,6 +173,44 @@ func (s *ConfluenceService) fetchData(ctx context.Context) (map[string]interface
 		"users":  []string{"User1", "User2"},
 		"spaces": []string{"Space1", "Space2"},
 	}, nil
+}
+
+func (s *ConfluenceService) startInternal(ctx context.Context) error {
+	if s.IsRunning(ctx) {
+		logger.InfofWithContext(ctx, "Service %s is already running", s.GetName())
+		return nil
+	}
+
+	logger.InfofWithContext(ctx, "Starting service: %s", s.GetName())
+
+	// Initialize service
+	data, err := s.fetchData(ctx)
+	if err != nil {
+		logger.WithContextError(ctx, err).Errorf("Failed to fetch initial data for service %s", s.GetName())
+		return errors.Wrap(err, "Failed to fetch initial data", errors.TypeServiceUnavailable)
+	}
+
+	// Cache initial data
+	err = s.dataAccessor.SetData("confluence_data", data)
+	if err != nil {
+		logger.WithContextError(ctx, err).Warnf("Failed to cache initial data for service %s", s.GetName())
+	}
+
+	s.setRunning(true)
+	logger.InfofWithContext(ctx, "Service %s started successfully", s.GetName())
+	return nil
+}
+
+func (s *ConfluenceService) stopInternal(ctx context.Context) error {
+	if !s.IsRunning(ctx) {
+		logger.InfofWithContext(ctx, "Service %s is not running", s.GetName())
+		return nil
+	}
+
+	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
+	s.setRunning(false)
+	logger.InfofWithContext(ctx, "Service %s stopped successfully", s.GetName())
+	return nil
 }
 
 // confluenceApiChecker checks Confluence API connection
