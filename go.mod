@@ -4,8 +4,8 @@ go 1.22.5
 
 require (
 	github.com/allegro/bigcache/v3 v3.1.0
-	github.com/google/uuid v1.3.0
-	github.com/gorilla/websocket v1.5.0
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -54,6 +54,6 @@ require (
 require (
 	github.com/mattermost/mattermost-server/v6 v6.7.2
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.11.1
 	golang.org/x/sys v0.25.0 // indirect
 )
