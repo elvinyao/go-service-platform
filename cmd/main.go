@@ -9,7 +9,9 @@ import (
 	"os/signal"
 	"project/internal/manager"
 	"project/internal/model"
+	"project/internal/ruleengine"
 	"project/internal/service"
+	workflowimpl "project/internal/workflow"
 	appctx "project/pkg/context"
 	"project/pkg/di"
 	"project/pkg/errors"
@@ -313,6 +315,9 @@ func createAdminServer(ctx context.Context, serviceManager *manager.ServiceManag
 	mux.HandleFunc("/workflows", func(w http.ResponseWriter, r *http.Request) {
 		workflowsList(w, r, workflowManager)
 	})
+	mux.HandleFunc("/rule-engine", func(w http.ResponseWriter, r *http.Request) {
+		ruleEngineInfo(w, r, workflowManager)
+	})
 
 	// Configure HTTP server with timeout settings
 	server := &http.Server{
@@ -402,5 +407,31 @@ func workflowsList(w http.ResponseWriter, r *http.Request, workflowManager *mana
 	// Encode with error handling
 	if err := json.NewEncoder(w).Encode(workflowInfos); err != nil {
 		logger.WithContextError(ctx, err).Error("Failed to encode workflows list")
+	}
+}
+
+// ruleEngineInfo handles rule engine detail requests.
+func ruleEngineInfo(w http.ResponseWriter, r *http.Request, workflowManager *manager.WorkflowManager) {
+	ctx := appctx.FromRequest(r)
+	logger.InfoWithContext(ctx, "Handling rule engine info request")
+
+	wf, err := workflowManager.GetWorkflowByName(ctx, ruleengine.DefaultWorkflowName)
+	if err != nil {
+		http.Error(w, "rule engine workflow not found", http.StatusNotFound)
+		return
+	}
+
+	engine, ok := wf.(*workflowimpl.WorkflowEngine)
+	if !ok {
+		http.Error(w, "registered workflow is not WorkflowEngine", http.StatusInternalServerError)
+		return
+	}
+
+	snapshot := engine.AdminSnapshot(ctx)
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(snapshot); err != nil {
+		logger.WithContextError(ctx, err).Error("Failed to encode rule engine info")
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		return
 	}
 }

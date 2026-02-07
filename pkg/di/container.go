@@ -6,9 +6,11 @@ import (
 	"project/internal/config"
 	"project/internal/dataaccess"
 	"project/internal/manager"
+	"project/internal/ruleengine"
 	"project/internal/service"
 	"project/internal/workflow"
 	"project/pkg/health"
+	"project/pkg/logger"
 	"sync"
 	"time"
 )
@@ -172,11 +174,23 @@ func (c *Container) RegisterServices(ctx context.Context) error {
 	}
 	mattermostService := service.NewMattermostService("MattermostService", "Global", mmConfig, c.version)
 
+	refreshInterval := 5 * time.Minute
+	engineCfg, err := ruleengine.LoadEngineConfig("config/rule-engine.yaml")
+	if err != nil {
+		logger.WarnfWithContext(ctx, "Failed to load rule engine config, use default Confluence refresh interval: %v", err)
+	} else if engineCfg.Confluence.RefreshInterval != "" {
+		if d, parseErr := time.ParseDuration(engineCfg.Confluence.RefreshInterval); parseErr != nil {
+			logger.WarnfWithContext(ctx, "Invalid confluence.refresh_interval=%s, use default: %v", engineCfg.Confluence.RefreshInterval, parseErr)
+		} else if d > 0 {
+			refreshInterval = d
+		}
+	}
+
 	// Create ConfluenceSettingsService for WorkflowC
 	// Defaults point to fake API servers for development
 	settingsConfig := config.ConfluenceSettingsConfig{
 		PageID:          getEnvOrDefault("CONFLUENCE_SETTINGS_PAGE_ID", "settings-page-1"),
-		RefreshInterval: 5 * time.Minute,
+		RefreshInterval: refreshInterval,
 		APIEndpoint:     getEnvOrDefault("CONFLUENCE_API_ENDPOINT", "http://localhost:8090"),
 		SpaceKey:        getEnvOrDefault("CONFLUENCE_SPACE_KEY", "TEST"),
 	}

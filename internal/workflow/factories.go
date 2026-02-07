@@ -1,24 +1,20 @@
 package workflow
 
 import (
+	"context"
 	"project/internal/interfaces"
 	"project/internal/manager"
 )
 
-// CreateWorkflowA creates a WorkflowA instance
-func CreateWorkflowA(serviceManager *manager.ServiceManager) (interfaces.Workflow, error) {
-	return NewWorkflowA(serviceManager), nil
-}
-
-// CreateWorkflowC creates a WorkflowC instance for event-driven notifications
-func CreateWorkflowC(serviceManager *manager.ServiceManager) (interfaces.Workflow, error) {
-	return NewWorkflowC(serviceManager), nil
+// CreateWorkflowEngine creates the unified rule-driven workflow engine.
+func CreateWorkflowEngine(serviceManager *manager.ServiceManager) (interfaces.Workflow, error) {
+	ctx := context.Background()
+	return NewWorkflowEngine(ctx, serviceManager, "config/rule-engine.yaml", "config/workflows.yaml")
 }
 
 // RegisterWorkflowFactories returns all workflow factory functions
 func RegisterWorkflowFactories() []manager.WorkflowFactory {
 	return []manager.WorkflowFactory{
-		CreateWorkflowA,
-		CreateWorkflowC,
+		CreateWorkflowEngine,
 	}
 }
