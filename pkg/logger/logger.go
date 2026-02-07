@@ -22,6 +22,7 @@ var (
 	baseLogger  *slog.Logger
 	currentOut  io.Writer = os.Stdout
 	currentConf Config
+	projectRoot = detectProjectRoot()
 )
 
 // Config holds configuration for the logger
@@ -363,7 +364,7 @@ func resolveBusinessCaller() (string, string) {
 	for {
 		frame, more := frames.Next()
 		if !shouldSkipFrame(frame.File, frame.Function) {
-			return frame.File, frame.Function
+			return relativizePath(frame.File), frame.Function
 		}
 		if !more {
 			break
@@ -384,4 +385,34 @@ func shouldSkipFrame(file, function string) bool {
 		return true
 	}
 	return false
+}
+
+func relativizePath(path string) string {
+	path = filepath.Clean(path)
+	if path == "" {
+		return ""
+	}
+
+	if projectRoot != "" {
+		rel, err := filepath.Rel(projectRoot, path)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return filepath.ToSlash(rel)
+		}
+	}
+
+	return filepath.ToSlash(path)
+}
+
+func detectProjectRoot() string {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok || file == "" {
+		return ""
+	}
+
+	// logger.go is expected at <repo>/pkg/logger/logger.go.
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+		return root
+	}
+	return ""
 }

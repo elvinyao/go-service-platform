@@ -3,6 +3,7 @@ package logger
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	appctx "project/pkg/context"
 	"strings"
 	"testing"
@@ -47,6 +48,7 @@ func TestBusinessCallerLocation(t *testing.T) {
 
 	file, _ := logMap["file"].(string)
 	function, _ := logMap["func"].(string)
+	assert.False(t, filepath.IsAbs(file))
 	assert.NotContains(t, file, "/pkg/logger/logger.go")
 	assert.NotContains(t, file, "/pkg/logger/context_logger.go")
 	assert.NotContains(t, function, "project/pkg/logger.Info")
