@@ -11,7 +11,7 @@ import (
 
 func TestYAMLProviderStartLoadsRules(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "workflows.yaml")
+	path := filepath.Join(dir, "workflow-rules.yaml")
 	content := `
 version: "1"
 rules:
@@ -41,7 +41,7 @@ rules:
 
 func TestYAMLProviderStartFailsOnInvalidRegex(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "workflows.yaml")
+	path := filepath.Join(dir, "workflow-rules.yaml")
 	content := `
 version: "1"
 rules:
