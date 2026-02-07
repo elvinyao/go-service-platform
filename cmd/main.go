@@ -20,8 +20,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -45,7 +43,7 @@ func main() {
 	logger.InitFromEnv()
 
 	// Log application start
-	logger.WithFields(logrus.Fields{
+	logger.WithFields(logger.Fields{
 		"name":    appName,
 		"version": appVersion,
 		"pid":     os.Getpid(),

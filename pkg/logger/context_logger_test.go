@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -146,7 +145,7 @@ func TestLogWithContext(t *testing.T) {
 		err := json.Unmarshal(buf.Bytes(), &logMap)
 		assert.NoError(t, err)
 		assert.Equal(t, "warn message", logMap["msg"])
-		assert.Equal(t, "warning", logMap["level"])
+		assert.Equal(t, "warn", logMap["level"])
 	})
 
 	t.Run("WarnfWithContext", func(t *testing.T) {
@@ -238,7 +237,7 @@ func TestWithContextFields(t *testing.T) {
 	ctx = appctx.WithRequestID(ctx, "req-fields")
 
 	// Test adding fields
-	fields := logrus.Fields{
+	fields := Fields{
 		"custom_field1": "value1",
 		"custom_field2": 42,
 	}

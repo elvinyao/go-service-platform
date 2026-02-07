@@ -3,12 +3,12 @@ package logger
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -24,28 +24,24 @@ func TestDefaultConfig(t *testing.T) {
 func TestSetLevel(t *testing.T) {
 	testCases := []struct {
 		level    string
-		expected logrus.Level
+		expected slog.Level
 	}{
-		{"debug", logrus.DebugLevel},
-		{"info", logrus.InfoLevel},
-		{"warn", logrus.WarnLevel},
-		{"error", logrus.ErrorLevel},
-		{"fatal", logrus.FatalLevel},
-		{"panic", logrus.PanicLevel},
-		{"trace", logrus.TraceLevel},
-		{"invalid", logrus.InfoLevel}, // Default to info for invalid levels
+		{"debug", slog.LevelDebug},
+		{"info", slog.LevelInfo},
+		{"warn", slog.LevelWarn},
+		{"error", slog.LevelError},
+		{"invalid", slog.LevelInfo},
 	}
 
 	for _, tc := range testCases {
-		t.Run("Level_"+tc.level, func(t *testing.T) {
+		t.Run("level_"+tc.level, func(t *testing.T) {
 			SetLevel(tc.level)
-			assert.Equal(t, tc.expected, log.GetLevel())
+			assert.Equal(t, tc.expected, levelVar.Level())
 		})
 	}
 }
 
 func TestConfigure(t *testing.T) {
-	// Test JSON formatter
 	t.Run("JSONFormatter", func(t *testing.T) {
 		var buf bytes.Buffer
 		config := DefaultConfig()
@@ -62,7 +58,6 @@ func TestConfigure(t *testing.T) {
 		assert.Equal(t, "info", logMap["level"])
 	})
 
-	// Test Text formatter
 	t.Run("TextFormatter", func(t *testing.T) {
 		var buf bytes.Buffer
 		config := DefaultConfig()
@@ -77,7 +72,6 @@ func TestConfigure(t *testing.T) {
 		assert.Contains(t, logLine, "msg=\"test message\"")
 	})
 
-	// Reset to default after tests
 	Configure(DefaultConfig())
 }
 
@@ -100,7 +94,7 @@ func TestWithFields(t *testing.T) {
 	Configure(DefaultConfig())
 	SetOutput(&buf)
 
-	fields := logrus.Fields{
+	fields := Fields{
 		"key1": "value1",
 		"key2": 42,
 	}
@@ -134,7 +128,6 @@ func TestLogLevels(t *testing.T) {
 	Configure(DefaultConfig())
 	SetOutput(&buf)
 
-	// Test Info and Infof
 	t.Run("Info", func(t *testing.T) {
 		buf.Reset()
 		Info("info message")
@@ -154,7 +147,6 @@ func TestLogLevels(t *testing.T) {
 		assert.Equal(t, "formatted message", logMap["msg"])
 	})
 
-	// Test Debug level when enabled
 	t.Run("Debug", func(t *testing.T) {
 		buf.Reset()
 		SetLevel("debug")
@@ -166,7 +158,6 @@ func TestLogLevels(t *testing.T) {
 		assert.Equal(t, "debug", logMap["level"])
 	})
 
-	// Test Warn and Warnf
 	t.Run("Warn", func(t *testing.T) {
 		buf.Reset()
 		SetLevel("warn")
@@ -175,7 +166,7 @@ func TestLogLevels(t *testing.T) {
 		err := json.Unmarshal(buf.Bytes(), &logMap)
 		assert.NoError(t, err)
 		assert.Equal(t, "warning message", logMap["msg"])
-		assert.Equal(t, "warning", logMap["level"])
+		assert.Equal(t, "warn", logMap["level"])
 	})
 }
 
@@ -194,7 +185,7 @@ func TestWithPackageName(t *testing.T) {
 }
 
 func TestGetLogger(t *testing.T) {
-	logger := GetLogger()
-	assert.NotNil(t, logger)
-	assert.IsType(t, &logrus.Logger{}, logger)
+	l := GetLogger()
+	assert.NotNil(t, l)
+	assert.IsType(t, &slog.Logger{}, l)
 }
