@@ -1,7 +1,9 @@
 package dataaccess
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/allegro/bigcache/v3"
@@ -11,8 +13,16 @@ type CacheDataAccessor struct {
 	cache *bigcache.BigCache
 }
 
-func NewCacheDataAccessor() *CacheDataAccessor {
-	cache, _ := bigcache.NewBigCache(bigcache.DefaultConfig(10 * time.Minute))
+func NewCacheDataAccessor(ctx context.Context) *CacheDataAccessor {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	cache, err := bigcache.New(ctx, bigcache.DefaultConfig(10*time.Minute))
+	if err != nil {
+		panic(fmt.Sprintf("failed to initialize bigcache: %v", err))
+	}
+
 	return &CacheDataAccessor{
 		cache: cache,
 	}

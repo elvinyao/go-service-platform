@@ -66,7 +66,7 @@ func (c *Container) GetDataAccessor(ctx context.Context) dataaccess.DataAccessor
 		return c.dataAccessor
 	}
 
-	c.dataAccessor = dataaccess.NewCacheDataAccessor()
+	c.dataAccessor = dataaccess.NewCacheDataAccessor(ctx)
 	return c.dataAccessor
 }
 

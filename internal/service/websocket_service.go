@@ -123,11 +123,18 @@ func (s *WebSocketService) connectLoop(ctx context.Context) {
 		logger.InfofWithContext(ctx, "WebSocket connected to %s", url)
 
 		// Read loop
+		stopped := false
 		for {
 			var msg model.Message
 			err := conn.ReadJSON(&msg)
 			if err != nil {
-				logger.WarnfWithContext(ctx, "WebSocket read error: %v", err)
+				select {
+				case <-s.stopChan:
+					logger.DebugfWithContext(ctx, "WebSocket read loop exiting during shutdown: %v", err)
+					stopped = true
+				default:
+					logger.WarnfWithContext(ctx, "WebSocket read error: %v", err)
+				}
 				break
 			}
 
@@ -147,6 +154,16 @@ func (s *WebSocketService) connectLoop(ctx context.Context) {
 		s.conn = nil
 		s.connections = 0
 		s.mu.Unlock()
+
+		if stopped {
+			return
+		}
+
+		select {
+		case <-s.stopChan:
+			return
+		default:
+		}
 
 		logger.InfofWithContext(ctx, "WebSocket disconnected, reconnecting in %v", s.config.ReconnectInterval)
 
