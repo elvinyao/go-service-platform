@@ -159,8 +159,16 @@ func (s *ConfluenceService) fetchData(ctx context.Context) (map[string]interface
 	// Simulate fetching data from Confluence API
 	// In actual implementation, this would call the real API
 
-	// Simulate API delay
-	time.Sleep(100 * time.Millisecond)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Simulate API delay while respecting context cancellation.
+	select {
+	case <-time.After(100 * time.Millisecond):
+	case <-ctx.Done():
+		return nil, errors.Wrap(ctx.Err(), "Confluence fetch cancelled", errors.TypeTimeout)
+	}
 
 	// Update last fetch time
 	s.mu.Lock()
