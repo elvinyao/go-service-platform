@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"time"
 
-	"project/internal/model"
 	"project/pkg/ruleengine"
 )
 
@@ -22,7 +21,7 @@ func (e *HTTPExecutor) Type() string {
 	return "http"
 }
 
-func (e *HTTPExecutor) Execute(ctx context.Context, msg model.Message, action ruleengine.Action) error {
+func (e *HTTPExecutor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
 	method, _ := action.Params["method"].(string)
 	if method == "" {
 		method = http.MethodPost
@@ -35,7 +34,7 @@ func (e *HTTPExecutor) Execute(ctx context.Context, msg model.Message, action ru
 
 	body := ""
 	if tmpl, _ := action.Params["body_template"].(string); tmpl != "" {
-		rendered, err := renderTemplate(tmpl, msg)
+		rendered, err := RenderTemplate(tmpl, msg)
 		if err != nil {
 			return fmt.Errorf("render http body template: %w", err)
 		}

@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"text/template"
 
-	"project/internal/model"
+	"project/pkg/ruleengine"
 )
 
-func renderTemplate(tmpl string, msg model.Message) (string, error) {
+func RenderTemplate(tmpl string, msg ruleengine.Message) (string, error) {
 	if tmpl == "" {
 		return "", nil
 	}

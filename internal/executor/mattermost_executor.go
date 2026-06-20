@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"project/internal/manager"
-	"project/internal/model"
 	"project/internal/service"
+	coreexecutor "project/pkg/executor"
 	"project/pkg/ruleengine"
 )
 
@@ -22,7 +22,7 @@ func (e *MattermostExecutor) Type() string {
 	return "mattermost"
 }
 
-func (e *MattermostExecutor) Execute(ctx context.Context, msg model.Message, action ruleengine.Action) error {
+func (e *MattermostExecutor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
 	svc, ok := e.serviceManager.GetServiceByName(ctx, "MattermostService")
 	if !ok {
 		return fmt.Errorf("MattermostService not found")
@@ -35,7 +35,7 @@ func (e *MattermostExecutor) Execute(ctx context.Context, msg model.Message, act
 
 	channelID, _ := action.Params["channel_id"].(string)
 	templateVal, _ := action.Params["template"].(string)
-	message, err := renderTemplate(templateVal, msg)
+	message, err := coreexecutor.RenderTemplate(templateVal, msg)
 	if err != nil {
 		return fmt.Errorf("render mattermost template: %w", err)
 	}

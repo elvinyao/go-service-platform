@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"project/internal/model"
 	"project/pkg/logger"
 	"project/pkg/ruleengine"
 )
@@ -19,11 +18,11 @@ func (e *LogExecutor) Type() string {
 	return "log"
 }
 
-func (e *LogExecutor) Execute(ctx context.Context, msg model.Message, action ruleengine.Action) error {
+func (e *LogExecutor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
 	level, _ := action.Params["level"].(string)
 	templateVal, _ := action.Params["template"].(string)
 
-	message, err := renderTemplate(templateVal, msg)
+	message, err := RenderTemplate(templateVal, msg)
 	if err != nil {
 		return fmt.Errorf("render log template: %w", err)
 	}

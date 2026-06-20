@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"project/internal/model"
 	"project/pkg/ruleengine"
 
 	"github.com/stretchr/testify/require"
@@ -15,7 +14,7 @@ type dummyExecutor struct {
 }
 
 func (d *dummyExecutor) Type() string { return d.name }
-func (d *dummyExecutor) Execute(ctx context.Context, msg model.Message, action ruleengine.Action) error {
+func (d *dummyExecutor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
 	return nil
 }
 

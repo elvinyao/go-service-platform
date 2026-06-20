@@ -23,7 +23,7 @@ func (e *BadgeDBExecutor) Type() string {
 	return "db"
 }
 
-func (e *BadgeDBExecutor) Execute(ctx context.Context, msg model.Message, action ruleengine.Action) error {
+func (e *BadgeDBExecutor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
 	svc, ok := e.serviceManager.GetServiceByName(ctx, "BadgeDBService")
 	if !ok {
 		return fmt.Errorf("BadgeDBService not found")

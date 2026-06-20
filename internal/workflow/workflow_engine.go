@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 
-	"project/internal/executor"
+	adapterexecutor "project/internal/executor"
 	"project/internal/manager"
 	"project/internal/model"
 	appctx "project/pkg/context"
 	"project/pkg/errors"
+	coreexecutor "project/pkg/executor"
 	"project/pkg/logger"
 	"project/pkg/ruleengine"
 )
@@ -16,7 +17,7 @@ import (
 type WorkflowEngine struct {
 	name      string
 	composer  *ruleengine.Composer
-	executors *executor.Registry
+	executors *coreexecutor.Registry
 }
 
 type EngineAdminSnapshot struct {
@@ -43,12 +44,12 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 		}
 	}
 
-	registry := executor.NewRegistry()
-	allExecutors := []executor.Executor{
-		executor.NewLogExecutor(),
-		executor.NewBadgeDBExecutor(sm),
-		executor.NewHTTPExecutor(),
-		executor.NewMattermostExecutor(sm),
+	registry := coreexecutor.NewRegistry()
+	allExecutors := []coreexecutor.Executor{
+		coreexecutor.NewLogExecutor(),
+		adapterexecutor.NewBadgeDBExecutor(sm),
+		coreexecutor.NewHTTPExecutor(),
+		adapterexecutor.NewMattermostExecutor(sm),
 	}
 	for _, exe := range allExecutors {
 		if err := registry.Register(exe); err != nil {
@@ -99,7 +100,7 @@ func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg model.Message) 
 			continue
 		}
 
-		if err := exe.Execute(ctx, msg, action); err != nil {
+		if err := exe.Execute(ctx, toRuleEngineMessage(msg), action); err != nil {
 			execErrs = append(execErrs, fmt.Sprintf("action[%d] executor=%s failed: %v", idx, action.Executor, err))
 		}
 	}
