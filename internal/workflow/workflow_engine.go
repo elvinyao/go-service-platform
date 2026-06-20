@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	adapterexecutor "project/internal/executor"
+	"project/internal/adapters/badgedb"
+	"project/internal/adapters/confluence"
+	"project/internal/adapters/mattermost"
 	"project/internal/manager"
 	"project/internal/model"
 	appctx "project/pkg/context"
@@ -34,7 +36,7 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 
 	providers := map[string]ruleengine.RuleProvider{
 		"yaml":       ruleengine.NewYAMLProvider("yaml", rulesPath, ruleengine.DefaultWorkflowName),
-		"confluence": NewConfluenceProvider("confluence", ruleengine.DefaultWorkflowName, sm),
+		"confluence": confluence.NewProvider("confluence", ruleengine.DefaultWorkflowName, sm),
 	}
 
 	for _, provider := range providers {
@@ -47,9 +49,9 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 	registry := coreexecutor.NewRegistry()
 	allExecutors := []coreexecutor.Executor{
 		coreexecutor.NewLogExecutor(),
-		adapterexecutor.NewBadgeDBExecutor(sm),
+		badgedb.NewExecutor(sm),
 		coreexecutor.NewHTTPExecutor(),
-		adapterexecutor.NewMattermostExecutor(sm),
+		mattermost.NewExecutor(sm),
 	}
 	for _, exe := range allExecutors {
 		if err := registry.Register(exe); err != nil {

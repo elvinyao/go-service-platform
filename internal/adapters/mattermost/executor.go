@@ -1,4 +1,4 @@
-package executor
+package mattermost
 
 import (
 	"context"
@@ -10,19 +10,19 @@ import (
 	"project/pkg/ruleengine"
 )
 
-type MattermostExecutor struct {
+type Executor struct {
 	serviceManager *manager.ServiceManager
 }
 
-func NewMattermostExecutor(serviceManager *manager.ServiceManager) *MattermostExecutor {
-	return &MattermostExecutor{serviceManager: serviceManager}
+func NewExecutor(serviceManager *manager.ServiceManager) *Executor {
+	return &Executor{serviceManager: serviceManager}
 }
 
-func (e *MattermostExecutor) Type() string {
+func (e *Executor) Type() string {
 	return "mattermost"
 }
 
-func (e *MattermostExecutor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
+func (e *Executor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
 	svc, ok := e.serviceManager.GetServiceByName(ctx, "MattermostService")
 	if !ok {
 		return fmt.Errorf("MattermostService not found")

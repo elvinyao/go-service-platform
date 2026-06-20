@@ -1,4 +1,4 @@
-package workflow
+package confluence
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"project/pkg/ruleengine"
 )
 
-type ConfluenceProvider struct {
+type Provider struct {
 	name           string
 	workflow       string
 	serviceManager *manager.ServiceManager
@@ -21,8 +21,8 @@ type ConfluenceProvider struct {
 	lastGood ruleengine.RuleSet
 }
 
-func NewConfluenceProvider(name, workflow string, serviceManager *manager.ServiceManager) *ConfluenceProvider {
-	return &ConfluenceProvider{
+func NewProvider(name, workflow string, serviceManager *manager.ServiceManager) *Provider {
+	return &Provider{
 		name:           name,
 		workflow:       workflow,
 		serviceManager: serviceManager,
@@ -34,11 +34,11 @@ func NewConfluenceProvider(name, workflow string, serviceManager *manager.Servic
 	}
 }
 
-func (p *ConfluenceProvider) Name() string {
+func (p *Provider) Name() string {
 	return p.name
 }
 
-func (p *ConfluenceProvider) Start(ctx context.Context) error {
+func (p *Provider) Start(ctx context.Context) error {
 	rs := p.Snapshot(ctx)
 	p.mu.Lock()
 	p.lastGood = rs
@@ -46,7 +46,7 @@ func (p *ConfluenceProvider) Start(ctx context.Context) error {
 	return nil
 }
 
-func (p *ConfluenceProvider) Snapshot(ctx context.Context) ruleengine.RuleSet {
+func (p *Provider) Snapshot(ctx context.Context) ruleengine.RuleSet {
 	svc, err := p.getService(ctx)
 	if err != nil {
 		p.mu.RLock()
@@ -122,7 +122,7 @@ func cloneRuleSet(in ruleengine.RuleSet) ruleengine.RuleSet {
 	return out
 }
 
-func (p *ConfluenceProvider) getService(ctx context.Context) (*service.ConfluenceSettingsService, error) {
+func (p *Provider) getService(ctx context.Context) (*service.ConfluenceSettingsService, error) {
 	svc, ok := p.serviceManager.GetServiceByName(ctx, "ConfluenceSettingsService")
 	if !ok {
 		return nil, fmt.Errorf("service ConfluenceSettingsService not found")

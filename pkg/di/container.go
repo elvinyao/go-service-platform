@@ -186,8 +186,8 @@ func (c *Container) RegisterServices(ctx context.Context) error {
 		}
 	}
 
-	// Create ConfluenceSettingsService for WorkflowC
-	// Defaults point to fake API servers for development
+	// Create the demo Confluence settings service used by the rule provider.
+	// Defaults point to fake API servers for development.
 	settingsConfig := config.ConfluenceSettingsConfig{
 		PageID:          getEnvOrDefault("CONFLUENCE_SETTINGS_PAGE_ID", "settings-page-1"),
 		RefreshInterval: refreshInterval,

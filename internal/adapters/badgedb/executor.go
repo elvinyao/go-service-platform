@@ -1,4 +1,4 @@
-package executor
+package badgedb
 
 import (
 	"context"
@@ -11,19 +11,19 @@ import (
 	"project/pkg/ruleengine"
 )
 
-type BadgeDBExecutor struct {
+type Executor struct {
 	serviceManager *manager.ServiceManager
 }
 
-func NewBadgeDBExecutor(serviceManager *manager.ServiceManager) *BadgeDBExecutor {
-	return &BadgeDBExecutor{serviceManager: serviceManager}
+func NewExecutor(serviceManager *manager.ServiceManager) *Executor {
+	return &Executor{serviceManager: serviceManager}
 }
 
-func (e *BadgeDBExecutor) Type() string {
+func (e *Executor) Type() string {
 	return "db"
 }
 
-func (e *BadgeDBExecutor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
+func (e *Executor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
 	svc, ok := e.serviceManager.GetServiceByName(ctx, "BadgeDBService")
 	if !ok {
 		return fmt.Errorf("BadgeDBService not found")
