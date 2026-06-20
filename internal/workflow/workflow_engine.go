@@ -7,7 +7,6 @@ import (
 	"project/internal/executor"
 	"project/internal/manager"
 	"project/internal/model"
-	confluencerules "project/internal/ruleengine"
 	appctx "project/pkg/context"
 	"project/pkg/errors"
 	"project/pkg/logger"
@@ -34,7 +33,7 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 
 	providers := map[string]ruleengine.RuleProvider{
 		"yaml":       ruleengine.NewYAMLProvider("yaml", rulesPath, ruleengine.DefaultWorkflowName),
-		"confluence": confluencerules.NewConfluenceProvider("confluence", ruleengine.DefaultWorkflowName, sm),
+		"confluence": NewConfluenceProvider("confluence", ruleengine.DefaultWorkflowName, sm),
 	}
 
 	for _, provider := range providers {
