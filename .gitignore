@@ -19,3 +19,6 @@ dist/
 *.out
 
 .repomix/
+
+# Local development worktrees
+.worktrees/
