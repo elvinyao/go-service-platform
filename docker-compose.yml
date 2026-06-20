@@ -18,6 +18,6 @@ services:
       MATTERMOST_SERVER_URL: "http://fake-server:8091"
       MATTERMOST_WS_URL: "ws://fake-server:8092"
     ports:
-      - "8080:8080"
+      - "${ADMIN_PORT:-18080}:8080"
     depends_on:
       - fake-server

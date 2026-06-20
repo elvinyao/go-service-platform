@@ -56,9 +56,11 @@ docker compose up --build
 Then verify:
 
 ```bash
-curl -s http://localhost:8080/health
-curl -s http://localhost:8080/rule-engine
+curl -s http://localhost:18080/health
+curl -s http://localhost:18080/rule-engine
 ```
+
+The Compose stack publishes the admin API on host port `18080` by default to avoid common local `8080` conflicts. Override it with `ADMIN_PORT=8080 docker compose up --build` if you prefer `8080`.
 
 ## Core Packages
 

@@ -69,9 +69,11 @@ docker compose up --build
 Verify:
 
 ```bash
-curl -s http://localhost:8080/health
-curl -s http://localhost:8080/rule-engine
+curl -s http://localhost:18080/health
+curl -s http://localhost:18080/rule-engine
 ```
+
+Compose keeps the container admin listener on `:8080` and publishes it on host port `18080` by default. Use `ADMIN_PORT=8080 docker compose up --build` to publish it on host port `8080`.
 
 Stop:
 
