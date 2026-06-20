@@ -1,0 +1,23 @@
+services:
+  fake-server:
+    build:
+      context: ./fake-server
+    ports:
+      - "8090:8090"
+      - "8091:8091"
+      - "8092:8092"
+      - "8093:8093"
+
+  service-workflow:
+    build:
+      context: .
+    environment:
+      ADMIN_ADDR: ":8080"
+      WEBSOCKET_SERVER_URL: "ws://fake-server:8093"
+      CONFLUENCE_API_ENDPOINT: "http://fake-server:8090"
+      MATTERMOST_SERVER_URL: "http://fake-server:8091"
+      MATTERMOST_WS_URL: "ws://fake-server:8092"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - fake-server
