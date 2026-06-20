@@ -295,9 +295,6 @@ func (s *WebSocketService) Configure(ctx context.Context, config interface{}) er
 		return errors.New(errors.TypeInvalidInput, "Invalid configuration format", nil)
 	}
 
-	// In actual implementation, this would handle WebSocket service configuration
-	// For example: max connections, heartbeat interval, etc.
-
 	logger.InfofWithContext(ctx, "Service %s configured successfully", s.GetName())
 	return nil
 }

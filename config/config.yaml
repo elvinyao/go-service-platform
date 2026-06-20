@@ -1,18 +1,2 @@
-services:
-  - name: ConfluenceServiceA
-    workflow: A
-    type: confluence
-  - name: WebSocketServiceA
-    workflow: A
-    type: websocket
-  - name: BadgeDBService
-    workflow: Global
-    type: badgedb
-  # 其他服务配置...
-
-workflows:
-  - name: WorkflowA
-    services:
-      - ConfluenceServiceA
-      - WebSocketServiceA
-  # 其他工作流配置...
+# This file is retained only for migration notes.
+# The reference runtime loads config/runtime.yaml, config/rule-engine.yaml, and config/workflow-rules.yaml.

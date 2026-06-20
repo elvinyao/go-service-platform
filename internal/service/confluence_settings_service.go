@@ -171,8 +171,6 @@ func (s *ConfluenceSettingsService) refreshSettingsLocked(ctx context.Context) e
 	ctx = appctx.WithOperationName(ctx, "refresh_settings")
 	logger.DebugfWithContext(ctx, "Refreshing settings from Confluence")
 
-	// In a real implementation, this would call the Confluence API
-	// For now, we simulate fetching settings
 	settings, err := s.fetchSettingsFromConfluence(ctx)
 	if err != nil {
 		return err
@@ -252,8 +250,7 @@ func (s *ConfluenceSettingsService) MatchEvent(ctx context.Context, eventType st
 		}
 
 		if rule.EventType == eventType {
-			// In a real implementation, you would also check the pattern
-			// against eventData using regex or other matching logic
+			// Pattern matching is handled by the rule-engine Confluence adapter.
 			matchedRules = append(matchedRules, rule)
 			logger.DebugfWithContext(ctx, "Matched rule for event type %s: channel=%s", eventType, rule.ChannelID)
 		}

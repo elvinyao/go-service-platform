@@ -85,8 +85,7 @@ func (wm *WorkflowManager) DispatchMessage(ctx context.Context, msg model.Messag
 	ctx = appctx.WithOperationName(ctx, "dispatch_message")
 	logger.InfofWithContext(ctx, "Dispatching message of type: %s", msg.Type)
 
-	// Simple version, dispatch message to all workflows
-	// In a real implementation, more complex routing logic may be needed
+	// Dispatch to registered workflows until one handles the message.
 
 	wm.mu.Lock()
 	workflows := make([]interfaces.Workflow, 0, len(wm.workflows))

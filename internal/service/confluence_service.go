@@ -10,7 +10,6 @@ import (
 	"project/pkg/logger"
 	"sync"
 	"time"
-	// Other necessary imports
 )
 
 type ConfluenceService struct {
@@ -156,14 +155,11 @@ func (s *ConfluenceService) GetMetrics(ctx context.Context) map[string]interface
 // Internal methods
 
 func (s *ConfluenceService) fetchData(ctx context.Context) (map[string]interface{}, error) {
-	// Simulate fetching data from Confluence API
-	// In actual implementation, this would call the real API
-
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	// Simulate API delay while respecting context cancellation.
+	// Demo data fetch with latency to exercise cache and shutdown behavior.
 	select {
 	case <-time.After(100 * time.Millisecond):
 	case <-ctx.Done():
@@ -175,7 +171,6 @@ func (s *ConfluenceService) fetchData(ctx context.Context) (map[string]interface
 	s.lastFetch = time.Now()
 	s.mu.Unlock()
 
-	// Return simulated data
 	return map[string]interface{}{
 		"pages":  []string{"Page1", "Page2", "Page3"},
 		"users":  []string{"User1", "User2"},

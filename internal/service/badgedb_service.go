@@ -9,7 +9,6 @@ import (
 	"project/pkg/logger"
 	"sync"
 	"time"
-	// Other necessary imports
 )
 
 // BadgeDBService manages badge data
@@ -219,16 +218,14 @@ func (s *BadgeDBService) GetMetrics(ctx context.Context) map[string]interface{} 
 
 // Helper methods
 func (s *BadgeDBService) loadDB(ctx context.Context) error {
-	// Simulate loading from a file
 	logger.DebugfWithContext(ctx, "Loading database from: %s", s.dbPath)
-	// In a real implementation, load from a file or database
+	// The demo store is in-memory; dbPath is retained for adapter configuration.
 	return nil
 }
 
 func (s *BadgeDBService) backupDB(ctx context.Context) error {
-	// Simulate backing up to a file
 	logger.DebugfWithContext(ctx, "Backing up database to: %s", s.dbPath)
-	// In a real implementation, save to a file or database
+	// The demo store records backup time without writing external state.
 	s.lastBackup = time.Now()
 	return nil
 }

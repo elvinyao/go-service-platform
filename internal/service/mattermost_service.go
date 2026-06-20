@@ -170,8 +170,7 @@ func (s *MattermostService) ReportHealth(ctx context.Context, report *health.Rep
 	if s.client == nil || s.wsClient == nil {
 		result.SetStatus(health.StatusDown, "Mattermost client not initialized")
 	} else {
-		// Simple connection check - if we have a client, consider it up
-		// In a real implementation, you would perform more robust checks
+		// The demo adapter treats initialized clients as connected.
 		result.SetStatus(health.StatusUp, "Mattermost WebSocket connection established")
 
 		// Add connection details
