@@ -7,8 +7,8 @@ import (
 
 	"project/internal/manager"
 	"project/internal/model"
-	"project/internal/ruleengine"
 	"project/internal/service"
+	"project/pkg/ruleengine"
 )
 
 type BadgeDBExecutor struct {

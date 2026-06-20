@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"project/internal/model"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -74,11 +72,11 @@ func TestComposerPipelineRequiresAllProvidersMatch(t *testing.T) {
 		"confluence": cfProvider,
 	})
 
-	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, model.Message{Type: "AAA", Content: "normal"})
+	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA", Content: "normal"})
 	require.NoError(t, err)
 	assert.Empty(t, plan.Actions)
 
-	plan, err = composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, model.Message{Type: "AAA", Content: "urgent event"})
+	plan, err = composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA", Content: "urgent event"})
 	require.NoError(t, err)
 	require.Len(t, plan.Actions, 2)
 	assert.Equal(t, "a1", plan.Actions[0].ID)
@@ -122,7 +120,7 @@ func TestComposerDedupsActionsByID(t *testing.T) {
 	}
 
 	composer := NewComposer(cfg, map[string]RuleProvider{"yaml": provider})
-	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, model.Message{Type: "AAA"})
+	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA"})
 	require.NoError(t, err)
 	require.Len(t, plan.Actions, 1)
 	assert.Equal(t, "dup", plan.Actions[0].ID)

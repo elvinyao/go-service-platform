@@ -5,11 +5,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	"project/internal/model"
 )
 
-func MatchRules(rules []Rule, msg model.Message) []Rule {
+func MatchRules(rules []Rule, msg Message) []Rule {
 	matched := make([]Rule, 0)
 	for _, rule := range rules {
 		if !rule.Enabled {
@@ -27,7 +25,7 @@ func MatchRules(rules []Rule, msg model.Message) []Rule {
 	return matched
 }
 
-func MatchRule(rule Rule, msg model.Message) bool {
+func MatchRule(rule Rule, msg Message) bool {
 	if len(rule.Conditions) == 0 {
 		return true
 	}
@@ -40,7 +38,7 @@ func MatchRule(rule Rule, msg model.Message) bool {
 	return true
 }
 
-func MatchCondition(cond Condition, msg model.Message) bool {
+func MatchCondition(cond Condition, msg Message) bool {
 	actual, ok := getMessageField(msg, cond.Field)
 	if !ok {
 		return false
@@ -65,7 +63,7 @@ func MatchCondition(cond Condition, msg model.Message) bool {
 	}
 }
 
-func getMessageField(msg model.Message, field string) (interface{}, bool) {
+func getMessageField(msg Message, field string) (interface{}, bool) {
 	switch field {
 	case "id":
 		return msg.ID, true

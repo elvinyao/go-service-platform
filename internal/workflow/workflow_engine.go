@@ -7,10 +7,11 @@ import (
 	"project/internal/executor"
 	"project/internal/manager"
 	"project/internal/model"
-	"project/internal/ruleengine"
+	confluencerules "project/internal/ruleengine"
 	appctx "project/pkg/context"
 	"project/pkg/errors"
 	"project/pkg/logger"
+	"project/pkg/ruleengine"
 )
 
 type WorkflowEngine struct {
@@ -33,7 +34,7 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 
 	providers := map[string]ruleengine.RuleProvider{
 		"yaml":       ruleengine.NewYAMLProvider("yaml", rulesPath, ruleengine.DefaultWorkflowName),
-		"confluence": ruleengine.NewConfluenceProvider("confluence", ruleengine.DefaultWorkflowName, sm),
+		"confluence": confluencerules.NewConfluenceProvider("confluence", ruleengine.DefaultWorkflowName, sm),
 	}
 
 	for _, provider := range providers {
@@ -79,7 +80,7 @@ func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg model.Message) 
 	ctx = appctx.WithServiceName(ctx, w.name)
 	ctx = appctx.WithOperationName(ctx, "process_message")
 
-	plan, err := w.composer.BuildExecutionPlan(ctx, w.name, msg)
+	plan, err := w.composer.BuildExecutionPlan(ctx, w.name, toRuleEngineMessage(msg))
 	if err != nil {
 		return errors.Wrap(err, "failed to build execution plan", errors.TypeInternal)
 	}
@@ -112,4 +113,15 @@ func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg model.Message) 
 	}
 
 	return nil
+}
+
+func toRuleEngineMessage(msg model.Message) ruleengine.Message {
+	return ruleengine.Message{
+		ID:        msg.ID,
+		Type:      msg.Type,
+		Content:   msg.Content,
+		UserID:    msg.UserID,
+		Timestamp: msg.Timestamp,
+		Metadata:  msg.Metadata,
+	}
 }

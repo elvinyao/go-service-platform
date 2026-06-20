@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"project/internal/model"
-	"project/internal/ruleengine"
+	"project/pkg/ruleengine"
 )
 
 type HTTPExecutor struct{}

@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-
-	"project/internal/model"
 )
 
 type Composer struct {
@@ -44,7 +42,7 @@ func (c *Composer) Snapshot(ctx context.Context) ComposerSnapshot {
 	}
 }
 
-func (c *Composer) BuildExecutionPlan(ctx context.Context, workflow string, msg model.Message) (ExecutionPlan, error) {
+func (c *Composer) BuildExecutionPlan(ctx context.Context, workflow string, msg Message) (ExecutionPlan, error) {
 	policy := c.config.PolicyForWorkflow(workflow)
 	providerNames := providerOrder(policy)
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"project/internal/model"
-	"project/internal/ruleengine"
+	"project/pkg/ruleengine"
 
 	"github.com/stretchr/testify/require"
 )

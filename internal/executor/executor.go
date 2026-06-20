@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"project/internal/model"
-	"project/internal/ruleengine"
+	"project/pkg/ruleengine"
 )
 
 type Executor interface {

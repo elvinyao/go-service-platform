@@ -50,6 +50,15 @@ type RuleSet struct {
 	LastError string    `json:"last_error,omitempty"`
 }
 
+type Message struct {
+	ID        string                 `json:"id"`
+	Type      string                 `json:"type"`
+	Content   string                 `json:"content"`
+	UserID    string                 `json:"user_id"`
+	Timestamp time.Time              `json:"timestamp"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+}
+
 type ActionMergeConfig struct {
 	Dedup bool   `yaml:"dedup" json:"dedup"`
 	Order string `yaml:"order" json:"order"`

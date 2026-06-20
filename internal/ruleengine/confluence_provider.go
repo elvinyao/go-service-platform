@@ -9,6 +9,7 @@ import (
 	"project/internal/manager"
 	"project/internal/service"
 	"project/pkg/logger"
+	"project/pkg/ruleengine"
 )
 
 type ConfluenceProvider struct {
@@ -17,7 +18,7 @@ type ConfluenceProvider struct {
 	serviceManager *manager.ServiceManager
 
 	mu       sync.RWMutex
-	lastGood RuleSet
+	lastGood ruleengine.RuleSet
 }
 
 func NewConfluenceProvider(name, workflow string, serviceManager *manager.ServiceManager) *ConfluenceProvider {
@@ -25,10 +26,10 @@ func NewConfluenceProvider(name, workflow string, serviceManager *manager.Servic
 		name:           name,
 		workflow:       workflow,
 		serviceManager: serviceManager,
-		lastGood: RuleSet{
+		lastGood: ruleengine.RuleSet{
 			Source:  name,
 			Version: "1",
-			Rules:   []Rule{},
+			Rules:   []ruleengine.Rule{},
 		},
 	}
 }
@@ -45,7 +46,7 @@ func (p *ConfluenceProvider) Start(ctx context.Context) error {
 	return nil
 }
 
-func (p *ConfluenceProvider) Snapshot(ctx context.Context) RuleSet {
+func (p *ConfluenceProvider) Snapshot(ctx context.Context) ruleengine.RuleSet {
 	svc, err := p.getService(ctx)
 	if err != nil {
 		p.mu.RLock()
@@ -56,25 +57,25 @@ func (p *ConfluenceProvider) Snapshot(ctx context.Context) RuleSet {
 	}
 
 	settings := svc.GetSettings(ctx)
-	rules := make([]Rule, 0, len(settings))
+	rules := make([]ruleengine.Rule, 0, len(settings))
 	for idx, rule := range settings {
-		conditions := []Condition{
+		conditions := []ruleengine.Condition{
 			{
 				Field: "type",
-				Op:    OpEq,
+				Op:    ruleengine.OpEq,
 				Value: rule.EventType,
 			},
 		}
 
 		if rule.Pattern != "" {
-			conditions = append(conditions, Condition{
+			conditions = append(conditions, ruleengine.Condition{
 				Field: "content",
-				Op:    OpRegex,
+				Op:    ruleengine.OpRegex,
 				Value: rule.Pattern,
 			})
 		}
 
-		actions := []Action{
+		actions := []ruleengine.Action{
 			{
 				ID:       fmt.Sprintf("cf_action_%d", idx),
 				Executor: "mattermost",
@@ -86,7 +87,7 @@ func (p *ConfluenceProvider) Snapshot(ctx context.Context) RuleSet {
 			},
 		}
 
-		rules = append(rules, Rule{
+		rules = append(rules, ruleengine.Rule{
 			ID:         fmt.Sprintf("cf_rule_%d_%s", idx, rule.EventType),
 			Workflow:   p.workflow,
 			Source:     p.name,
@@ -97,7 +98,7 @@ func (p *ConfluenceProvider) Snapshot(ctx context.Context) RuleSet {
 		})
 	}
 
-	rs := RuleSet{
+	rs := ruleengine.RuleSet{
 		Source:   p.name,
 		Version:  "1",
 		LoadedAt: time.Now(),
@@ -109,6 +110,16 @@ func (p *ConfluenceProvider) Snapshot(ctx context.Context) RuleSet {
 	p.mu.Unlock()
 
 	return rs
+}
+
+func cloneRuleSet(in ruleengine.RuleSet) ruleengine.RuleSet {
+	out := in
+	out.Rules = append([]ruleengine.Rule(nil), in.Rules...)
+	for i := range out.Rules {
+		out.Rules[i].Conditions = append([]ruleengine.Condition(nil), in.Rules[i].Conditions...)
+		out.Rules[i].Actions = append([]ruleengine.Action(nil), in.Rules[i].Actions...)
+	}
+	return out
 }
 
 func (p *ConfluenceProvider) getService(ctx context.Context) (*service.ConfluenceSettingsService, error) {

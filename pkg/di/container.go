@@ -6,11 +6,11 @@ import (
 	"project/internal/config"
 	"project/internal/dataaccess"
 	"project/internal/manager"
-	"project/internal/ruleengine"
 	"project/internal/service"
 	"project/internal/workflow"
 	"project/pkg/health"
 	"project/pkg/logger"
+	"project/pkg/ruleengine"
 	"sync"
 	"time"
 )

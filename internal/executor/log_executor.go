@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"project/internal/model"
-	"project/internal/ruleengine"
 	"project/pkg/logger"
+	"project/pkg/ruleengine"
 )
 
 type LogExecutor struct{}

@@ -4,13 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"project/internal/model"
-
 	"github.com/stretchr/testify/assert"
 )
 
 func TestMatchCondition(t *testing.T) {
-	msg := model.Message{
+	msg := Message{
 		ID:        "m1",
 		Type:      "AAA",
 		Content:   "urgent operation",
@@ -33,7 +31,7 @@ func TestMatchCondition(t *testing.T) {
 }
 
 func TestMatchRulesOrdersByPriority(t *testing.T) {
-	msg := model.Message{Type: "AAA"}
+	msg := Message{Type: "AAA"}
 	rules := []Rule{
 		{ID: "r2", Enabled: true, Priority: 20, Conditions: []Condition{{Field: "type", Op: OpEq, Value: "AAA"}}},
 		{ID: "r1", Enabled: true, Priority: 10, Conditions: []Condition{{Field: "type", Op: OpEq, Value: "AAA"}}},
