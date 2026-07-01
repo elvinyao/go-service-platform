@@ -351,12 +351,14 @@ func (s *FakeMattermostServer) handleWebSocket(w http.ResponseWriter, r *http.Re
 	log.Printf("Fake Mattermost WebSocket client connected")
 
 	// Send hello event
+	s.wsMu.Lock()
 	conn.WriteJSON(map[string]interface{}{
 		"event": "hello",
 		"data": map[string]interface{}{
 			"server_version": "6.0.0-fake",
 		},
 	})
+	s.wsMu.Unlock()
 
 	// Keep connection open and read messages
 	for {

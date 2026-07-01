@@ -25,6 +25,7 @@ type WebSocketMessage struct {
 // FakeWebSocketServer provides a mock WebSocket server for testing
 type FakeWebSocketServer struct {
 	mu              sync.RWMutex
+	writeMu         sync.Mutex
 	port            int
 	server          *http.Server
 	clients         map[*websocket.Conn]bool
@@ -126,7 +127,9 @@ func (s *FakeWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Req
 		Content:   "Connected to Fake WebSocket Server",
 		Timestamp: time.Now(),
 	}
+	s.writeMu.Lock()
 	conn.WriteJSON(welcomeMsg)
+	s.writeMu.Unlock()
 
 	// Read messages from client
 	go s.readMessages(conn)
@@ -238,9 +241,11 @@ func (s *FakeWebSocketServer) Broadcast(msg WebSocketMessage) {
 	s.mu.RUnlock()
 
 	for _, conn := range clients {
+		s.writeMu.Lock()
 		if err := conn.WriteJSON(msg); err != nil {
 			log.Printf("Error sending to client: %v", err)
 		}
+		s.writeMu.Unlock()
 	}
 }
 

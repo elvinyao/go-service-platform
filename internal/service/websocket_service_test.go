@@ -103,13 +103,11 @@ func TestWebSocketService_OnMessage(t *testing.T) {
 	assert.NoError(t, err)
 	defer service.Stop(ctx)
 
-	messageReceived := false
+	received := make(chan model.Message, 1)
 
 	// Create a message handler
 	handler := func(msg model.Message) {
-		messageReceived = true
-		assert.Equal(t, "test_type", msg.Type)
-		assert.Equal(t, "test_content", msg.Content)
+		received <- msg
 	}
 
 	// Act - Register message handler
@@ -130,9 +128,13 @@ func TestWebSocketService_OnMessage(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 
-	// Give the goroutine a moment to execute the handler
-	time.Sleep(50 * time.Millisecond)
-	assert.True(t, messageReceived)
+	select {
+	case msg := <-received:
+		assert.Equal(t, "test_type", msg.Type)
+		assert.Equal(t, "test_content", msg.Content)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for message handler")
+	}
 	assert.False(t, service.lastMessage.IsZero())
 }
 

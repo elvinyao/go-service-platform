@@ -126,6 +126,179 @@ func TestComposerDedupsActionsByID(t *testing.T) {
 	assert.Equal(t, "dup", plan.Actions[0].ID)
 }
 
+func TestComposerDedupsActionsWithoutIDByExecutorAndParams(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.Workflows = []WorkflowPolicy{
+		{
+			Name:      DefaultWorkflowName,
+			Providers: []string{"yaml"},
+			Mode:      CompositionSingle,
+			ActionMerge: ActionMergeConfig{
+				Dedup: true,
+				Order: ActionOrderPriority,
+			},
+		},
+	}
+
+	rule := testRule("r1", "", 10, "log")
+	rule.Actions = []Action{
+		{Executor: "log", Priority: 20, Params: map[string]interface{}{"template": "same"}},
+		{Executor: "log", Priority: 10, Params: map[string]interface{}{"template": "same"}},
+	}
+	composer := NewComposer(cfg, map[string]RuleProvider{"yaml": NewStaticProvider("yaml", RuleSet{Rules: []Rule{rule}})})
+
+	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA"})
+	require.NoError(t, err)
+	require.Len(t, plan.Actions, 1)
+}
+
+func TestComposerSingleUsesOnlyFirstProvider(t *testing.T) {
+	cfg := EngineConfig{
+		Workflows: []WorkflowPolicy{
+			{
+				Name:      DefaultWorkflowName,
+				Providers: []string{"first", "second"},
+				Mode:      CompositionSingle,
+				ActionMerge: ActionMergeConfig{
+					Dedup: true,
+					Order: ActionOrderPriority,
+				},
+			},
+		},
+	}
+
+	composer := NewComposer(cfg, map[string]RuleProvider{
+		"first":  NewStaticProvider("first", RuleSet{Rules: []Rule{testRule("first-rule", "first-action", 20, "log")}}),
+		"second": NewStaticProvider("second", RuleSet{Rules: []Rule{testRule("second-rule", "second-action", 10, "log")}}),
+	})
+
+	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA"})
+	require.NoError(t, err)
+	require.Len(t, plan.Actions, 1)
+	assert.Equal(t, "first-action", plan.Actions[0].ID)
+}
+
+func TestComposerOrCombinesAnyMatchingProvider(t *testing.T) {
+	cfg := EngineConfig{
+		Workflows: []WorkflowPolicy{
+			{
+				Name:      DefaultWorkflowName,
+				Providers: []string{"yaml", "confluence"},
+				Mode:      CompositionOr,
+				ActionMerge: ActionMergeConfig{
+					Dedup: true,
+					Order: ActionOrderPriority,
+				},
+			},
+		},
+	}
+
+	composer := NewComposer(cfg, map[string]RuleProvider{
+		"yaml":       NewStaticProvider("yaml", RuleSet{Rules: []Rule{testRule("yaml-rule", "yaml-action", 20, "log")}}),
+		"confluence": NewStaticProvider("confluence", RuleSet{Rules: []Rule{testRule("cf-rule", "cf-action", 10, "log")}}),
+	})
+
+	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA"})
+	require.NoError(t, err)
+	require.Len(t, plan.Actions, 2)
+	assert.Equal(t, []string{"cf-action", "yaml-action"}, []string{plan.Actions[0].ID, plan.Actions[1].ID})
+}
+
+func TestComposerAndRequiresEveryProviderToMatch(t *testing.T) {
+	cfg := EngineConfig{
+		Workflows: []WorkflowPolicy{
+			{
+				Name:      DefaultWorkflowName,
+				Providers: []string{"yaml", "confluence"},
+				Mode:      CompositionAnd,
+				ActionMerge: ActionMergeConfig{
+					Dedup: true,
+					Order: ActionOrderPriority,
+				},
+			},
+		},
+	}
+
+	composer := NewComposer(cfg, map[string]RuleProvider{
+		"yaml":       NewStaticProvider("yaml", RuleSet{Rules: []Rule{testRule("yaml-rule", "yaml-action", 10, "log")}}),
+		"confluence": NewStaticProvider("confluence", RuleSet{Rules: []Rule{testRuleForType("cf-rule", "cf-action", 20, "log", "BBB")}}),
+	})
+
+	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA"})
+	require.NoError(t, err)
+	assert.Empty(t, plan.Actions)
+}
+
+func TestComposerReturnsErrorForUnknownProvider(t *testing.T) {
+	cfg := EngineConfig{
+		Workflows: []WorkflowPolicy{
+			{
+				Name:      DefaultWorkflowName,
+				Providers: []string{"missing"},
+				Mode:      CompositionSingle,
+			},
+		},
+	}
+
+	composer := NewComposer(cfg, map[string]RuleProvider{})
+	_, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rule provider missing not found")
+}
+
+func TestComposerIgnoresDisabledRules(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.Workflows = []WorkflowPolicy{
+		{
+			Name:      DefaultWorkflowName,
+			Providers: []string{"yaml"},
+			Mode:      CompositionSingle,
+			ActionMerge: ActionMergeConfig{
+				Dedup: true,
+				Order: ActionOrderPriority,
+			},
+		},
+	}
+
+	disabled := testRule("disabled-rule", "disabled-action", 10, "log")
+	disabled.Enabled = false
+	composer := NewComposer(cfg, map[string]RuleProvider{
+		"yaml": NewStaticProvider("yaml", RuleSet{Rules: []Rule{disabled}}),
+	})
+
+	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA"})
+	require.NoError(t, err)
+	assert.Empty(t, plan.Actions)
+}
+
+func TestComposerOrdersActionsByPriorityAcrossMatchedRules(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.Workflows = []WorkflowPolicy{
+		{
+			Name:      DefaultWorkflowName,
+			Providers: []string{"yaml"},
+			Mode:      CompositionSingle,
+			ActionMerge: ActionMergeConfig{
+				Dedup: true,
+				Order: ActionOrderPriority,
+			},
+		},
+	}
+
+	composer := NewComposer(cfg, map[string]RuleProvider{
+		"yaml": NewStaticProvider("yaml", RuleSet{Rules: []Rule{
+			testRule("low-priority-rule", "third", 300, "log"),
+			testRule("high-priority-rule", "first", 100, "log"),
+			testRule("middle-priority-rule", "second", 200, "log"),
+		}}),
+	})
+
+	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA"})
+	require.NoError(t, err)
+	require.Len(t, plan.Actions, 3)
+	assert.Equal(t, []string{"first", "second", "third"}, []string{plan.Actions[0].ID, plan.Actions[1].ID, plan.Actions[2].ID})
+}
+
 func TestComposerSnapshotReturnsProviders(t *testing.T) {
 	cfg := DefaultEngineConfig()
 	provider := &staticProvider{
@@ -141,4 +314,21 @@ func TestComposerSnapshotReturnsProviders(t *testing.T) {
 	require.NotEmpty(t, snapshot.Config.Workflows)
 	require.Contains(t, snapshot.Providers, "yaml")
 	require.Len(t, snapshot.Providers["yaml"].Rules, 1)
+}
+
+func testRule(id, actionID string, priority int, executor string) Rule {
+	return testRuleForType(id, actionID, priority, executor, "AAA")
+}
+
+func testRuleForType(id, actionID string, priority int, executor string, msgType string) Rule {
+	return Rule{
+		ID:       id,
+		Workflow: DefaultWorkflowName,
+		Enabled:  true,
+		Priority: priority,
+		Conditions: []Condition{
+			{Field: "type", Op: OpEq, Value: msgType},
+		},
+		Actions: []Action{{ID: actionID, Executor: executor, Priority: priority}},
+	}
 }

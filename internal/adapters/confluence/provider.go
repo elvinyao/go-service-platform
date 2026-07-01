@@ -135,6 +135,7 @@ func (p *Provider) getService(ctx context.Context) (*service.ConfluenceSettingsS
 
 	if !settingsService.IsRunning(ctx) {
 		logger.WarnfWithContext(ctx, "ConfluenceSettingsService is not running; using last snapshot")
+		return nil, fmt.Errorf("service ConfluenceSettingsService is not running")
 	}
 
 	return settingsService, nil

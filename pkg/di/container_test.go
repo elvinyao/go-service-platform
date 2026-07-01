@@ -2,6 +2,7 @@ package di
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"project/pkg/health"
@@ -232,41 +233,60 @@ func TestGetWorkflowManager(t *testing.T) {
 	assert.Same(t, wm1, wm2)
 }
 
-// This test is a stub that needs to be expanded with proper mocking of dependencies
 func TestRegisterServices(t *testing.T) {
-	/*
-		// The following is a sketch of how this test should be implemented:
-		// 1. Create a mock service manager
-		mockServiceManager := new(MockServiceManager)
-		mockServiceManager.On("RegisterService", mock.Anything).Return()
+	t.Setenv("WEBSOCKET_SERVER_URL", "ws://example.test:8093")
+	t.Setenv("WEBSOCKET_PATH", "/events")
+	t.Setenv("MATTERMOST_SERVER_URL", "http://mattermost.test")
+	t.Setenv("MATTERMOST_API_TOKEN", "token")
+	t.Setenv("MATTERMOST_CHANNEL", "channel")
+	t.Setenv("CONFLUENCE_SETTINGS_PAGE_ID", "settings-page")
+	t.Setenv("CONFLUENCE_API_ENDPOINT", "http://confluence.test")
+	t.Setenv("CONFLUENCE_SPACE_KEY", "SPACE")
 
-		// 2. Create a mock data accessor
-		mockDataAccessor := new(MockDataAccessor)
+	container := NewContainer("1.0.0")
+	err := container.RegisterServices(context.Background())
+	assert.NoError(t, err)
 
-		// 3. Create a test container with injected mocks
-		container := NewContainer("1.0.0")
+	expected := []string{
+		"ConfluenceServiceA",
+		"WebSocketServiceA",
+		"BadgeDBService",
+		"MattermostService",
+		"ConfluenceSettingsService",
+	}
+	for _, name := range expected {
+		svc, ok := container.GetService(name)
+		assert.True(t, ok, "expected service %s to be registered", name)
+		assert.Equal(t, name, svc.GetName())
+	}
 
-		// 4. Override the container's dependencies with mocks
-		container.serviceManager = mockServiceManager
-		container.dataAccessor = mockDataAccessor
-
-		// 5. Call RegisterServices
-		ctx := context.Background()
-		err := container.RegisterServices(ctx)
-
-		// 6. Assert results
-		assert.NoError(t, err)
-		mockServiceManager.AssertExpectations(t)
-
-		// 7. Verify that services were added to the container
-		assert.Greater(t, len(container.services), 0)
-	*/
-
-	// Placeholder until fully implemented
-	t.Skip("This test needs to be properly implemented with mocks")
+	registered := container.GetServiceManager(context.Background()).ListServices(context.Background())
+	assert.Len(t, registered, len(expected))
 }
 
-// Note: Testing RegisterServices and GetWorkflowManager would require more complex mocking
-// of the actual service and workflow implementations. In a real testing scenario,
-// you would create more comprehensive mocks or use a testing framework that allows
-// for mocking of imports and dependencies.
+func TestRegisterServicesUsesConfigFallbacks(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	if err := os.MkdirAll("config", 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	err := os.WriteFile("config/rule-engine.yaml", []byte(`
+confluence:
+  refresh_interval: definitely-not-a-duration
+`), 0o644)
+	if err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	container := NewContainer("1.0.0")
+	err = container.RegisterServices(context.Background())
+	assert.NoError(t, err)
+	assert.Len(t, container.services, 5)
+}
+
+func TestGetEnvOrDefault(t *testing.T) {
+	t.Setenv("GO_SERVICE_PLATFORM_TEST_KEY", "configured")
+
+	assert.Equal(t, "configured", getEnvOrDefault("GO_SERVICE_PLATFORM_TEST_KEY", "default"))
+	assert.Equal(t, "default", getEnvOrDefault("GO_SERVICE_PLATFORM_TEST_MISSING", "default"))
+}

@@ -1,0 +1,20 @@
+workflows:
+  - name: WorkflowEngine
+    providers:
+      - yaml
+      - confluence
+    mode: pipeline
+    pipeline_order:
+      - yaml
+      - confluence
+    action_merge:
+      dedup: true
+      order: priority
+
+action_merge:
+  dedup: true
+  order: priority
+
+confluence:
+  refresh_interval: 5m
+  on_refresh_failure: use_last_snapshot

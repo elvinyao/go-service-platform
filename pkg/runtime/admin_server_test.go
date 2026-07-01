@@ -33,3 +33,13 @@ func TestAdminServerStartsAndStops(t *testing.T) {
 		t.Fatalf("stop server: %v", err)
 	}
 }
+
+func TestAdminServerAddrBeforeStartAndStopBeforeStart(t *testing.T) {
+	server := NewAdminServer("127.0.0.1:0", http.NewServeMux())
+	if server.Addr() != "" {
+		t.Fatalf("addr = %q, want empty before start", server.Addr())
+	}
+	if err := server.Stop(context.Background()); err != nil {
+		t.Fatalf("stop before start: %v", err)
+	}
+}

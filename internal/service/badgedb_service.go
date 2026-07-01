@@ -7,6 +7,7 @@ import (
 	appctx "project/pkg/context"
 	"project/pkg/health"
 	"project/pkg/logger"
+	"strings"
 	"sync"
 	"time"
 )
@@ -90,7 +91,7 @@ func (s *BadgeDBService) Stop(ctx context.Context) error {
 	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
 
 	// Backup database before stopping
-	if err := s.backupDB(ctx); err != nil {
+	if err := s.backupDBLocked(ctx); err != nil {
 		logger.WithContextError(ctx, err).Error("Failed to backup database during shutdown")
 	}
 
@@ -224,6 +225,12 @@ func (s *BadgeDBService) loadDB(ctx context.Context) error {
 }
 
 func (s *BadgeDBService) backupDB(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.backupDBLocked(ctx)
+}
+
+func (s *BadgeDBService) backupDBLocked(ctx context.Context) error {
 	logger.DebugfWithContext(ctx, "Backing up database to: %s", s.dbPath)
 	// The demo store records backup time without writing external state.
 	s.lastBackup = time.Now()
@@ -260,7 +267,7 @@ func (c *badgeDBAccessChecker) Check(ctx context.Context) *health.CheckResult {
 	_, err := c.service.GetBadge(ctx, "test-badge-id")
 	if err != nil {
 		// It's ok if the badge doesn't exist, we just want to check access
-		if err.Error() != "badge not found" {
+		if !strings.HasPrefix(err.Error(), "badge not found") {
 			result.SetStatus(health.StatusDegraded, fmt.Sprintf("Database access error: %v", err))
 			result.Complete()
 			return result

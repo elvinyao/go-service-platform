@@ -3,6 +3,8 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -11,20 +13,36 @@ import (
 	"fake-server/internal/fakeapi"
 )
 
-func main() {
-	confluencePort := flag.Int("confluence-port", fakeapi.DefaultConfluencePort, "Confluence API port")
-	mmHTTPPort := flag.Int("mm-http-port", fakeapi.DefaultMattermostHTTPPort, "Mattermost HTTP API port")
-	mmWSPort := flag.Int("mm-ws-port", fakeapi.DefaultMattermostWSPort, "Mattermost WebSocket port")
-	wsPort := flag.Int("ws-port", fakeapi.DefaultWebSocketPort, "WebSocket server port")
-	flag.Parse()
+type fakeAPIManager interface {
+	Start() error
+	Stop() error
+	PrintEndpoints()
+}
+
+var newFakeAPIManagerWithPorts = func(confluencePort, mmHTTPPort, mmWSPort, wsPort int) fakeAPIManager {
+	return fakeapi.NewFakeAPIManagerWithPorts(confluencePort, mmHTTPPort, mmWSPort, wsPort)
+}
+
+func run(args []string, sigChan <-chan os.Signal, flagOutput io.Writer) error {
+	flags := flag.NewFlagSet("fake-server", flag.ContinueOnError)
+	if flagOutput != nil {
+		flags.SetOutput(flagOutput)
+	}
+	confluencePort := flags.Int("confluence-port", fakeapi.DefaultConfluencePort, "Confluence API port")
+	mmHTTPPort := flags.Int("mm-http-port", fakeapi.DefaultMattermostHTTPPort, "Mattermost HTTP API port")
+	mmWSPort := flags.Int("mm-ws-port", fakeapi.DefaultMattermostWSPort, "Mattermost WebSocket port")
+	wsPort := flags.Int("ws-port", fakeapi.DefaultWebSocketPort, "WebSocket server port")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
 
 	log.Println("Fake API Server Runner for Development")
 	log.Println("====================================")
 
-	manager := fakeapi.NewFakeAPIManagerWithPorts(*confluencePort, *mmHTTPPort, *mmWSPort, *wsPort)
+	manager := newFakeAPIManagerWithPorts(*confluencePort, *mmHTTPPort, *mmWSPort, *wsPort)
 
 	if err := manager.Start(); err != nil {
-		log.Fatalf("Failed to start fake API servers: %v", err)
+		return fmt.Errorf("failed to start fake API servers: %w", err)
 	}
 
 	manager.PrintEndpoints()
@@ -36,11 +54,19 @@ func main() {
 	log.Println("  - Use test-token-123 as MATTERMOST_API_TOKEN")
 	log.Println("Press Ctrl+C to stop...")
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
 
 	log.Println("Shutting down...")
 	manager.Stop()
 	log.Println("Goodbye")
+	return nil
+}
+
+func main() {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	if err := run(os.Args[1:], sigChan, os.Stderr); err != nil {
+		log.Fatalf("Failed to run fake API server: %v", err)
+	}
 }

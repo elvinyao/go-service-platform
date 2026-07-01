@@ -59,3 +59,80 @@ rules:
 	p := NewYAMLProvider("yaml", path, DefaultWorkflowName)
 	require.Error(t, p.Start(context.Background()))
 }
+
+func TestYAMLProviderNameAndStartWithMissingOrEmptyPath(t *testing.T) {
+	provider := NewYAMLProvider("yaml", "", DefaultWorkflowName)
+	if provider.Name() != "yaml" {
+		t.Fatalf("name = %q, want yaml", provider.Name())
+	}
+	if err := provider.Start(context.Background()); err != nil {
+		t.Fatalf("start empty path: %v", err)
+	}
+	if len(provider.Snapshot(context.Background()).Rules) != 0 {
+		t.Fatalf("empty path rules not empty")
+	}
+
+	provider = NewYAMLProvider("yaml", filepath.Join(t.TempDir(), "missing.yaml"), DefaultWorkflowName)
+	if err := provider.Start(context.Background()); err != nil {
+		t.Fatalf("start missing path: %v", err)
+	}
+}
+
+func TestYAMLProviderValidatesRequiredFields(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "missing id", data: `rules:
+  - actions:
+      - executor: log
+`},
+		{name: "missing actions", data: `rules:
+  - id: r1
+`},
+		{name: "missing condition field", data: `rules:
+  - id: r1
+    conditions:
+      - op: eq
+        value: AAA
+    actions:
+      - executor: log
+`},
+		{name: "invalid condition op", data: `rules:
+  - id: r1
+    conditions:
+      - field: type
+        op: nope
+        value: AAA
+    actions:
+      - executor: log
+`},
+		{name: "missing executor", data: `rules:
+  - id: r1
+    actions:
+      - id: a1
+`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "rules.yaml")
+			if err := os.WriteFile(path, []byte(tt.data), 0o600); err != nil {
+				t.Fatalf("write rules: %v", err)
+			}
+			if err := NewYAMLProvider("yaml", path, DefaultWorkflowName).Start(context.Background()); err == nil {
+				t.Fatalf("expected validation error")
+			}
+		})
+	}
+}
+
+func TestStaticProviderNameAndStart(t *testing.T) {
+	provider := NewStaticProvider("static", RuleSet{Rules: []Rule{{ID: "r1"}}})
+	if provider.Name() != "static" {
+		t.Fatalf("name = %q, want static", provider.Name())
+	}
+	if err := provider.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+}

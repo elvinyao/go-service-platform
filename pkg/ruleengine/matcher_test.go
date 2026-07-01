@@ -43,3 +43,40 @@ func TestMatchRulesOrdersByPriority(t *testing.T) {
 		assert.Equal(t, "r2", matched[1].ID)
 	}
 }
+
+func TestMatchConditionSupportsMetadataAndRejectsMissingFields(t *testing.T) {
+	msg := Message{
+		Type: "AAA",
+		Metadata: map[string]interface{}{
+			"env": "prod",
+			"nested": map[string]interface{}{
+				"team": "platform",
+			},
+		},
+	}
+
+	if !MatchCondition(Condition{Field: "metadata.env", Op: OpEq, Value: "prod"}, msg) {
+		t.Fatalf("metadata.env did not match")
+	}
+	if !MatchCondition(Condition{Field: "metadata.nested.team", Op: OpEq, Value: "platform"}, msg) {
+		t.Fatalf("metadata.nested.team did not match")
+	}
+	if MatchCondition(Condition{Field: "metadata.nested.missing", Op: OpEq, Value: "x"}, msg) {
+		t.Fatalf("missing metadata path matched")
+	}
+	if MatchCondition(Condition{Field: "unknown", Op: OpEq, Value: "x"}, msg) {
+		t.Fatalf("unknown field matched")
+	}
+	if MatchCondition(Condition{Field: "type", Op: "unknown", Value: "AAA"}, msg) {
+		t.Fatalf("unknown op matched")
+	}
+	if MatchCondition(Condition{Field: "type", Op: OpRegex, Value: "["}, msg) {
+		t.Fatalf("invalid regex matched")
+	}
+}
+
+func TestMatchRuleWithNoConditionsMatches(t *testing.T) {
+	if !MatchRule(Rule{Enabled: true}, Message{}) {
+		t.Fatalf("rule with no conditions should match")
+	}
+}

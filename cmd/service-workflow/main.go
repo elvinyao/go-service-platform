@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,7 +18,21 @@ const (
 	shutdownTimeout = 30 * time.Second
 )
 
+var fatal = func(err error) {
+	logger.WithError(err).Fatal("Application failed")
+}
+
 func main() {
+	fatalOnError(run(context.Background()))
+}
+
+func fatalOnError(err error) {
+	if err != nil {
+		fatal(err)
+	}
+}
+
+func run(parent context.Context) error {
 	logger.InitFromEnv()
 
 	runtimeConfigPath := getenv("RUNTIME_CONFIG", "config/runtime.yaml")
@@ -26,15 +41,15 @@ func main() {
 
 	cfg, err := config.LoadRuntimeConfig(runtimeConfigPath)
 	if err != nil {
-		logger.WithError(err).Fatal("Failed to load runtime config")
+		return fmt.Errorf("load runtime config: %w", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 
 	application := app.New(appName, cfg, ruleConfigPath, rulePath)
 	if err := application.Start(ctx); err != nil {
-		logger.WithError(err).Fatal("Application startup failed")
+		return fmt.Errorf("start application: %w", err)
 	}
 
 	<-ctx.Done()
@@ -42,8 +57,9 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := application.Stop(shutdownCtx); err != nil {
-		logger.WithError(err).Error("Application shutdown failed")
+		return fmt.Errorf("stop application: %w", err)
 	}
+	return nil
 }
 
 func getenv(key, fallback string) string {
