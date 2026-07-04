@@ -71,21 +71,32 @@ func TestLoadRuntimeConfigRejectsEmptyAdminAddress(t *testing.T) {
 func TestLoadRuntimeConfigAppliesEnvironmentOverrides(t *testing.T) {
 	t.Setenv("ADMIN_ADDR", ":19090")
 	t.Setenv("WEBSOCKET_SERVER_URL", "ws://example.local:9999")
+	t.Setenv("WEBSOCKET_PATH", "/events")
 	t.Setenv("CONFLUENCE_API_ENDPOINT", "http://confluence.local")
+	t.Setenv("CONFLUENCE_SETTINGS_PAGE_ID", "settings-page-env")
 	t.Setenv("MATTERMOST_SERVER_URL", "http://mattermost.local")
 	t.Setenv("MATTERMOST_WS_URL", "ws://mattermost.local/ws")
+	t.Setenv("MATTERMOST_API_TOKEN", "env-token")
+	t.Setenv("MATTERMOST_CHANNEL", "env-channel")
+	t.Setenv("BADGEDB_PATH", "/tmp/env-badges.db")
 
 	cfg, err := LoadRuntimeConfig(writeRuntimeConfig(t, `admin:
   address: ":18080"
 inputs:
   websocket:
     server_url: "ws://localhost:8093"
+    path: "/ws"
 adapters:
   confluence:
     api_endpoint: "http://localhost:8090"
+    settings_page_id: "settings-page-yaml"
   mattermost:
     server_url: "http://localhost:8091"
     websocket_url: "ws://localhost:8092"
+    api_token: "yaml-token"
+    channel: "yaml-channel"
+  badgedb:
+    path: "/tmp/yaml-badges.db"
 `))
 	if err != nil {
 		t.Fatalf("load runtime config: %v", err)
@@ -97,14 +108,29 @@ adapters:
 	if cfg.Inputs.WebSocket.ServerURL != "ws://example.local:9999" {
 		t.Fatalf("websocket server URL = %q", cfg.Inputs.WebSocket.ServerURL)
 	}
+	if cfg.Inputs.WebSocket.Path != "/events" {
+		t.Fatalf("websocket path = %q, want /events", cfg.Inputs.WebSocket.Path)
+	}
 	if cfg.Adapters.Confluence.APIEndpoint != "http://confluence.local" {
 		t.Fatalf("confluence endpoint = %q", cfg.Adapters.Confluence.APIEndpoint)
+	}
+	if cfg.Adapters.Confluence.SettingsPageID != "settings-page-env" {
+		t.Fatalf("confluence settings page = %q, want settings-page-env", cfg.Adapters.Confluence.SettingsPageID)
 	}
 	if cfg.Adapters.Mattermost.ServerURL != "http://mattermost.local" {
 		t.Fatalf("mattermost server URL = %q", cfg.Adapters.Mattermost.ServerURL)
 	}
 	if cfg.Adapters.Mattermost.WebsocketURL != "ws://mattermost.local/ws" {
 		t.Fatalf("mattermost websocket URL = %q", cfg.Adapters.Mattermost.WebsocketURL)
+	}
+	if cfg.Adapters.Mattermost.APIToken != "env-token" {
+		t.Fatalf("mattermost token = %q, want env-token", cfg.Adapters.Mattermost.APIToken)
+	}
+	if cfg.Adapters.Mattermost.Channel != "env-channel" {
+		t.Fatalf("mattermost channel = %q, want env-channel", cfg.Adapters.Mattermost.Channel)
+	}
+	if cfg.Adapters.BadgeDB.Path != "/tmp/env-badges.db" {
+		t.Fatalf("badgedb path = %q, want /tmp/env-badges.db", cfg.Adapters.BadgeDB.Path)
 	}
 }
 
@@ -182,6 +208,16 @@ func TestLoadRuntimeConfigReturnsErrorForMissingFile(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "read runtime config") {
 		t.Fatalf("error = %q, want read runtime config", got)
+	}
+}
+
+func TestLoadRuntimeConfigReturnsErrorForMalformedYAML(t *testing.T) {
+	_, err := LoadRuntimeConfig(writeRuntimeConfig(t, "admin: ["))
+	if err == nil {
+		t.Fatalf("expected parse error")
+	}
+	if got := err.Error(); !strings.Contains(got, "parse runtime config") {
+		t.Fatalf("error = %q, want parse runtime config", got)
 	}
 }
 
