@@ -33,6 +33,7 @@ func TestAppProcessesWebSocketMessageThroughRulesAndExecutors(t *testing.T) {
 	t.Setenv("MATTERMOST_WS_URL", "ws://127.0.0.1:1")
 
 	cfg := config.DefaultRuntimeConfig()
+	cfg.ApplyEnv()
 	cfg.Admin.Address = "127.0.0.1:0"
 
 	application := New("test-service-workflow", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")
@@ -97,6 +98,7 @@ func TestAppAdminEndpointsReturnContracts(t *testing.T) {
 	t.Setenv("MATTERMOST_WS_URL", "ws://127.0.0.1:1")
 
 	cfg := config.DefaultRuntimeConfig()
+	cfg.ApplyEnv()
 	cfg.Admin.Address = "127.0.0.1:0"
 
 	application := New("test-service-workflow", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")
@@ -185,6 +187,7 @@ func TestAppStartFailsWhenAdminAddressIsInUse(t *testing.T) {
 	t.Setenv("MATTERMOST_WS_URL", "ws://127.0.0.1:1")
 
 	cfg := config.DefaultRuntimeConfig()
+	cfg.ApplyEnv()
 	cfg.Admin.Address = listener.Addr().String()
 
 	application := New("test-service-workflow", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")

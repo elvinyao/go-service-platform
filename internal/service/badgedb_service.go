@@ -213,6 +213,7 @@ func (s *BadgeDBService) GetMetrics(ctx context.Context) map[string]interface{} 
 	return map[string]interface{}{
 		"running":     s.IsRunning(ctx),
 		"db_entries":  len(s.db),
+		"db_path":     s.dbPath,
 		"last_backup": s.lastBackup.Format(time.RFC3339),
 	}
 }

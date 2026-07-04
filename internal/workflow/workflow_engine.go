@@ -9,6 +9,7 @@ import (
 	"project/internal/adapters/mattermost"
 	"project/internal/manager"
 	"project/internal/model"
+	runtimeconfig "project/pkg/config"
 	appctx "project/pkg/context"
 	"project/pkg/errors"
 	coreexecutor "project/pkg/executor"
@@ -28,15 +29,25 @@ type EngineAdminSnapshot struct {
 	Executors []string                    `json:"executors"`
 }
 
-func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPath, rulesPath string) (*WorkflowEngine, error) {
+func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPath, rulesPath string, configs ...runtimeconfig.RuntimeConfig) (*WorkflowEngine, error) {
 	cfg, err := ruleengine.LoadEngineConfig(configPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to load rule engine config", errors.TypeInvalidInput)
 	}
 
+	runtimeCfg := runtimeconfig.DefaultRuntimeConfig()
+	runtimeCfg.ApplyEnv()
+	_ = runtimeCfg.Normalize()
+	if len(configs) > 0 {
+		runtimeCfg = configs[0]
+	}
+	cfg = filterEngineConfigForRuntime(cfg, runtimeCfg)
+
 	providers := map[string]ruleengine.RuleProvider{
-		"yaml":       ruleengine.NewYAMLProvider("yaml", rulesPath, ruleengine.DefaultWorkflowName),
-		"confluence": confluence.NewProvider("confluence", ruleengine.DefaultWorkflowName, sm),
+		"yaml": ruleengine.NewYAMLProvider("yaml", rulesPath, ruleengine.DefaultWorkflowName),
+	}
+	if runtimeCfg.Adapters.Confluence.Enabled {
+		providers["confluence"] = confluence.NewProvider("confluence", ruleengine.DefaultWorkflowName, sm)
 	}
 
 	for _, provider := range providers {
@@ -49,9 +60,13 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 	registry := coreexecutor.NewRegistry()
 	allExecutors := []coreexecutor.Executor{
 		coreexecutor.NewLogExecutor(),
-		badgedb.NewExecutor(sm),
 		coreexecutor.NewHTTPExecutor(),
-		mattermost.NewExecutor(sm),
+	}
+	if runtimeCfg.Adapters.BadgeDB.Enabled {
+		allExecutors = append(allExecutors, badgedb.NewExecutor(sm))
+	}
+	if runtimeCfg.Adapters.Mattermost.Enabled {
+		allExecutors = append(allExecutors, mattermost.NewExecutor(sm))
 	}
 	for _, exe := range allExecutors {
 		if err := registry.Register(exe); err != nil {
@@ -64,6 +79,37 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 		composer:  ruleengine.NewComposer(cfg, providers),
 		executors: registry,
 	}, nil
+}
+
+func filterEngineConfigForRuntime(cfg ruleengine.EngineConfig, runtimeCfg runtimeconfig.RuntimeConfig) ruleengine.EngineConfig {
+	enabledProviders := map[string]bool{
+		"yaml":       true,
+		"confluence": runtimeCfg.Adapters.Confluence.Enabled,
+	}
+
+	for i := range cfg.Workflows {
+		wf := &cfg.Workflows[i]
+		wf.Providers = filterProviderList(wf.Providers, enabledProviders)
+		wf.PipelineOrder = filterProviderList(wf.PipelineOrder, enabledProviders)
+		if len(wf.Providers) == 0 {
+			wf.Providers = []string{"yaml"}
+		}
+		if len(wf.PipelineOrder) == 0 {
+			wf.PipelineOrder = append([]string(nil), wf.Providers...)
+		}
+	}
+
+	return cfg
+}
+
+func filterProviderList(providers []string, enabled map[string]bool) []string {
+	filtered := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		if enabled[provider] {
+			filtered = append(filtered, provider)
+		}
+	}
+	return filtered
 }
 
 func (w *WorkflowEngine) GetName() string {

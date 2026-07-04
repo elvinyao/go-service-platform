@@ -11,17 +11,13 @@ func TestLoadEngineConfigReturnsDefaultForEmptyOrMissingPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load empty config: %v", err)
 	}
-	if cfg.Workflows[0].Name != DefaultWorkflowName {
-		t.Fatalf("workflow = %q", cfg.Workflows[0].Name)
-	}
+	assertYAMLFirstDefault(t, cfg)
 
 	cfg, err = LoadEngineConfig(filepath.Join(t.TempDir(), "missing.yaml"))
 	if err != nil {
 		t.Fatalf("load missing config: %v", err)
 	}
-	if cfg.Workflows[0].Name != DefaultWorkflowName {
-		t.Fatalf("workflow = %q", cfg.Workflows[0].Name)
-	}
+	assertYAMLFirstDefault(t, cfg)
 }
 
 func TestLoadEngineConfigNormalizesWorkflowDefaults(t *testing.T) {
@@ -78,5 +74,26 @@ func TestPolicyForWorkflowFallbacks(t *testing.T) {
 	}
 	if got := cfg.PolicyForWorkflow("second"); got.Name != "second" {
 		t.Fatalf("matched policy = %+v", got)
+	}
+}
+
+func assertYAMLFirstDefault(t *testing.T, cfg EngineConfig) {
+	t.Helper()
+
+	if len(cfg.Workflows) != 1 {
+		t.Fatalf("workflows len = %d, want 1", len(cfg.Workflows))
+	}
+	wf := cfg.Workflows[0]
+	if wf.Name != DefaultWorkflowName {
+		t.Fatalf("workflow = %q", wf.Name)
+	}
+	if wf.Mode != CompositionSingle {
+		t.Fatalf("mode = %q, want %q", wf.Mode, CompositionSingle)
+	}
+	if len(wf.Providers) != 1 || wf.Providers[0] != "yaml" {
+		t.Fatalf("providers = %+v, want [yaml]", wf.Providers)
+	}
+	if len(wf.PipelineOrder) != 1 || wf.PipelineOrder[0] != "yaml" {
+		t.Fatalf("pipeline order = %+v, want [yaml]", wf.PipelineOrder)
 	}
 }

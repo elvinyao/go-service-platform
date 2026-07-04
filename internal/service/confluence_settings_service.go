@@ -281,6 +281,8 @@ func (s *ConfluenceSettingsService) GetMetrics(ctx context.Context) map[string]i
 
 	metrics["settings_count"] = len(s.settings)
 	metrics["refresh_interval"] = s.config.RefreshInterval.String()
+	metrics["api_endpoint"] = s.config.APIEndpoint
+	metrics["page_id"] = s.config.PageID
 
 	if !s.lastRefresh.IsZero() {
 		metrics["last_refresh"] = s.lastRefresh.Format(time.RFC3339)

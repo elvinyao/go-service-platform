@@ -184,6 +184,7 @@ func TestAppStartCleansUpWhenWorkflowConfigIsInvalid(t *testing.T) {
 	}
 
 	cfg := config.DefaultRuntimeConfig()
+	cfg.ApplyEnv()
 	cfg.Admin.Address = "127.0.0.1:0"
 
 	application := New("test-service-workflow", cfg, badConfigPath, "testdata/workflow-rules.yaml")
@@ -196,5 +197,53 @@ func TestAppStartCleansUpWhenWorkflowConfigIsInvalid(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to initialize workflow manager") {
 		t.Fatalf("error = %q, want workflow manager initialization failure", err.Error())
+	}
+}
+
+func TestAppStartsWhenWebSocketInputIsDisabled(t *testing.T) {
+	dir := t.TempDir()
+	ruleConfigPath := filepath.Join(dir, "rule-engine.yaml")
+	rulesPath := filepath.Join(dir, "workflow-rules.yaml")
+	if err := os.WriteFile(ruleConfigPath, []byte(`
+workflows:
+  - name: WorkflowEngine
+    providers: [yaml]
+    mode: single
+`), 0o644); err != nil {
+		t.Fatalf("write rule config: %v", err)
+	}
+	if err := os.WriteFile(rulesPath, []byte(`version: "test"`), 0o644); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+
+	cfg := config.DefaultRuntimeConfig()
+	cfg.Admin.Address = "127.0.0.1:0"
+	cfg.Inputs.WebSocket.Enabled = false
+	cfg.Adapters.Confluence.Enabled = false
+	cfg.Adapters.Mattermost.Enabled = false
+	cfg.Adapters.BadgeDB.Enabled = false
+
+	application := New("test-service-workflow", cfg, ruleConfigPath, rulesPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("start app with websocket disabled: %v", err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		if err := application.Stop(stopCtx); err != nil {
+			t.Fatalf("stop app: %v", err)
+		}
+	}()
+
+	resp, err := http.Get("http://" + application.adminServer.Addr() + "/services")
+	if err != nil {
+		t.Fatalf("get services: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("services status = %d, want 200", resp.StatusCode)
 	}
 }

@@ -60,15 +60,19 @@ func (a *App) Start(ctx context.Context) error {
 	rootCtx = appctx.WithServiceName(rootCtx, a.name)
 	startCtx := appctx.WithOperationName(rootCtx, appStartOperationName)
 
-	a.container = di.NewContainer(appVersion)
+	a.container = di.NewContainer(appVersion, a.config)
 	a.serviceManager = a.container.GetServiceManager(startCtx)
 
 	if err := a.container.RegisterServices(startCtx); err != nil {
 		return errors.Wrap(err, "failed to register services", errors.TypeInternal)
 	}
 
-	if err := a.serviceManager.StartAll(startCtx); err != nil {
-		return errors.Wrap(err, "failed to start services", errors.TypeServiceUnavailable)
+	if len(a.serviceManager.ListServices(startCtx)) > 0 {
+		if err := a.serviceManager.StartAll(startCtx); err != nil {
+			return errors.Wrap(err, "failed to start services", errors.TypeServiceUnavailable)
+		}
+	} else {
+		logger.InfoWithContext(startCtx, "No runtime services enabled")
 	}
 
 	monitorCtx, monitorCancel := context.WithCancel(ctx)
@@ -80,7 +84,7 @@ func (a *App) Start(ctx context.Context) error {
 	}()
 
 	workflowManager, err := manager.NewWorkflowManagerWithDI(rootCtx, a.serviceManager, func(sm *manager.ServiceManager) (interfaces.Workflow, error) {
-		return workflow.NewWorkflowEngine(rootCtx, sm, a.ruleConfigPath, a.rulePath)
+		return workflow.NewWorkflowEngine(rootCtx, sm, a.ruleConfigPath, a.rulePath, a.config)
 	})
 	if err != nil {
 		_ = a.Stop(context.Background())
@@ -88,9 +92,11 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.workflowManager = workflowManager
 
-	if err := setupMessageListeners(rootCtx, a.serviceManager, a.workflowManager); err != nil {
-		_ = a.Stop(context.Background())
-		return errors.Wrap(err, "failed to set up message listeners", errors.TypeInternal)
+	if a.config.Inputs.WebSocket.Enabled {
+		if err := setupMessageListeners(rootCtx, a.serviceManager, a.workflowManager); err != nil {
+			_ = a.Stop(context.Background())
+			return errors.Wrap(err, "failed to set up message listeners", errors.TypeInternal)
+		}
 	}
 
 	a.healthManager = a.container.GetHealthManager(rootCtx)

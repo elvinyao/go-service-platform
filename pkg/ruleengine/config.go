@@ -16,9 +16,9 @@ func DefaultEngineConfig() EngineConfig {
 		Workflows: []WorkflowPolicy{
 			{
 				Name:          DefaultWorkflowName,
-				Providers:     []string{"yaml", "confluence"},
-				Mode:          CompositionPipeline,
-				PipelineOrder: []string{"yaml", "confluence"},
+				Providers:     []string{"yaml"},
+				Mode:          CompositionSingle,
+				PipelineOrder: []string{"yaml"},
 				ActionMerge: ActionMergeConfig{
 					Dedup: true,
 					Order: ActionOrderPriority,

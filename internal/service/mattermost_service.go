@@ -166,6 +166,25 @@ func (s *MattermostService) GetChannelID() string {
 	return s.config.Channel
 }
 
+// GetMetrics returns Mattermost service metrics and non-sensitive configuration.
+func (s *MattermostService) GetMetrics(ctx context.Context) map[string]interface{} {
+	baseMetrics := s.BaseService.GetMetrics(ctx)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	metrics := make(map[string]interface{})
+	for k, v := range baseMetrics {
+		metrics[k] = v
+	}
+
+	metrics["server_url"] = s.config.ServerURL
+	metrics["websocket_url"] = s.config.WebsocketURL
+	metrics["channel"] = s.config.Channel
+	metrics["api_token_configured"] = s.config.APIToken != ""
+	return metrics
+}
+
 // Configure implements Service interface
 func (s *MattermostService) Configure(ctx context.Context, cfg interface{}) error {
 	newConfig, ok := cfg.(config.MattermostConfig)

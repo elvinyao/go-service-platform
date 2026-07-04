@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
+	runtimeconfig "project/pkg/config"
 	"project/pkg/health"
 
 	"github.com/stretchr/testify/assert"
@@ -282,6 +284,81 @@ confluence:
 	err = container.RegisterServices(context.Background())
 	assert.NoError(t, err)
 	assert.Len(t, container.services, 5)
+}
+
+func TestRegisterServicesHonorsRuntimeConfigEnabledFlags(t *testing.T) {
+	cfg := runtimeconfig.DefaultRuntimeConfig()
+	cfg.Inputs.WebSocket.Enabled = false
+	cfg.Adapters.Confluence.Enabled = false
+	cfg.Adapters.Mattermost.Enabled = false
+	cfg.Adapters.BadgeDB.Enabled = false
+
+	container := NewContainer("1.0.0", cfg)
+	err := container.RegisterServices(context.Background())
+	assert.NoError(t, err)
+
+	disabledServices := []string{
+		"ConfluenceServiceA",
+		"WebSocketServiceA",
+		"BadgeDBService",
+		"MattermostService",
+		"ConfluenceSettingsService",
+	}
+	for _, name := range disabledServices {
+		svc, ok := container.GetService(name)
+		assert.False(t, ok, "service %s should not be registered", name)
+		assert.Nil(t, svc)
+	}
+
+	registered := container.GetServiceManager(context.Background()).ListServices(context.Background())
+	assert.Empty(t, registered)
+}
+
+func TestRegisterServicesUsesRuntimeConfigValues(t *testing.T) {
+	cfg := runtimeconfig.DefaultRuntimeConfig()
+	cfg.Inputs.WebSocket.ServerURL = "ws://configured-websocket.test:8093"
+	cfg.Inputs.WebSocket.Path = "/events"
+	cfg.Inputs.WebSocket.ReconnectInterval = 17 * time.Second
+	cfg.Adapters.Confluence.APIEndpoint = "http://configured-confluence.test"
+	cfg.Adapters.Confluence.SettingsPageID = "configured-page"
+	cfg.Adapters.Confluence.RefreshInterval = 42 * time.Second
+	cfg.Adapters.Mattermost.ServerURL = "http://configured-mattermost.test"
+	cfg.Adapters.Mattermost.WebsocketURL = "ws://configured-mattermost.test/ws"
+	cfg.Adapters.Mattermost.APIToken = "configured-token"
+	cfg.Adapters.Mattermost.Channel = "configured-channel"
+	cfg.Adapters.BadgeDB.Path = "/tmp/configured-badges.db"
+
+	container := NewContainer("1.0.0", cfg)
+	err := container.RegisterServices(context.Background())
+	assert.NoError(t, err)
+
+	ctx := context.Background()
+	wsSvc, ok := container.GetService("WebSocketServiceA")
+	assert.True(t, ok)
+	wsMetrics := wsSvc.GetMetrics(ctx)
+	assert.Equal(t, cfg.Inputs.WebSocket.ServerURL, wsMetrics["server_url"])
+	assert.Equal(t, cfg.Inputs.WebSocket.Path, wsMetrics["path"])
+	assert.Equal(t, cfg.Inputs.WebSocket.ReconnectInterval.String(), wsMetrics["reconnect_interval"])
+
+	confluenceSvc, ok := container.GetService("ConfluenceSettingsService")
+	assert.True(t, ok)
+	confluenceMetrics := confluenceSvc.GetMetrics(ctx)
+	assert.Equal(t, cfg.Adapters.Confluence.APIEndpoint, confluenceMetrics["api_endpoint"])
+	assert.Equal(t, cfg.Adapters.Confluence.SettingsPageID, confluenceMetrics["page_id"])
+	assert.Equal(t, cfg.Adapters.Confluence.RefreshInterval.String(), confluenceMetrics["refresh_interval"])
+
+	mattermostSvc, ok := container.GetService("MattermostService")
+	assert.True(t, ok)
+	mattermostMetrics := mattermostSvc.GetMetrics(ctx)
+	assert.Equal(t, cfg.Adapters.Mattermost.ServerURL, mattermostMetrics["server_url"])
+	assert.Equal(t, cfg.Adapters.Mattermost.WebsocketURL, mattermostMetrics["websocket_url"])
+	assert.Equal(t, cfg.Adapters.Mattermost.Channel, mattermostMetrics["channel"])
+	assert.Equal(t, true, mattermostMetrics["api_token_configured"])
+
+	badgeSvc, ok := container.GetService("BadgeDBService")
+	assert.True(t, ok)
+	badgeMetrics := badgeSvc.GetMetrics(ctx)
+	assert.Equal(t, cfg.Adapters.BadgeDB.Path, badgeMetrics["db_path"])
 }
 
 func TestGetEnvOrDefault(t *testing.T) {

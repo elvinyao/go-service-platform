@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"project/internal/manager"
 	"project/internal/model"
+	runtimeconfig "project/pkg/config"
 	coreexecutor "project/pkg/executor"
 	"project/pkg/ruleengine"
 )
@@ -297,6 +299,82 @@ rules:
 	})
 	if err != nil {
 		t.Fatalf("process message with configured log executor: %v", err)
+	}
+}
+
+func TestNewWorkflowEngineHonorsRuntimeConfigForDemoProvidersAndExecutors(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rule-engine.yaml")
+	rulesPath := filepath.Join(dir, "workflow-rules.yaml")
+
+	writeFile(t, configPath, `
+workflows:
+  - name: WorkflowEngine
+    providers: [yaml, confluence]
+    mode: pipeline
+    pipeline_order: [yaml, confluence]
+    action_merge:
+      dedup: true
+      order: priority
+action_merge:
+  dedup: true
+  order: priority
+`)
+	writeFile(t, rulesPath, `
+version: "test"
+rules:
+  - id: log-rule
+    workflow: WorkflowEngine
+    enabled: true
+    priority: 10
+    conditions:
+      - field: type
+        op: eq
+        value: AAA
+    actions:
+      - id: log-action
+        executor: log
+        params:
+          template: "handled {{.Type}}"
+`)
+
+	cfg := runtimeconfig.DefaultRuntimeConfig()
+	cfg.Adapters.Confluence.Enabled = false
+	cfg.Adapters.Mattermost.Enabled = false
+	cfg.Adapters.BadgeDB.Enabled = false
+
+	engine, err := NewWorkflowEngine(context.Background(), manager.NewServiceManager("test"), configPath, rulesPath, cfg)
+	if err != nil {
+		t.Fatalf("new workflow engine: %v", err)
+	}
+
+	snapshot := engine.AdminSnapshot(context.Background())
+	if _, ok := snapshot.Composer.Providers["yaml"]; !ok {
+		t.Fatalf("yaml provider missing from snapshot: %+v", snapshot.Composer.Providers)
+	}
+	if _, ok := snapshot.Composer.Providers["confluence"]; ok {
+		t.Fatalf("confluence provider should be disabled: %+v", snapshot.Composer.Providers)
+	}
+	if len(snapshot.Composer.Config.Workflows[0].Providers) != 1 || snapshot.Composer.Config.Workflows[0].Providers[0] != "yaml" {
+		t.Fatalf("workflow providers = %+v, want [yaml]", snapshot.Composer.Config.Workflows[0].Providers)
+	}
+	if !slices.Contains(snapshot.Executors, "log") || !slices.Contains(snapshot.Executors, "http") {
+		t.Fatalf("core executors missing: %+v", snapshot.Executors)
+	}
+	if slices.Contains(snapshot.Executors, "mattermost") {
+		t.Fatalf("mattermost executor should be disabled: %+v", snapshot.Executors)
+	}
+	if slices.Contains(snapshot.Executors, "db") {
+		t.Fatalf("db executor should be disabled: %+v", snapshot.Executors)
+	}
+
+	err = engine.ProcessMessage(context.Background(), model.Message{
+		ID:        "m1",
+		Type:      "AAA",
+		Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("process message with yaml-only runtime config: %v", err)
 	}
 }
 

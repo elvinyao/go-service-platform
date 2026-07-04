@@ -40,12 +40,14 @@ make run
 Verify the runtime:
 
 ```bash
-curl -s http://localhost:8080/health
-curl -s http://localhost:8080/rule-engine
+curl -s http://localhost:18080/health
+curl -s http://localhost:18080/rule-engine
 curl -s -X POST http://localhost:8093/api/send \
   -H 'Content-Type: application/json' \
   -d '{"id":"m1","type":"AAA","content":"hello from README","user_id":"u1","timestamp":"2026-06-20T00:00:00Z"}'
 ```
+
+The local admin port is controlled by `config/runtime.yaml` or `ADMIN_ADDR`. Adjust the examples if your local config uses a different port.
 
 ## Docker Compose
 
@@ -98,9 +100,14 @@ Common environment overrides:
 - `WORKFLOW_RULES`
 - `ADMIN_ADDR`
 - `WEBSOCKET_SERVER_URL`
+- `WEBSOCKET_PATH`
 - `CONFLUENCE_API_ENDPOINT`
+- `CONFLUENCE_SETTINGS_PAGE_ID`
 - `MATTERMOST_SERVER_URL`
 - `MATTERMOST_WS_URL`
+- `MATTERMOST_API_TOKEN`
+- `MATTERMOST_CHANNEL`
+- `BADGEDB_PATH`
 
 ## Documentation
 
@@ -108,7 +115,7 @@ Common environment overrides:
 - [Rule Engine](docs/rule-engine.md)
 - [Executors](docs/executors.md)
 - [Adapters](docs/adapters.md)
-- [Development](docs/development.md)
+- [Development Guidebook](docs/development.md)
 
 ## Project Layout
 

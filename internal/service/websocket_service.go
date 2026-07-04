@@ -275,6 +275,9 @@ func (s *WebSocketService) GetMetrics(ctx context.Context) map[string]interface{
 	}
 
 	metrics["connections"] = s.connections
+	metrics["server_url"] = s.config.ServerURL
+	metrics["path"] = s.config.Path
+	metrics["reconnect_interval"] = s.config.ReconnectInterval.String()
 
 	if !s.lastMessage.IsZero() {
 		metrics["last_message"] = s.lastMessage.Format(time.RFC3339)

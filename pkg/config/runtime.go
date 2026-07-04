@@ -113,14 +113,29 @@ func (c *RuntimeConfig) ApplyEnv() {
 	if v := os.Getenv("WEBSOCKET_SERVER_URL"); v != "" {
 		c.Inputs.WebSocket.ServerURL = v
 	}
+	if v := os.Getenv("WEBSOCKET_PATH"); v != "" {
+		c.Inputs.WebSocket.Path = v
+	}
 	if v := os.Getenv("CONFLUENCE_API_ENDPOINT"); v != "" {
 		c.Adapters.Confluence.APIEndpoint = v
+	}
+	if v := os.Getenv("CONFLUENCE_SETTINGS_PAGE_ID"); v != "" {
+		c.Adapters.Confluence.SettingsPageID = v
 	}
 	if v := os.Getenv("MATTERMOST_SERVER_URL"); v != "" {
 		c.Adapters.Mattermost.ServerURL = v
 	}
 	if v := os.Getenv("MATTERMOST_WS_URL"); v != "" {
 		c.Adapters.Mattermost.WebsocketURL = v
+	}
+	if v := os.Getenv("MATTERMOST_API_TOKEN"); v != "" {
+		c.Adapters.Mattermost.APIToken = v
+	}
+	if v := os.Getenv("MATTERMOST_CHANNEL"); v != "" {
+		c.Adapters.Mattermost.Channel = v
+	}
+	if v := os.Getenv("BADGEDB_PATH"); v != "" {
+		c.Adapters.BadgeDB.Path = v
 	}
 }
 

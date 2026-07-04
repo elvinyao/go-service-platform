@@ -3,14 +3,13 @@ package di
 import (
 	"context"
 	"os"
-	"project/internal/config"
+	internalconfig "project/internal/config"
 	"project/internal/dataaccess"
 	"project/internal/manager"
 	"project/internal/service"
 	"project/internal/workflow"
+	runtimeconfig "project/pkg/config"
 	"project/pkg/health"
-	"project/pkg/logger"
-	"project/pkg/ruleengine"
 	"sync"
 	"time"
 )
@@ -23,7 +22,8 @@ type Container struct {
 	mu sync.RWMutex
 
 	// Configuration
-	version string
+	version       string
+	runtimeConfig runtimeconfig.RuntimeConfig
 
 	// Singleton instances
 	dataAccessor    dataaccess.DataAccessor
@@ -36,10 +36,18 @@ type Container struct {
 }
 
 // NewContainer Creates a new dependency injection container
-func NewContainer(version string) *Container {
+func NewContainer(version string, configs ...runtimeconfig.RuntimeConfig) *Container {
+	cfg := runtimeconfig.DefaultRuntimeConfig()
+	cfg.ApplyEnv()
+	_ = cfg.Normalize()
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+
 	return &Container{
-		version:  version,
-		services: make(map[string]service.Service),
+		version:       version,
+		runtimeConfig: cfg,
+		services:      make(map[string]service.Service),
 	}
 }
 
@@ -151,58 +159,52 @@ func (c *Container) RegisterServices(ctx context.Context) error {
 	// Get dependencies
 	sm := c.GetServiceManager(ctx)
 	da := c.GetDataAccessor(ctx)
+	cfg := c.runtimeConfig
 
-	// Create existing services
-	confluenceService := service.NewConfluenceService("ConfluenceServiceA", "A", da, c.version)
-	wsConfig := config.WebSocketConfig{
-		ServerURL:         getEnvOrDefault("WEBSOCKET_SERVER_URL", "ws://localhost:8093"),
-		Path:              getEnvOrDefault("WEBSOCKET_PATH", "/ws"),
-		ReconnectInterval: 5 * time.Second,
+	services := make([]service.Service, 0, 5)
+
+	if cfg.Adapters.Confluence.Enabled {
+		confluenceService := service.NewConfluenceService("ConfluenceServiceA", "A", da, c.version)
+		services = append(services, confluenceService)
 	}
-	websocketService := service.NewWebSocketService("WebSocketServiceA", "A", wsConfig, c.version)
-	badgeDBService := service.NewBadgeDBService("BadgeDBService", "Global", "/tmp/badges.db", c.version)
 
-	// Create MattermostService with configuration from environment
-	// Defaults point to fake API servers for development
-	mmConfig := config.MattermostConfig{
-		ServerURL:    getEnvOrDefault("MATTERMOST_SERVER_URL", "http://localhost:8091"),
-		APIToken:     getEnvOrDefault("MATTERMOST_API_TOKEN", "test-token-123"),
-		Channel:      getEnvOrDefault("MATTERMOST_CHANNEL", "test-channel-1"),
-		Username:     getEnvOrDefault("MATTERMOST_USERNAME", ""),
-		Password:     getEnvOrDefault("MATTERMOST_PASSWORD", ""),
-		WebsocketURL: getEnvOrDefault("MATTERMOST_WS_URL", "ws://localhost:8092"),
-	}
-	mattermostService := service.NewMattermostService("MattermostService", "Global", mmConfig, c.version)
-
-	refreshInterval := 5 * time.Minute
-	engineCfg, err := ruleengine.LoadEngineConfig("config/rule-engine.yaml")
-	if err != nil {
-		logger.WarnfWithContext(ctx, "Failed to load rule engine config, use default Confluence refresh interval: %v", err)
-	} else if engineCfg.Confluence.RefreshInterval != "" {
-		if d, parseErr := time.ParseDuration(engineCfg.Confluence.RefreshInterval); parseErr != nil {
-			logger.WarnfWithContext(ctx, "Invalid confluence.refresh_interval=%s, use default: %v", engineCfg.Confluence.RefreshInterval, parseErr)
-		} else if d > 0 {
-			refreshInterval = d
+	if cfg.Inputs.WebSocket.Enabled {
+		wsConfig := internalconfig.WebSocketConfig{
+			ServerURL:         cfg.Inputs.WebSocket.ServerURL,
+			Path:              cfg.Inputs.WebSocket.Path,
+			ReconnectInterval: cfg.Inputs.WebSocket.ReconnectInterval,
 		}
+		websocketService := service.NewWebSocketService("WebSocketServiceA", "A", wsConfig, c.version)
+		services = append(services, websocketService)
 	}
 
-	// Create the demo Confluence settings service used by the rule provider.
-	// Defaults point to fake API servers for development.
-	settingsConfig := config.ConfluenceSettingsConfig{
-		PageID:          getEnvOrDefault("CONFLUENCE_SETTINGS_PAGE_ID", "settings-page-1"),
-		RefreshInterval: refreshInterval,
-		APIEndpoint:     getEnvOrDefault("CONFLUENCE_API_ENDPOINT", "http://localhost:8090"),
-		SpaceKey:        getEnvOrDefault("CONFLUENCE_SPACE_KEY", "TEST"),
+	if cfg.Adapters.BadgeDB.Enabled {
+		badgeDBService := service.NewBadgeDBService("BadgeDBService", "Global", cfg.Adapters.BadgeDB.Path, c.version)
+		services = append(services, badgeDBService)
 	}
-	confluenceSettingsService := service.NewConfluenceSettingsService("ConfluenceSettingsService", "B", da, settingsConfig, c.version)
 
-	// Register all services
-	services := []service.Service{
-		confluenceService,
-		websocketService,
-		badgeDBService,
-		mattermostService,
-		confluenceSettingsService,
+	if cfg.Adapters.Mattermost.Enabled {
+		mmConfig := internalconfig.MattermostConfig{
+			ServerURL:    cfg.Adapters.Mattermost.ServerURL,
+			APIToken:     cfg.Adapters.Mattermost.APIToken,
+			Channel:      cfg.Adapters.Mattermost.Channel,
+			Username:     getEnvOrDefault("MATTERMOST_USERNAME", ""),
+			Password:     getEnvOrDefault("MATTERMOST_PASSWORD", ""),
+			WebsocketURL: cfg.Adapters.Mattermost.WebsocketURL,
+		}
+		mattermostService := service.NewMattermostService("MattermostService", "Global", mmConfig, c.version)
+		services = append(services, mattermostService)
+	}
+
+	if cfg.Adapters.Confluence.Enabled {
+		settingsConfig := internalconfig.ConfluenceSettingsConfig{
+			PageID:          cfg.Adapters.Confluence.SettingsPageID,
+			RefreshInterval: cfg.Adapters.Confluence.RefreshInterval,
+			APIEndpoint:     cfg.Adapters.Confluence.APIEndpoint,
+			SpaceKey:        getEnvOrDefault("CONFLUENCE_SPACE_KEY", "TEST"),
+		}
+		confluenceSettingsService := service.NewConfluenceSettingsService("ConfluenceSettingsService", "B", da, settingsConfig, c.version)
+		services = append(services, confluenceSettingsService)
 	}
 
 	c.mu.Lock()

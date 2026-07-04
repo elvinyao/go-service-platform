@@ -8,7 +8,7 @@ The reference runtime uses separate configuration files for runtime wiring, rule
 
 ```yaml
 admin:
-  address: ":8080"
+  address: ":18080"
 
 inputs:
   websocket:
@@ -36,7 +36,7 @@ adapters:
 
 Fields:
 
-- `admin.address`: HTTP admin listener address. Startup fails if this address cannot bind.
+- `admin.address`: HTTP admin listener address. Startup fails if this address cannot bind. Override with `ADMIN_ADDR` for local debugging.
 - `inputs.websocket.enabled`: enables the demo WebSocket input.
 - `inputs.websocket.server_url`: WebSocket server base URL.
 - `inputs.websocket.path`: WebSocket endpoint path.
@@ -70,14 +70,26 @@ workflows:
   - name: WorkflowEngine
     providers:
       - yaml
-      - confluence
-    mode: pipeline
+    mode: single
     pipeline_order:
       - yaml
-      - confluence
     action_merge:
       dedup: true
       order: priority
+```
+
+The default runtime is YAML-first so new rules can run locally without Confluence, Mattermost, or BadgeDB knowledge. To use the Confluence demo provider, enable `adapters.confluence.enabled` in `runtime.yaml` and add `confluence` to the provider list:
+
+```yaml
+workflows:
+  - name: WorkflowEngine
+    providers:
+      - yaml
+      - confluence
+    mode: or
+    pipeline_order:
+      - yaml
+      - confluence
 ```
 
 Composition modes:
@@ -86,6 +98,8 @@ Composition modes:
 - `or`: use rules from any provider that matches.
 - `and`: all providers must match.
 - `pipeline`: providers run in the configured order and all must match.
+
+Runtime `enabled` flags are applied before the workflow engine starts. If an adapter is disabled in `runtime.yaml`, its provider or executor is not registered even if it appears in `rule-engine.yaml`.
 
 ## `config/workflow-rules.yaml`
 

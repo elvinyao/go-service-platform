@@ -1,5 +1,5 @@
 admin:
-  address: ":8080"
+  address: ":18080"
 
 inputs:
   websocket:
