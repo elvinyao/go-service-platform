@@ -2,7 +2,7 @@
 
 ## Summary
 
-This project will be reshaped from a business-specific service workflow demo into a general-purpose, rule-driven Go service framework. The reference runtime will remain runnable out of the box, but Mattermost, Confluence, and BadgeDB will become demo adapters instead of the core product narrative.
+This project is a general-purpose, rule-driven Go service framework evolved from a business-specific workflow demo. The reference runtime remains runnable out of the box, while Mattermost, Confluence, and BadgeDB are optional demo adapters instead of the core product narrative.
 
 The target experience is:
 
@@ -11,6 +11,23 @@ The target experience is:
 - A local developer path with `make dev`.
 - A containerized developer path with `docker compose up`.
 - Accurate English documentation that matches the actual commands, package layout, configuration files, and runtime behavior.
+
+## Implementation Status
+
+| Design Area | Status | Implemented Boundary |
+| --- | --- | --- |
+| Rule model and composition | Complete | `pkg/ruleengine` |
+| Provider-to-action orchestration | Complete | `pkg/pipeline` |
+| Built-in action executors | Complete | `pkg/executor` |
+| Bounded batch concurrency | Complete | `pkg/concurrency` |
+| Strict runtime configuration | Complete | `pkg/config` and runtime profiles |
+| Lifecycle and startup rollback | Complete | `internal/app`, `internal/manager`, `pkg/runtime` |
+| Health and readiness | Complete | `pkg/health` and service-specific checks |
+| Optional business demos | Complete | `internal/adapters` and `config/profiles/demo` |
+| Runnable public examples | Complete | `examples` |
+| Metrics HTTP contract | Deferred | No `/metrics` endpoint is advertised |
+
+The current source of truth for commands and user-facing behavior is `README.md` plus the focused documents under `docs/`. Historical implementation plans are retained only as migration records.
 
 ## Goals
 
@@ -31,7 +48,7 @@ The target experience is:
 - Making Mattermost, Confluence, or BadgeDB required for framework users.
 - Preserving the old Go workflow extension model as the primary user-facing API.
 
-## Proposed Package Layout
+## Package Layout
 
 ```text
 cmd/
@@ -45,7 +62,7 @@ pkg/
   executor/
   health/
   logger/
-  resilience/
+  pipeline/
   ruleengine/
   runtime/
 
@@ -54,8 +71,11 @@ internal/
     badgedb/
     confluence/
     mattermost/
-    websocket/
   app/
+  di/
+  manager/
+  service/
+  workflow/
 
 examples/
   basic-rule-pipeline/
@@ -63,6 +83,10 @@ examples/
   websocket-to-mattermost/
 
 config/
+  profiles/
+    demo/
+      runtime.yaml
+      rule-engine.yaml
   runtime.yaml
   rule-engine.yaml
   workflow-rules.yaml
@@ -133,20 +157,36 @@ Demo executors remain outside the core package:
 
 This keeps the SDK usable without pulling business-specific dependencies into the core framework path.
 
+### Pipeline SDK
+
+`pkg/pipeline` is the public orchestration boundary. It:
+
+- validates that configured provider names are registered
+- starts providers before processing messages
+- validates every provider snapshot at startup and composition time
+- rejects enabled rules that reference unregistered executors
+- builds execution plans through `pkg/ruleengine`
+- executes all selected actions and aggregates action failures
+- exposes immutable configuration, provider, and executor snapshots
+
+The reference runtime wraps this engine in `internal/workflow.WorkflowEngine`; external applications can use `pkg/pipeline` directly.
+
 ## Runtime Design
 
-The reference runtime under `cmd/service-workflow` will:
+The reference runtime under `cmd/service-workflow`:
 
-- load runtime, rule engine, and local rule configuration
-- initialize logging
-- create lifecycle-managed inputs, providers, and executors
-- start the admin server
-- connect configured inputs to the rule engine
-- execute matched actions
-- expose health and admin endpoints
-- shut down gracefully on OS signals
+- loads runtime, rule engine, and local rule configuration
+- initializes logging
+- creates lifecycle-managed inputs, providers, and executors
+- starts the admin server
+- connects configured inputs to the rule engine
+- executes matched actions
+- exposes health and admin endpoints
+- shuts down gracefully on OS signals
 
-Critical startup failures must stop the process and clean up already-started components. The admin HTTP listener is critical. If it cannot bind its configured address, startup fails instead of leaving the process in a partially running state.
+Critical startup failures stop the process and clean up already-started components. Service startup is rolled back when any service fails. The admin HTTP listener is critical; if it cannot bind its configured address, startup fails instead of leaving the process in a partially running state. Shutdown aggregates admin and service errors instead of discarding them.
+
+Application lifecycle operations are serialized. A duplicate `Start` is rejected before wiring is replaced, startup errors retain cleanup failures, and a successful `Stop` permits a later clean restart.
 
 ## Configuration Design
 
@@ -173,11 +213,14 @@ config/workflow-rules.yaml
 - workflow policy
 - pipeline ordering
 - action merge behavior
-- provider refresh behavior
 
 `config/workflow-rules.yaml` configures local YAML rules.
 
 Environment variables are an override layer for operational values such as log level, admin address, and integration URLs. The README should document the common overrides, but YAML remains the primary documented configuration surface.
+
+All three YAML surfaces use strict known-field decoding. Runtime values, URLs, addresses, durations, workflow names, provider lists, composition modes, rule IDs, operators, and executor availability are validated before the admin server starts. Explicit empty workflow or provider lists are rejected instead of being replaced with defaults.
+
+The base profile is YAML-first and disables Confluence, Mattermost, and BadgeDB. `config/profiles/demo` enables those adapters for the full local demonstration. Local profiles bind the unauthenticated admin API to loopback; the container image explicitly uses an all-interface listener.
 
 ## Demo Adapter Strategy
 
@@ -192,7 +235,7 @@ These adapters demonstrate how to extend the framework, but framework users shou
 
 ## Legacy Workflow Migration
 
-`WorkflowA` and `WorkflowC` will be removed from the default programming model.
+`WorkflowA` and `WorkflowC` have been removed from the default programming model.
 
 The previous `WorkflowA` badge behavior becomes a YAML rule plus demo database executor.
 
@@ -208,11 +251,11 @@ The README should teach users to add rules, providers, and executors, not to add
 
 ### `make dev`
 
-`make dev` starts the fake server and reference runtime with the default development configuration. It should print the admin endpoint and example verification commands.
+`make dev` builds and starts the fake server as a directly managed child process, waits for its health endpoint, and starts the reference runtime with `config/profiles/demo`. It prints the admin endpoint and an example verification command and reaps the child process on exit.
 
 ### Docker Compose
 
-`docker compose up` starts an equivalent local environment. It should use the same default behavior as `make dev` unless overridden through Compose environment variables.
+`docker compose up` starts an equivalent local environment. It uses the same default behavior as `make dev`, publishes development ports on host loopback, and uses environment overrides only where container networking requires them.
 
 ### Verification Flow
 
@@ -231,10 +274,14 @@ The reference runtime keeps or adds these endpoints:
 - `/health`
 - `/health/readiness`
 - `/health/liveness`
+- `/health/service?service=<name>`
 - `/services`
+- `/workflows`
 - `/rule-engine`
 
-`/metrics` can be added if the existing metrics package can be integrated cleanly during implementation. If not, it should be documented as future work rather than presented as supported.
+`/metrics` is not currently exposed. Defining and implementing a stable metrics contract remains future work and must not be presented as supported.
+
+Readiness reflects critical runtime and dependency health. Liveness only confirms that the process can serve the admin endpoint, so dependency outages do not cause restart loops.
 
 ## Documentation Plan
 

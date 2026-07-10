@@ -2,7 +2,14 @@ package service
 
 import (
 	"context"
-	"project/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/health"
+)
+
+const (
+	WebSocketInputServiceName     = "WebSocketInputService"
+	BadgeDBServiceName            = "BadgeDBService"
+	MattermostServiceName         = "MattermostService"
+	ConfluenceSettingsServiceName = "ConfluenceSettingsService"
 )
 
 type Service interface {

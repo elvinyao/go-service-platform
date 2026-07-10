@@ -246,6 +246,17 @@ func TestComposerReturnsErrorForUnknownProvider(t *testing.T) {
 	assert.Contains(t, err.Error(), "rule provider missing not found")
 }
 
+func TestComposerReturnsErrorForUnknownWorkflow(t *testing.T) {
+	composer := NewComposer(DefaultEngineConfig(), map[string]RuleProvider{
+		"yaml": NewStaticProvider("yaml", RuleSet{}),
+	})
+
+	_, err := composer.BuildExecutionPlan(context.Background(), "missing", Message{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no configured policy")
+}
+
 func TestComposerIgnoresDisabledRules(t *testing.T) {
 	cfg := DefaultEngineConfig()
 	cfg.Workflows = []WorkflowPolicy{
@@ -305,7 +316,18 @@ func TestComposerSnapshotReturnsProviders(t *testing.T) {
 		name: "yaml",
 		set: RuleSet{
 			Source: "yaml",
-			Rules:  []Rule{{ID: "r1", Workflow: DefaultWorkflowName, Enabled: true}},
+			Rules: []Rule{{
+				ID:       "r1",
+				Workflow: DefaultWorkflowName,
+				Enabled:  true,
+				Actions: []Action{{
+					ID:       "a1",
+					Executor: "http",
+					Params: map[string]interface{}{
+						"headers": map[string]interface{}{"X-Test": "original"},
+					},
+				}},
+			}},
 		},
 	}
 	composer := NewComposer(cfg, map[string]RuleProvider{"yaml": provider})
@@ -314,6 +336,8 @@ func TestComposerSnapshotReturnsProviders(t *testing.T) {
 	require.NotEmpty(t, snapshot.Config.Workflows)
 	require.Contains(t, snapshot.Providers, "yaml")
 	require.Len(t, snapshot.Providers["yaml"].Rules, 1)
+	snapshot.Providers["yaml"].Rules[0].Actions[0].Params["headers"].(map[string]interface{})["X-Test"] = "changed"
+	assert.Equal(t, "original", provider.set.Rules[0].Actions[0].Params["headers"].(map[string]interface{})["X-Test"])
 }
 
 func testRule(id, actionID string, priority int, executor string) Rule {

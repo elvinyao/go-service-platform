@@ -46,6 +46,40 @@ rules:
 	}
 }
 
+func TestStaticProviderSnapshotsDeepCloneRuleValues(t *testing.T) {
+	headers := map[string]interface{}{"X-Test": "original"}
+	values := []interface{}{"first", map[string]interface{}{"nested": "original"}}
+	provider := NewStaticProvider("static", RuleSet{Rules: []Rule{{
+		ID:         "r1",
+		Conditions: []Condition{{Field: "metadata", Op: OpEq, Value: values}},
+		Actions: []Action{{
+			ID:       "a1",
+			Executor: "http",
+			Params:   map[string]interface{}{"headers": headers},
+		}},
+	}}})
+
+	headers["X-Test"] = "input changed"
+	values[1].(map[string]interface{})["nested"] = "input changed"
+	first := provider.Snapshot(context.Background())
+	if got := first.Rules[0].Actions[0].Params["headers"].(map[string]interface{})["X-Test"]; got != "original" {
+		t.Fatalf("header after input mutation = %v, want original", got)
+	}
+	if got := first.Rules[0].Conditions[0].Value.([]interface{})[1].(map[string]interface{})["nested"]; got != "original" {
+		t.Fatalf("condition after input mutation = %v, want original", got)
+	}
+
+	first.Rules[0].Actions[0].Params["headers"].(map[string]interface{})["X-Test"] = "snapshot changed"
+	first.Rules[0].Conditions[0].Value.([]interface{})[1].(map[string]interface{})["nested"] = "snapshot changed"
+	second := provider.Snapshot(context.Background())
+	if got := second.Rules[0].Actions[0].Params["headers"].(map[string]interface{})["X-Test"]; got != "original" {
+		t.Fatalf("header after snapshot mutation = %v, want original", got)
+	}
+	if got := second.Rules[0].Conditions[0].Value.([]interface{})[1].(map[string]interface{})["nested"]; got != "original" {
+		t.Fatalf("condition after snapshot mutation = %v, want original", got)
+	}
+}
+
 func TestComposerBuildsPriorityOrderedDeduplicatedPlan(t *testing.T) {
 	now := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
 	provider := NewStaticProvider("static", RuleSet{

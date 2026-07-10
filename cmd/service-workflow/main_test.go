@@ -7,8 +7,26 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
+
+	"github.com/elvinyao/go-service-platform/pkg/config"
 )
+
+type fakeLifecycleApplication struct {
+	startErr error
+	stopErr  error
+	starts   int
+	stops    int
+}
+
+func (a *fakeLifecycleApplication) Start(context.Context) error {
+	a.starts++
+	return a.startErr
+}
+
+func (a *fakeLifecycleApplication) Stop(context.Context) error {
+	a.stops++
+	return a.stopErr
+}
 
 func TestGetenvReturnsFallbackWhenUnset(t *testing.T) {
 	t.Setenv("SERVICE_WORKFLOW_TEST_ENV", "")
@@ -49,51 +67,19 @@ func TestFatalOnErrorCallsFatal(t *testing.T) {
 	}
 }
 
-func TestMainHandlesInterrupt(t *testing.T) {
-	dir := t.TempDir()
-	runtimeConfig := filepath.Join(dir, "runtime.yaml")
-	ruleConfig := filepath.Join(dir, "rule-engine.yaml")
-	rules := filepath.Join(dir, "rules.yaml")
-	if err := os.WriteFile(runtimeConfig, []byte(`admin:
-  address: "127.0.0.1:0"
-`), 0o600); err != nil {
-		t.Fatalf("write runtime config: %v", err)
-	}
-	if err := os.WriteFile(ruleConfig, []byte(`workflows:
-  - name: WorkflowEngine
-    providers: [yaml]
-    mode: single
-`), 0o600); err != nil {
-		t.Fatalf("write rule config: %v", err)
-	}
-	if err := os.WriteFile(rules, []byte(`version: "1"
-rules: []
-`), 0o600); err != nil {
-		t.Fatalf("write rules: %v", err)
-	}
-	t.Setenv("RUNTIME_CONFIG", runtimeConfig)
-	t.Setenv("RULE_ENGINE_CONFIG", ruleConfig)
-	t.Setenv("WORKFLOW_RULES", rules)
+func TestMainReportsRunErrorThroughFatal(t *testing.T) {
+	t.Setenv("RUNTIME_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
 
-	done := make(chan struct{})
-	go func() {
-		main()
-		close(done)
-	}()
-
-	time.Sleep(250 * time.Millisecond)
-	proc, err := os.FindProcess(os.Getpid())
-	if err != nil {
-		t.Fatalf("find process: %v", err)
+	oldFatal := fatal
+	var fatalErr error
+	fatal = func(err error) {
+		fatalErr = err
 	}
-	if err := proc.Signal(os.Interrupt); err != nil {
-		t.Fatalf("signal interrupt: %v", err)
-	}
+	defer func() { fatal = oldFatal }()
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("main did not return after interrupt")
+	main()
+	if fatalErr == nil {
+		t.Fatalf("fatal error = nil")
 	}
 }
 
@@ -117,87 +103,79 @@ func TestRunReturnsConfigLoadError(t *testing.T) {
 }
 
 func TestRunReturnsApplicationStartError(t *testing.T) {
-	dir := t.TempDir()
-	runtimeConfig := filepath.Join(dir, "runtime.yaml")
-	ruleConfig := filepath.Join(dir, "bad-rule-engine.yaml")
-	rules := filepath.Join(dir, "rules.yaml")
-	if err := os.WriteFile(runtimeConfig, []byte(`admin:
-  address: "127.0.0.1:0"
-`), 0o600); err != nil {
-		t.Fatalf("write runtime config: %v", err)
-	}
-	if err := os.WriteFile(ruleConfig, []byte(":"), 0o600); err != nil {
-		t.Fatalf("write rule config: %v", err)
-	}
-	if err := os.WriteFile(rules, []byte(`version: "1"
-rules: []
-`), 0o600); err != nil {
-		t.Fatalf("write rules: %v", err)
-	}
-	t.Setenv("RUNTIME_CONFIG", runtimeConfig)
-	t.Setenv("RULE_ENGINE_CONFIG", ruleConfig)
-	t.Setenv("WORKFLOW_RULES", rules)
+	t.Setenv("RUNTIME_CONFIG", writeRuntimeConfig(t))
+	application := &fakeLifecycleApplication{startErr: errors.New("start failed")}
+	replaceApplicationFactory(t, func(string, config.RuntimeConfig, string, string) lifecycleApplication {
+		return application
+	})
 
 	err := run(context.Background())
-	if err == nil {
-		t.Fatalf("expected application start error")
+	if err == nil || application.starts != 1 || application.stops != 0 {
+		t.Fatalf("run error/start/stop = %v/%d/%d", err, application.starts, application.stops)
 	}
 }
 
 func TestRunStartsAndStopsWithRuntimeConfig(t *testing.T) {
-	dir := t.TempDir()
-	runtimeConfig := filepath.Join(dir, "runtime.yaml")
-	ruleConfig := filepath.Join(dir, "rule-engine.yaml")
-	rules := filepath.Join(dir, "rules.yaml")
-	if err := os.WriteFile(runtimeConfig, []byte(`admin:
-  address: "127.0.0.1:0"
-inputs:
-  websocket:
-    enabled: true
-    server_url: "ws://127.0.0.1:1"
-    path: "/ws"
-    reconnect_interval: "10ms"
-adapters:
-  confluence:
-    enabled: true
-    api_endpoint: "http://127.0.0.1:1"
-    settings_page_id: "settings-page-1"
-    refresh_interval: "1h"
-  mattermost:
-    enabled: true
-    server_url: "http://127.0.0.1:1"
-    websocket_url: "ws://127.0.0.1:1"
-    api_token: "test-token"
-    channel: "test-channel"
-  badgedb:
-    enabled: true
-    path: ""
-`), 0o600); err != nil {
-		t.Fatalf("write runtime config: %v", err)
-	}
-	if err := os.WriteFile(ruleConfig, []byte(`workflows:
-  - name: WorkflowEngine
-    providers: [yaml]
-    mode: single
-`), 0o600); err != nil {
-		t.Fatalf("write rule config: %v", err)
-	}
-	if err := os.WriteFile(rules, []byte(`version: "1"
-rules: []
-`), 0o600); err != nil {
-		t.Fatalf("write rules: %v", err)
-	}
-	t.Setenv("RUNTIME_CONFIG", runtimeConfig)
-	t.Setenv("RULE_ENGINE_CONFIG", ruleConfig)
-	t.Setenv("WORKFLOW_RULES", rules)
+	t.Setenv("RUNTIME_CONFIG", writeRuntimeConfig(t))
+	t.Setenv("RULE_ENGINE_CONFIG", "custom-engine.yaml")
+	t.Setenv("WORKFLOW_RULES", "custom-rules.yaml")
+	application := &fakeLifecycleApplication{}
+	var gotName, gotEnginePath, gotRulesPath string
+	replaceApplicationFactory(t, func(name string, cfg config.RuntimeConfig, enginePath, rulesPath string) lifecycleApplication {
+		gotName = name
+		gotEnginePath = enginePath
+		gotRulesPath = rulesPath
+		if cfg.Admin.Address != "127.0.0.1:18080" {
+			t.Fatalf("admin address = %q", cfg.Admin.Address)
+		}
+		return application
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(250 * time.Millisecond)
-		cancel()
-	}()
+	cancel()
 
 	if err := run(ctx); err != nil {
 		t.Fatalf("run: %v", err)
 	}
+	if application.starts != 1 || application.stops != 1 {
+		t.Fatalf("start/stop calls = %d/%d", application.starts, application.stops)
+	}
+	if gotName != appName || gotEnginePath != "custom-engine.yaml" || gotRulesPath != "custom-rules.yaml" {
+		t.Fatalf("factory args = %q/%q/%q", gotName, gotEnginePath, gotRulesPath)
+	}
+}
+
+func TestRunReturnsApplicationStopError(t *testing.T) {
+	t.Setenv("RUNTIME_CONFIG", writeRuntimeConfig(t))
+	application := &fakeLifecycleApplication{stopErr: errors.New("stop failed")}
+	replaceApplicationFactory(t, func(string, config.RuntimeConfig, string, string) lifecycleApplication {
+		return application
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := run(ctx)
+
+	if err == nil || application.starts != 1 || application.stops != 1 {
+		t.Fatalf("run error/start/stop = %v/%d/%d", err, application.starts, application.stops)
+	}
+}
+
+func replaceApplicationFactory(
+	t *testing.T,
+	factory func(string, config.RuntimeConfig, string, string) lifecycleApplication,
+) {
+	t.Helper()
+	previous := newApplication
+	newApplication = factory
+	t.Cleanup(func() { newApplication = previous })
+}
+
+func writeRuntimeConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "runtime.yaml")
+	if err := os.WriteFile(path, []byte("admin:\n  address: \"127.0.0.1:18080\"\n"), 0o600); err != nil {
+		t.Fatalf("write runtime config: %v", err)
+	}
+	return path
 }

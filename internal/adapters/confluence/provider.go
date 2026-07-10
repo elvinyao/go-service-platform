@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"project/internal/manager"
-	"project/internal/service"
-	"project/pkg/logger"
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/service"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 type Provider struct {
@@ -51,7 +51,7 @@ func (p *Provider) Snapshot(ctx context.Context) ruleengine.RuleSet {
 	if err != nil {
 		p.mu.RLock()
 		defer p.mu.RUnlock()
-		rs := cloneRuleSet(p.lastGood)
+		rs := ruleengine.CloneRuleSet(p.lastGood)
 		rs.LastError = err.Error()
 		return rs
 	}
@@ -104,26 +104,23 @@ func (p *Provider) Snapshot(ctx context.Context) ruleengine.RuleSet {
 		LoadedAt: time.Now(),
 		Rules:    rules,
 	}
+	if err := ruleengine.ValidateRuleSet(rs); err != nil {
+		p.mu.RLock()
+		fallback := ruleengine.CloneRuleSet(p.lastGood)
+		p.mu.RUnlock()
+		fallback.LastError = fmt.Sprintf("validate Confluence rules: %v", err)
+		return fallback
+	}
 
 	p.mu.Lock()
-	p.lastGood = cloneRuleSet(rs)
+	p.lastGood = ruleengine.CloneRuleSet(rs)
 	p.mu.Unlock()
 
 	return rs
 }
 
-func cloneRuleSet(in ruleengine.RuleSet) ruleengine.RuleSet {
-	out := in
-	out.Rules = append([]ruleengine.Rule(nil), in.Rules...)
-	for i := range out.Rules {
-		out.Rules[i].Conditions = append([]ruleengine.Condition(nil), in.Rules[i].Conditions...)
-		out.Rules[i].Actions = append([]ruleengine.Action(nil), in.Rules[i].Actions...)
-	}
-	return out
-}
-
 func (p *Provider) getService(ctx context.Context) (*service.ConfluenceSettingsService, error) {
-	svc, ok := p.serviceManager.GetServiceByName(ctx, "ConfluenceSettingsService")
+	svc, ok := p.serviceManager.GetServiceByName(ctx, service.ConfluenceSettingsServiceName)
 	if !ok {
 		return nil, fmt.Errorf("service ConfluenceSettingsService not found")
 	}

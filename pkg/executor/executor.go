@@ -3,7 +3,7 @@ package executor
 import (
 	"context"
 
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 type Executor interface {

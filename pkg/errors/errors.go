@@ -53,6 +53,20 @@ func (e *AppError) Unwrap() error {
 	return e.Err
 }
 
+// Is matches the sentinel associated with the AppError type.
+func (e *AppError) Is(target error) bool {
+	return target != nil && target == sentinelForType(e.Type)
+}
+
+// GetFields returns a copy of diagnostic fields for structured logging.
+func (e *AppError) GetFields() map[string]interface{} {
+	fields := make(map[string]interface{}, len(e.Fields))
+	for key, value := range e.Fields {
+		fields[key] = value
+	}
+	return fields
+}
+
 // WithField adds a field to the error
 func (e *AppError) WithField(key string, value interface{}) *AppError {
 	if e.Fields == nil {
@@ -99,4 +113,27 @@ func Is(err, target error) bool {
 // As finds the first error in err's chain that matches target
 func As(err error, target interface{}) bool {
 	return errors.As(err, target)
+}
+
+func sentinelForType(errType ErrorType) error {
+	switch errType {
+	case TypeNotFound:
+		return ErrNotFound
+	case TypeInvalidInput:
+		return ErrInvalidInput
+	case TypeServiceUnavailable:
+		return ErrServiceUnavailable
+	case TypeUnauthorized:
+		return ErrUnauthorized
+	case TypeForbidden:
+		return ErrForbidden
+	case TypeInternal:
+		return ErrInternal
+	case TypeTimeout:
+		return ErrTimeout
+	case TypePartialFailure:
+		return ErrPartialFailure
+	default:
+		return nil
+	}
 }

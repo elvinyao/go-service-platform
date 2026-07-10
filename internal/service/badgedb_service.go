@@ -3,10 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
-	"project/internal/model"
-	appctx "project/pkg/context"
-	"project/pkg/health"
-	"project/pkg/logger"
+	"github.com/elvinyao/go-service-platform/internal/model"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
 	"strings"
 	"sync"
 	"time"
@@ -63,15 +63,6 @@ func (s *BadgeDBService) Start(ctx context.Context) error {
 
 	// Set service as running
 	s.LockRunning(true)
-
-	// Setup cleanup on context cancellation
-	go func() {
-		<-ctx.Done()
-		stopCtx := appctx.NewContext(context.Background())
-		if err := s.Stop(stopCtx); err != nil {
-			logger.WithContextError(stopCtx, err).Error("Error stopping service on context cancellation")
-		}
-	}()
 
 	return nil
 }
@@ -172,19 +163,7 @@ func (s *BadgeDBService) SaveBadge(ctx context.Context, badge model.Badge) error
 	defer s.mu.Unlock()
 
 	s.db[badge.ID] = badge
-
-	// Schedule async backup
-	go func() {
-		backupCtx := appctx.NewContext(context.Background())
-		backupCtx = appctx.WithServiceName(backupCtx, s.GetName())
-		backupCtx = appctx.WithOperationName(backupCtx, "async_backup")
-
-		if err := s.backupDB(backupCtx); err != nil {
-			logger.WithContextError(backupCtx, err).Error("Async backup failed")
-		}
-	}()
-
-	return nil
+	return s.backupDBLocked(ctx)
 }
 
 // Configure implements Service interface with context support
@@ -194,8 +173,13 @@ func (s *BadgeDBService) Configure(ctx context.Context, config interface{}) erro
 
 	// Handle configuration based on type
 	if configStr, ok := config.(string); ok {
+		if strings.TrimSpace(configStr) == "" {
+			return fmt.Errorf("database path is required")
+		}
+		s.mu.Lock()
 		s.dbPath = configStr
-		logger.DebugfWithContext(ctx, "Updated DB path to: %s", s.dbPath)
+		s.mu.Unlock()
+		logger.DebugfWithContext(ctx, "Updated DB path to: %s", configStr)
 		return nil
 	}
 
@@ -223,12 +207,6 @@ func (s *BadgeDBService) loadDB(ctx context.Context) error {
 	logger.DebugfWithContext(ctx, "Loading database from: %s", s.dbPath)
 	// The demo store is in-memory; dbPath is retained for adapter configuration.
 	return nil
-}
-
-func (s *BadgeDBService) backupDB(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.backupDBLocked(ctx)
 }
 
 func (s *BadgeDBService) backupDBLocked(ctx context.Context) error {

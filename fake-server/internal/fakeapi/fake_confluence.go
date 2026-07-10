@@ -45,6 +45,7 @@ type FakeConfluenceServer struct {
 	settings map[string]*ConfluenceSettings
 	port     int
 	server   *http.Server
+	listen   listenFunc
 }
 
 // NewFakeConfluenceServer creates a new fake Confluence server
@@ -147,19 +148,19 @@ func (s *FakeConfluenceServer) Start() error {
 	}
 
 	log.Printf("Starting Fake Confluence API server on port %d", s.port)
-	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Fake Confluence server error: %v", err)
-		}
-	}()
-
+	if err := startHTTPServer(s.server, "Fake Confluence", s.listen); err != nil {
+		s.server = nil
+		return err
+	}
 	return nil
 }
 
 // Stop stops the fake Confluence server
 func (s *FakeConfluenceServer) Stop() error {
-	if s.server != nil {
-		return s.server.Close()
+	server := s.server
+	s.server = nil
+	if server != nil {
+		return server.Close()
 	}
 	return nil
 }

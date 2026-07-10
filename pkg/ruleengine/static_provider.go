@@ -9,7 +9,7 @@ type StaticProvider struct {
 
 func NewStaticProvider(name string, set RuleSet) *StaticProvider {
 	set.Source = name
-	return &StaticProvider{name: name, set: cloneRuleSet(set)}
+	return &StaticProvider{name: name, set: CloneRuleSet(set)}
 }
 
 func (p *StaticProvider) Name() string {
@@ -21,5 +21,5 @@ func (p *StaticProvider) Start(ctx context.Context) error {
 }
 
 func (p *StaticProvider) Snapshot(ctx context.Context) RuleSet {
-	return cloneRuleSet(p.set)
+	return CloneRuleSet(p.set)
 }

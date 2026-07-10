@@ -3,16 +3,48 @@ package health
 import (
 	"context"
 	"errors"
-	"fmt"
+	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
+
+type dialContextFunc func(context.Context, string, string) (net.Conn, error)
+
+func (f dialContextFunc) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return f(ctx, network, address)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func staticHTTPClient(status int, delay time.Duration) *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("response")),
+			Request:    request,
+		}, nil
+	})}
+}
+
+func pipeConnection() net.Conn {
+	client, server := net.Pipe()
+	server.Close()
+	return client
+}
 
 func TestMemoryUsageChecker(t *testing.T) {
 	// Test normal memory usage
@@ -89,23 +121,31 @@ func TestGoroutineCountChecker(t *testing.T) {
 }
 
 func TestConnectivityChecker(t *testing.T) {
+	t.Run("CanceledContext", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		checker := NewConnectivityChecker("203.0.113.1", "65535")
+
+		started := time.Now()
+		result := checker.Check(ctx)
+
+		assert.Equal(t, StatusDown, result.Status)
+		assert.Less(t, time.Since(started), 100*time.Millisecond)
+		assert.Contains(t, result.Description, "canceled")
+	})
+
 	// Test successful connection
 	t.Run("SuccessfulConnection", func(t *testing.T) {
-		// Start a local server to test connectivity
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer listener.Close()
-
-		addr := listener.Addr().(*net.TCPAddr)
-
-		// Configure checker
+		var address string
 		checker := &ConnectivityChecker{
-			Host:            "127.0.0.1",
-			Port:            fmt.Sprintf("%d", addr.Port),
+			Host:            "2001:db8::1",
+			Port:            "443",
 			TimeoutMs:       500,
 			ExpectedLatency: 1000,
+			Dialer: dialContextFunc(func(_ context.Context, _, gotAddress string) (net.Conn, error) {
+				address = gotAddress
+				return pipeConnection(), nil
+			}),
 		}
 
 		result := checker.Check(context.Background())
@@ -113,16 +153,19 @@ func TestConnectivityChecker(t *testing.T) {
 		assert.Equal(t, StatusUp, result.Status)
 		assert.Contains(t, result.Details, "latency_ms")
 		assert.Contains(t, result.Description, "Successfully")
+		assert.Equal(t, "[2001:db8::1]:443", address)
 	})
 
 	// Test failed connection
 	t.Run("FailedConnection", func(t *testing.T) {
-		// Use a port that's unlikely to be in use
 		checker := &ConnectivityChecker{
 			Host:            "127.0.0.1",
 			Port:            "65535",
-			TimeoutMs:       100, // Short timeout to avoid long test
+			TimeoutMs:       100,
 			ExpectedLatency: 1000,
+			Dialer: dialContextFunc(func(context.Context, string, string) (net.Conn, error) {
+				return nil, errors.New("connection refused")
+			}),
 		}
 
 		result := checker.Check(context.Background())
@@ -133,40 +176,22 @@ func TestConnectivityChecker(t *testing.T) {
 
 	// Test slow connection
 	t.Run("SlowConnection", func(t *testing.T) {
-		// Start a local server with a delay
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Accept connections with a delay
-		go func() {
-			conn, _ := listener.Accept()
-			time.Sleep(50 * time.Millisecond) // Add delay
-			if conn != nil {
-				conn.Close()
-			}
-		}()
-
-		addr := listener.Addr().(*net.TCPAddr)
-
-		// Configure checker with a very low expected latency
 		checker := &ConnectivityChecker{
 			Host:            "127.0.0.1",
-			Port:            fmt.Sprintf("%d", addr.Port),
+			Port:            "443",
 			TimeoutMs:       500,
-			ExpectedLatency: 10, // Very low, will be exceeded
+			ExpectedLatency: 5,
+			Dialer: dialContextFunc(func(context.Context, string, string) (net.Conn, error) {
+				time.Sleep(20 * time.Millisecond)
+				return pipeConnection(), nil
+			}),
 		}
 
 		result := checker.Check(context.Background())
 
-		assert.Equal(t, StatusUp, result.Status)
-		// Check if there's latency information
+		assert.Equal(t, StatusDegraded, result.Status)
 		assert.Contains(t, result.Details, "latency_ms")
-		// The implementation might not set a degraded status even if expected latency
-		// is exceeded, so we can't test for that
-
-		listener.Close()
+		assert.Contains(t, result.Description, "High latency")
 	})
 
 	// Test constructor
@@ -182,18 +207,13 @@ func TestConnectivityChecker(t *testing.T) {
 func TestHTTPEndpointChecker(t *testing.T) {
 	// Test successful HTTP request
 	t.Run("SuccessfulRequest", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
-		}))
-		defer server.Close()
-
 		checker := &HTTPEndpointChecker{
-			URL:             server.URL,
+			URL:             "https://service.example/health",
 			Method:          "GET",
 			TimeoutMs:       500,
 			ExpectedStatus:  http.StatusOK,
 			ExpectedLatency: 1000,
+			HTTPClient:      staticHTTPClient(http.StatusOK, 0),
 		}
 
 		result := checker.Check(context.Background())
@@ -206,17 +226,13 @@ func TestHTTPEndpointChecker(t *testing.T) {
 
 	// Test unsuccessful HTTP request (wrong status code)
 	t.Run("WrongStatusCode", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		defer server.Close()
-
 		checker := &HTTPEndpointChecker{
-			URL:             server.URL,
+			URL:             "https://service.example/health",
 			Method:          "GET",
 			TimeoutMs:       500,
 			ExpectedStatus:  http.StatusOK,
 			ExpectedLatency: 1000,
+			HTTPClient:      staticHTTPClient(http.StatusInternalServerError, 0),
 		}
 
 		result := checker.Check(context.Background())
@@ -228,18 +244,13 @@ func TestHTTPEndpointChecker(t *testing.T) {
 
 	// Test slow HTTP request
 	t.Run("SlowRequest", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(50 * time.Millisecond) // Add delay
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
 		checker := &HTTPEndpointChecker{
-			URL:             server.URL,
+			URL:             "https://service.example/health",
 			Method:          "GET",
 			TimeoutMs:       500,
 			ExpectedStatus:  http.StatusOK,
-			ExpectedLatency: 10, // Very low, will be exceeded
+			ExpectedLatency: 10,
+			HTTPClient:      staticHTTPClient(http.StatusOK, 50*time.Millisecond),
 		}
 
 		result := checker.Check(context.Background())
@@ -251,17 +262,46 @@ func TestHTTPEndpointChecker(t *testing.T) {
 	// Test connection error
 	t.Run("ConnectionError", func(t *testing.T) {
 		checker := &HTTPEndpointChecker{
-			URL:             "http://invalid-domain-that-doesnt-exist.example",
+			URL:             "https://service.example/health",
 			Method:          "GET",
-			TimeoutMs:       100, // Short timeout to avoid long test
+			TimeoutMs:       100,
 			ExpectedStatus:  http.StatusOK,
 			ExpectedLatency: 1000,
+			HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("network unavailable")
+			})},
 		}
 
 		result := checker.Check(context.Background())
 
 		assert.Equal(t, StatusDown, result.Status)
 		assert.Contains(t, result.Description, "Failed to connect")
+	})
+
+	t.Run("InvalidURL", func(t *testing.T) {
+		checker := NewHTTPEndpointChecker("://invalid")
+
+		result := checker.Check(context.Background())
+
+		assert.Equal(t, StatusDown, result.Status)
+		assert.Contains(t, result.Description, "Failed to create request")
+	})
+
+	t.Run("ClientTimeout", func(t *testing.T) {
+		client := &http.Client{
+			Timeout: 10 * time.Millisecond,
+			Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				<-request.Context().Done()
+				return nil, request.Context().Err()
+			}),
+		}
+		checker := NewHTTPEndpointChecker("https://service.example/health")
+		checker.HTTPClient = client
+
+		result := checker.Check(context.Background())
+
+		assert.Equal(t, StatusDown, result.Status)
+		assert.Contains(t, result.Description, "deadline exceeded")
 	})
 
 	// Test constructor
@@ -272,6 +312,7 @@ func TestHTTPEndpointChecker(t *testing.T) {
 		assert.Equal(t, 2000, checker.TimeoutMs)
 		assert.Equal(t, http.StatusOK, checker.ExpectedStatus)
 		assert.Equal(t, 1000, checker.ExpectedLatency)
+		assert.Nil(t, checker.HTTPClient)
 	})
 }
 
@@ -285,6 +326,24 @@ func (m *MockReporter) ReportHealth(ctx context.Context, report *Report) {
 }
 
 func TestDependencyChecker(t *testing.T) {
+	t.Run("MissingReporter", func(t *testing.T) {
+		checker := NewDependencyChecker("missing", nil, LevelCritical)
+
+		result := checker.Check(context.Background())
+
+		assert.Equal(t, StatusUnknown, result.Status)
+		assert.Contains(t, result.Description, "no health reporter")
+	})
+
+	t.Run("ReporterPanic", func(t *testing.T) {
+		checker := NewDependencyChecker("panic", panicHealthReporter{}, LevelCritical)
+
+		result := checker.Check(context.Background())
+
+		assert.Equal(t, StatusUnknown, result.Status)
+		assert.Contains(t, result.Description, "panicked")
+	})
+
 	// Test dependency UP
 	t.Run("DependencyUp", func(t *testing.T) {
 		mockReporter := new(MockReporter)
@@ -353,6 +412,43 @@ func TestDependencyChecker(t *testing.T) {
 }
 
 func TestDataAccessChecker(t *testing.T) {
+	t.Run("MissingAccessFunction", func(t *testing.T) {
+		checker := NewDataAccessChecker("missing", nil, "missing function")
+
+		result := checker.Check(context.Background())
+
+		assert.Equal(t, StatusDown, result.Status)
+		assert.Contains(t, result.Description, "no access function")
+	})
+
+	t.Run("TimeoutDoesNotRequireFunctionCooperation", func(t *testing.T) {
+		checker := &DataAccessChecker{
+			Name: "blocking",
+			AccessFn: func(context.Context) error {
+				time.Sleep(100 * time.Millisecond)
+				return nil
+			},
+			TimeoutMs: 10,
+		}
+
+		started := time.Now()
+		result := checker.Check(context.Background())
+
+		assert.Equal(t, StatusDegraded, result.Status)
+		assert.Less(t, time.Since(started), 80*time.Millisecond)
+	})
+
+	t.Run("PanicBecomesFailure", func(t *testing.T) {
+		checker := NewDataAccessChecker("panic", func(context.Context) error {
+			panic("boom")
+		}, "panic test")
+
+		result := checker.Check(context.Background())
+
+		assert.Equal(t, StatusDown, result.Status)
+		assert.Contains(t, result.Description, "panicked")
+	})
+
 	// Test successful access
 	t.Run("SuccessfulAccess", func(t *testing.T) {
 		accessFn := func(ctx context.Context) error {

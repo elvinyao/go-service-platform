@@ -2,6 +2,7 @@ package fakeapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -52,6 +53,7 @@ type FakeMattermostServer struct {
 	wsMu        sync.Mutex
 	upgrader    websocket.Upgrader
 	postCounter int
+	listen      listenFunc
 }
 
 // NewFakeMattermostServer creates a new fake Mattermost server
@@ -152,12 +154,10 @@ func (s *FakeMattermostServer) startHTTPServer() error {
 	}
 
 	log.Printf("Starting Fake Mattermost HTTP API server on port %d", s.port)
-	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Fake Mattermost HTTP server error: %v", err)
-		}
-	}()
-
+	if err := startHTTPServer(s.server, "Fake Mattermost HTTP", s.listen); err != nil {
+		s.server = nil
+		return err
+	}
 	return nil
 }
 
@@ -173,12 +173,14 @@ func (s *FakeMattermostServer) startWSServer() error {
 	}
 
 	log.Printf("Starting Fake Mattermost WebSocket server on port %d", s.wsPort)
-	go func() {
-		if err := s.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Fake Mattermost WebSocket server error: %v", err)
+	if err := startHTTPServer(s.wsServer, "Fake Mattermost WebSocket", s.listen); err != nil {
+		s.wsServer = nil
+		if s.server != nil {
+			_ = s.server.Close()
+			s.server = nil
 		}
-	}()
-
+		return err
+	}
 	return nil
 }
 
@@ -187,17 +189,28 @@ func (s *FakeMattermostServer) Stop() error {
 	// Close all WebSocket connections
 	s.wsMu.Lock()
 	for conn := range s.wsClients {
-		conn.Close()
+		_ = conn.Close()
 	}
+	s.wsClients = make(map[*websocket.Conn]bool)
 	s.wsMu.Unlock()
 
-	if s.wsServer != nil {
-		s.wsServer.Close()
+	wsServer := s.wsServer
+	httpServer := s.server
+	s.wsServer = nil
+	s.server = nil
+
+	var errs []error
+	if wsServer != nil {
+		if err := wsServer.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close WebSocket server: %w", err))
+		}
 	}
-	if s.server != nil {
-		s.server.Close()
+	if httpServer != nil {
+		if err := httpServer.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close HTTP server: %w", err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // authMiddleware checks for valid auth token
@@ -297,7 +310,7 @@ func (s *FakeMattermostServer) handleCreatePost(w http.ResponseWriter, r *http.R
 	s.posts = append(s.posts, newPost)
 	s.mu.Unlock()
 
-	log.Printf("📨 Fake Mattermost received post: channel=%s, message=%s", post.ChannelID, post.Message)
+	log.Printf("Fake Mattermost received post: channel=%s, message=%s", post.ChannelID, post.Message)
 
 	// Broadcast to WebSocket clients
 	s.broadcastWSEvent("posted", map[string]interface{}{

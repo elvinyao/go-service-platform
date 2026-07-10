@@ -3,13 +3,15 @@ package service
 import (
 	"context"
 	"fmt"
+	"github.com/elvinyao/go-service-platform/internal/config"
+	"github.com/elvinyao/go-service-platform/internal/model"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/errors"
+	"github.com/elvinyao/go-service-platform/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
 	"net"
-	"project/internal/config"
-	"project/internal/model"
-	appctx "project/pkg/context"
-	"project/pkg/errors"
-	"project/pkg/health"
-	"project/pkg/logger"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,24 +65,27 @@ func (s *WebSocketService) Start(ctx context.Context) error {
 	// Reset channels for a fresh start
 	s.stopChan = make(chan struct{})
 	s.done = make(chan struct{})
+	stopChan := s.stopChan
+	done := s.done
+	cfg := s.config
 
 	// Launch WebSocket connection goroutine
-	go s.connectLoop(ctx)
+	go s.connectLoop(ctx, stopChan, done, cfg)
 
 	logger.InfofWithContext(ctx, "Service %s started successfully", s.GetName())
 	return nil
 }
 
-func (s *WebSocketService) connectLoop(ctx context.Context) {
-	defer close(s.done)
+func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan struct{}, done chan<- struct{}, cfg config.WebSocketConfig) {
+	defer close(done)
 
 	// Create a context that cancels when stopChan is closed.
 	// This lets us cancel blocking Dial calls immediately on Stop().
 	dialCtx, dialCancel := context.WithCancel(context.Background())
-	go func() {
-		<-s.stopChan
+	go func(stop <-chan struct{}) {
+		<-stop
 		dialCancel()
-	}()
+	}(stopChan)
 
 	dialer := websocket.Dialer{
 		NetDialContext: (&net.Dialer{
@@ -88,11 +93,11 @@ func (s *WebSocketService) connectLoop(ctx context.Context) {
 		}).DialContext,
 	}
 
-	url := s.config.ServerURL + s.config.Path
+	url := webSocketEndpoint(cfg)
 
 	for {
 		select {
-		case <-s.stopChan:
+		case <-stopChan:
 			return
 		default:
 		}
@@ -102,15 +107,15 @@ func (s *WebSocketService) connectLoop(ctx context.Context) {
 		if err != nil {
 			// If stopped, exit immediately
 			select {
-			case <-s.stopChan:
+			case <-stopChan:
 				return
 			default:
 			}
-			logger.WarnfWithContext(ctx, "WebSocket dial error: %v, retrying in %v", err, s.config.ReconnectInterval)
+			logger.WarnfWithContext(ctx, "WebSocket dial error: %v, retrying in %v", err, cfg.ReconnectInterval)
 			select {
-			case <-s.stopChan:
+			case <-stopChan:
 				return
-			case <-time.After(s.config.ReconnectInterval):
+			case <-time.After(cfg.ReconnectInterval):
 				continue
 			}
 		}
@@ -129,7 +134,7 @@ func (s *WebSocketService) connectLoop(ctx context.Context) {
 			err := conn.ReadJSON(&msg)
 			if err != nil {
 				select {
-				case <-s.stopChan:
+				case <-stopChan:
 					logger.DebugfWithContext(ctx, "WebSocket read loop exiting during shutdown: %v", err)
 					stopped = true
 				default:
@@ -148,7 +153,7 @@ func (s *WebSocketService) connectLoop(ctx context.Context) {
 			s.ProcessIncomingMessage(ctx, msg)
 		}
 
-		// Connection lost — clean up and retry
+		// Clean up and retry after the connection is lost.
 		conn.Close()
 		s.mu.Lock()
 		s.conn = nil
@@ -160,19 +165,23 @@ func (s *WebSocketService) connectLoop(ctx context.Context) {
 		}
 
 		select {
-		case <-s.stopChan:
+		case <-stopChan:
 			return
 		default:
 		}
 
-		logger.InfofWithContext(ctx, "WebSocket disconnected, reconnecting in %v", s.config.ReconnectInterval)
+		logger.InfofWithContext(ctx, "WebSocket disconnected, reconnecting in %v", cfg.ReconnectInterval)
 
 		select {
-		case <-s.stopChan:
+		case <-stopChan:
 			return
-		case <-time.After(s.config.ReconnectInterval):
+		case <-time.After(cfg.ReconnectInterval):
 		}
 	}
+}
+
+func webSocketEndpoint(cfg config.WebSocketConfig) string {
+	return strings.TrimRight(cfg.ServerURL, "/") + cfg.Path
 }
 
 func (s *WebSocketService) Stop(ctx context.Context) error {
@@ -189,7 +198,9 @@ func (s *WebSocketService) Stop(ctx context.Context) error {
 	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
 
 	// Signal goroutine to stop
-	close(s.stopChan)
+	stopChan := s.stopChan
+	done := s.done
+	close(stopChan)
 
 	// Close connection if active
 	if s.conn != nil {
@@ -201,11 +212,14 @@ func (s *WebSocketService) Stop(ctx context.Context) error {
 	s.setRunning(false)
 	s.mu.Unlock()
 
-	// Wait for goroutine to finish
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
 	select {
-	case <-s.done:
-	case <-time.After(5 * time.Second):
-		logger.WarnfWithContext(ctx, "Timeout waiting for WebSocket goroutine to stop")
+	case <-done:
+	case <-ctx.Done():
+		return fmt.Errorf("wait for WebSocket shutdown: %w", ctx.Err())
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for WebSocket shutdown")
 	}
 
 	logger.InfofWithContext(ctx, "Service %s stopped successfully", s.GetName())
@@ -250,12 +264,9 @@ func (s *WebSocketService) ProcessIncomingMessage(ctx context.Context, message m
 	s.mu.Unlock()
 
 	if handler != nil {
-		// Call the handler in a goroutine to avoid blocking
-		go func() {
-			handlerCtx := appctx.WithOperationName(ctx, "message_handler")
-			logger.DebugfWithContext(handlerCtx, "Calling message handler for message: %+v", message)
-			handler(message)
-		}()
+		handlerCtx := appctx.WithOperationName(ctx, "message_handler")
+		logger.DebugfWithContext(handlerCtx, "Calling message handler for message: %+v", message)
+		handler(message)
 	} else {
 		logger.WarnfWithContext(ctx, "No message handler registered for service %s", s.GetName())
 	}
@@ -287,18 +298,37 @@ func (s *WebSocketService) GetMetrics(ctx context.Context) map[string]interface{
 	return metrics
 }
 
-func (s *WebSocketService) Configure(ctx context.Context, config interface{}) error {
+func (s *WebSocketService) Configure(ctx context.Context, cfg interface{}) error {
 	ctx = appctx.WithOperationName(ctx, "configure_service")
 
 	logger.InfofWithContext(ctx, "Configuring service: %s", s.GetName())
 
-	// Parse configuration
-	_, ok := config.(map[string]interface{})
+	newConfig, ok := cfg.(config.WebSocketConfig)
 	if !ok {
-		return errors.New(errors.TypeInvalidInput, "Invalid configuration format", nil)
+		return errors.New(errors.TypeInvalidInput, "Invalid configuration type for WebSocketService", nil)
+	}
+	if err := validateWebSocketServiceConfig(newConfig); err != nil {
+		return errors.Wrap(err, "Invalid WebSocketService configuration", errors.TypeInvalidInput)
 	}
 
+	s.mu.Lock()
+	s.config = newConfig
+	s.mu.Unlock()
 	logger.InfofWithContext(ctx, "Service %s configured successfully", s.GetName())
+	return nil
+}
+
+func validateWebSocketServiceConfig(cfg config.WebSocketConfig) error {
+	parsed, err := url.ParseRequestURI(cfg.ServerURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "ws" && parsed.Scheme != "wss") {
+		return fmt.Errorf("server URL must be an absolute ws or wss URL")
+	}
+	if cfg.Path == "" || !strings.HasPrefix(cfg.Path, "/") {
+		return fmt.Errorf("path must start with /")
+	}
+	if cfg.ReconnectInterval <= 0 {
+		return fmt.Errorf("reconnect interval must be greater than zero")
+	}
 	return nil
 }
 

@@ -3,9 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
-	appctx "project/pkg/context"
-	"project/pkg/health"
-	"project/pkg/logger"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
 	"sync"
 	"time"
 )
@@ -55,21 +55,16 @@ func (s *BaseService) IsRunning(ctx context.Context) bool {
 	return s.running
 }
 
-// internal/service/base_service.go
-func (s *BaseService) setRunningLocked(r bool) {
+func (s *BaseService) setRunning(r bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if r && !s.running {
 		s.startTime = time.Now()
 	}
 	s.running = r
 }
 
-// Thread-safe setter
-func (s *BaseService) setRunning(r bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.setRunningLocked(r)
-}
-
+// LockRunning updates running state for service implementations and tests.
 func (s *BaseService) LockRunning(r bool) {
 	s.setRunning(r)
 }
@@ -81,28 +76,12 @@ func (s *BaseService) AddHealthChecker(checker health.Checker) {
 	s.customCheckers = append(s.customCheckers, checker)
 }
 
-// RegisterHealthChecks returns default health checkers for this service
+// RegisterHealthChecks returns service-specific health checkers.
 func (s *BaseService) RegisterHealthChecks() []health.Checker {
-	// Base checkers that apply to all services
-	baseCheckers := []health.Checker{
-		// Memory usage check
-		health.NewMemoryUsageChecker(),
-
-		// Goroutine count check
-		health.NewGoroutineCountChecker(),
-
-		// Running status check
-		&serviceRunningChecker{service: s},
-	}
-
-	// Add any custom checkers
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	checkers := make([]health.Checker, 0, len(baseCheckers)+len(s.customCheckers))
-	checkers = append(checkers, baseCheckers...)
-	checkers = append(checkers, s.customCheckers...)
-
+	checkers := append([]health.Checker(nil), s.customCheckers...)
 	return checkers
 }
 
@@ -131,8 +110,7 @@ func (s *BaseService) ReportHealth(ctx context.Context, report *health.Report) {
 
 	logger.DebugfWithContext(ctx, "Reporting health for service: %s", s.name)
 
-	// Get all registered health checkers
-	checkers := s.RegisterHealthChecks()
+	checkers := append([]health.Checker{serviceRunningHealthChecker{service: s}}, s.RegisterHealthChecks()...)
 
 	// Convert checkers to check functions
 	checkFuncs := make([]func(context.Context) *health.CheckResult, 0, len(checkers))
@@ -152,22 +130,18 @@ func (s *BaseService) ReportHealth(ctx context.Context, report *health.Report) {
 	}
 }
 
-// serviceRunningChecker checks if a service is running
-type serviceRunningChecker struct {
+type serviceRunningHealthChecker struct {
 	service *BaseService
 }
 
-// Check implements the Checker interface
-func (c *serviceRunningChecker) Check(ctx context.Context) *health.CheckResult {
+func (c serviceRunningHealthChecker) Check(ctx context.Context) *health.CheckResult {
 	result := health.NewCheckResult("service-running", health.CategoryConnectivity)
 	result.Level = health.LevelCritical
-
 	if c.service.IsRunning(ctx) {
 		result.SetStatus(health.StatusUp, fmt.Sprintf("Service %s is running", c.service.GetName()))
 	} else {
 		result.SetStatus(health.StatusDown, fmt.Sprintf("Service %s is not running", c.service.GetName()))
 	}
-
 	result.Complete()
 	return result
 }

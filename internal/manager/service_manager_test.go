@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"project/pkg/health"
+	apperrors "github.com/elvinyao/go-service-platform/pkg/errors"
+	"github.com/elvinyao/go-service-platform/pkg/health"
 )
 
 type testService struct {
@@ -17,6 +18,7 @@ type testService struct {
 	stopErr   error
 	restarted int
 	running   bool
+	stopCalls int
 }
 
 func (s *testService) Start(ctx context.Context) error {
@@ -28,6 +30,7 @@ func (s *testService) Start(ctx context.Context) error {
 }
 
 func (s *testService) Stop(ctx context.Context) error {
+	s.stopCalls++
 	if s.stopErr != nil {
 		return s.stopErr
 	}
@@ -72,11 +75,28 @@ func TestServiceManagerStartAllReturnsPartialFailure(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected start failure")
 	}
-	if !ok.running {
-		t.Fatalf("ok service running = false, want true")
+	if ok.running {
+		t.Fatalf("ok service running = true, want rollback to stop it")
+	}
+	if ok.stopCalls != 1 {
+		t.Fatalf("ok service stop calls = %d, want 1 rollback", ok.stopCalls)
 	}
 	if bad.running {
 		t.Fatalf("bad service running = true, want false")
+	}
+}
+
+func TestServiceManagerStartAllReportsRollbackFailure(t *testing.T) {
+	sm := NewServiceManager("test")
+	rollbackFailure := &testService{name: "rollback-failure", workflow: "wf", kind: "test", stopErr: fmt.Errorf("stop boom")}
+	startFailure := &testService{name: "start-failure", workflow: "wf", kind: "test", startErr: fmt.Errorf("start boom")}
+	sm.RegisterService(rollbackFailure)
+	sm.RegisterService(startFailure)
+
+	err := sm.StartAll(context.Background())
+	appErr, ok := err.(*apperrors.AppError)
+	if !ok || appErr.Fields["rollback_failures"] == nil {
+		t.Fatalf("start error = %v, want rollback failure details", err)
 	}
 }
 
@@ -111,19 +131,23 @@ func TestServiceManagerGetServicesByWorkflowAndType(t *testing.T) {
 	}
 }
 
-func TestServiceManagerDuplicateRegistrationOverwritesService(t *testing.T) {
+func TestServiceManagerDuplicateRegistrationIsRejected(t *testing.T) {
 	sm := NewServiceManager("test")
 	first := &testService{name: "same", workflow: "wf", kind: "old"}
 	second := &testService{name: "same", workflow: "wf", kind: "new"}
-	sm.RegisterService(first)
-	sm.RegisterService(second)
+	if err := sm.RegisterService(first); err != nil {
+		t.Fatalf("register first: %v", err)
+	}
+	if err := sm.RegisterService(second); err == nil {
+		t.Fatalf("duplicate registration error = nil")
+	}
 
 	got, ok := sm.GetServiceByName(context.Background(), "same")
 	if !ok {
 		t.Fatalf("service not found")
 	}
-	if got.GetType() != "new" {
-		t.Fatalf("service type = %q, want new", got.GetType())
+	if got != first {
+		t.Fatalf("registered service = %v, want first instance", got)
 	}
 }
 
@@ -159,15 +183,23 @@ func TestServiceManagerHealthAndListMethods(t *testing.T) {
 	}
 
 	services := sm.ListServices(context.Background())
-	if len(services) != 2 {
-		t.Fatalf("services len = %d, want 2", len(services))
+	if len(services) != 2 || services[0].GetName() != "down" || services[1].GetName() != "running" {
+		t.Fatalf("services = %+v, want [down running]", services)
 	}
 }
 
 func TestServiceManagerRegistrationAndSystemHealthBranches(t *testing.T) {
 	sm := NewServiceManager("test")
-	sm.RegisterService(nil)
-	sm.RegisterService(&testService{name: "", workflow: "wf", kind: "kind"})
+	if err := sm.RegisterService(nil); err == nil {
+		t.Fatalf("nil service registration error = nil")
+	}
+	var typedNil *testService
+	if err := sm.RegisterService(typedNil); err == nil {
+		t.Fatalf("typed nil service registration error = nil")
+	}
+	if err := sm.RegisterService(&testService{name: "", workflow: "wf", kind: "kind"}); err == nil {
+		t.Fatalf("empty service name registration error = nil")
+	}
 
 	if report := sm.GetSystemHealth(context.Background()); report.Status != health.StatusUnknown {
 		t.Fatalf("empty system status = %s, want UNKNOWN", report.Status)

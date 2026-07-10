@@ -12,8 +12,3 @@ type Message struct {
 	Timestamp time.Time              `json:"timestamp"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
-
-type MattermostConfig struct {
-	Type    string `json:"type"`
-	Content string `json:"content"`
-}

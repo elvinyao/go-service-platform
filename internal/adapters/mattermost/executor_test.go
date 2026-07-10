@@ -4,17 +4,53 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
-	internalconfig "project/internal/config"
-	"project/internal/manager"
-	"project/internal/service"
-	"project/pkg/health"
-	"project/pkg/ruleengine"
+	internalconfig "github.com/elvinyao/go-service-platform/internal/config"
+	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/service"
+	"github.com/elvinyao/go-service-platform/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
+
+type recordedMattermostPost struct {
+	ChannelID string `json:"channel_id"`
+	Message   string `json:"message"`
+}
+
+type mattermostRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f mattermostRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func recordingMattermostClient(t *testing.T, posts chan<- recordedMattermostPost) *http.Client {
+	t.Helper()
+	return &http.Client{Transport: mattermostRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/v4/posts" {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("not found")),
+				Request:    request,
+			}, nil
+		}
+		var post recordedMattermostPost
+		if err := json.NewDecoder(request.Body).Decode(&post); err != nil {
+			return nil, err
+		}
+		posts <- post
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"id":"post-id"}`)),
+			Request:    request,
+		}, nil
+	})}
+}
 
 func TestExecutorType(t *testing.T) {
 	exe := NewExecutor(nil)
@@ -24,37 +60,15 @@ func TestExecutorType(t *testing.T) {
 }
 
 func TestExecutorSendsRenderedMessageToConfiguredChannel(t *testing.T) {
-	posts := make(chan struct {
-		ChannelID string `json:"channel_id"`
-		Message   string `json:"message"`
-	}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v4/posts" {
-			http.NotFound(w, r)
-			return
-		}
-		var post struct {
-			ChannelID string `json:"channel_id"`
-			Message   string `json:"message"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&post); err != nil {
-			t.Errorf("decode post: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		posts <- post
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "post-id"})
-	}))
-	defer server.Close()
+	posts := make(chan recordedMattermostPost, 1)
+	client := recordingMattermostClient(t, posts)
 
 	sm := manager.NewServiceManager("test")
 	svc := service.NewMattermostService("MattermostService", "Global", internalconfig.MattermostConfig{
-		ServerURL:    server.URL,
-		APIToken:     "test-token",
-		Channel:      "default-channel",
-		WebsocketURL: "ws://127.0.0.1:1",
-	}, "test")
+		ServerURL: "http://mattermost.test",
+		APIToken:  "test-token",
+		Channel:   "default-channel",
+	}, "test", client)
 	sm.RegisterService(svc)
 	if err := svc.Start(context.Background()); err != nil {
 		t.Fatalf("start mattermost service: %v", err)
@@ -87,33 +101,15 @@ func TestExecutorSendsRenderedMessageToConfiguredChannel(t *testing.T) {
 }
 
 func TestExecutorSendsDefaultMessageToConfiguredChannel(t *testing.T) {
-	posts := make(chan struct {
-		ChannelID string `json:"channel_id"`
-		Message   string `json:"message"`
-	}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var post struct {
-			ChannelID string `json:"channel_id"`
-			Message   string `json:"message"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&post); err != nil {
-			t.Errorf("decode post: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		posts <- post
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "post-id"})
-	}))
-	defer server.Close()
+	posts := make(chan recordedMattermostPost, 1)
+	client := recordingMattermostClient(t, posts)
 
 	sm := manager.NewServiceManager("test")
 	svc := service.NewMattermostService("MattermostService", "Global", internalconfig.MattermostConfig{
-		ServerURL:    server.URL,
-		APIToken:     "test-token",
-		Channel:      "default-channel",
-		WebsocketURL: "ws://127.0.0.1:1",
-	}, "test")
+		ServerURL: "http://mattermost.test",
+		APIToken:  "test-token",
+		Channel:   "default-channel",
+	}, "test", client)
 	sm.RegisterService(svc)
 	if err := svc.Start(context.Background()); err != nil {
 		t.Fatalf("start mattermost service: %v", err)

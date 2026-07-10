@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"project/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/health"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -110,21 +110,7 @@ func TestRegisterHealthChecks(t *testing.T) {
 	// Act
 	checkers := service.RegisterHealthChecks()
 
-	// Assert - should contain 3 base checkers (memory, goroutine, running) + 1 custom
-	assert.Len(t, checkers, 4)
-	// One should be the service running checker
-	foundRunningChecker := false
-	foundCustomChecker := false
-	for _, checker := range checkers {
-		if _, ok := checker.(*serviceRunningChecker); ok {
-			foundRunningChecker = true
-		}
-		if checker == mockChecker {
-			foundCustomChecker = true
-		}
-	}
-	assert.True(t, foundRunningChecker, "Should contain the service running checker")
-	assert.True(t, foundCustomChecker, "Should contain the custom checker")
+	assert.Equal(t, []health.Checker{mockChecker}, checkers)
 }
 
 func TestGetMetrics(t *testing.T) {

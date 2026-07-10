@@ -1,6 +1,6 @@
 # Executors
 
-Executors run actions selected by the rule engine.
+Executors perform actions selected by an execution plan. They are small, application-owned capabilities registered with `pkg/pipeline`.
 
 ## Interface
 
@@ -11,36 +11,39 @@ type Executor interface {
 }
 ```
 
-Register executors with:
+Executor types must be non-empty and unique. Both `executor.Registry.Register` and `pipeline.New` reject nil, typed-nil, empty, and duplicate registrations without replacing an existing executor. `pipeline.Engine.Start` rejects enabled provider rules that reference an unregistered type, so wiring mistakes fail before messages are accepted.
+
+## Registration
 
 ```go
-registry := executor.NewRegistry()
-registry.Register(executor.NewLogExecutor())
-registry.Register(executor.NewHTTPExecutor())
+engine, err := pipeline.New(
+    config,
+    providers,
+    []executor.Executor{
+        executor.NewLogExecutor(),
+        executor.NewHTTPExecutor(),
+        &PublishExecutor{client: client},
+    },
+)
 ```
+
+The lower-level `executor.Registry` is public for applications that need custom orchestration, but most applications should register executors through `pipeline.New`.
 
 ## Templates
 
-Executors can render message fields with Go templates:
+Built-in executors use Go templates:
 
 ```yaml
 template: "type={{.Type}} id={{.ID}} content={{.Content}}"
 ```
 
-Available fields:
+Available values are `.ID`, `.Type`, `.Content`, `.UserID`, `.Timestamp`, and `.Metadata`. Invalid template syntax is returned as an action error.
 
-- `.ID`
-- `.Type`
-- `.Content`
-- `.UserID`
-- `.Timestamp`
-- `.Metadata`
-
-## Built-In `log` Executor
+## Log Executor
 
 ```yaml
 actions:
-  - id: log_aaa
+  - id: log_event
     executor: log
     priority: 100
     params:
@@ -48,14 +51,9 @@ actions:
       template: "Matched {{.Type}} message {{.ID}}"
 ```
 
-Supported levels:
+Supported levels are `debug`, `info`, `warn`, and `error`. An empty template produces a default message. Unknown levels use `info`.
 
-- `debug`
-- `info`
-- `warn`
-- `error`
-
-## Built-In `http` Executor
+## HTTP Executor
 
 ```yaml
 actions:
@@ -71,13 +69,57 @@ actions:
       body_template: '{"id":"{{.ID}}","type":"{{.Type}}"}'
 ```
 
-The executor treats any non-2xx response as an action error.
+Behavior:
+
+- `url` is required.
+- `method` defaults to `POST`.
+- `timeout_ms` defaults to 3000 and accepts positive YAML numeric values.
+- `Content-Type` defaults to `application/json` unless supplied.
+- Caller-provided headers are preserved.
+- Context cancellation and timeout errors are returned.
+- Any response outside 200-299 is an action error; up to 1024 bytes of response body are included for diagnosis.
+
+Use `executor.NewHTTPExecutorWithClient(client)` to supply an application-owned `*http.Client` with custom transport, TLS, proxy, tracing, or connection-pool behavior. The action timeout still applies through the request context.
+
+Use a dedicated custom executor when authentication, retries, idempotency, rate limiting, or response parsing is part of the domain contract.
+
+## Custom Executor Example
+
+```go
+type PublishExecutor struct {
+    client EventPublisher
+}
+
+func (e *PublishExecutor) Type() string {
+    return "publish"
+}
+
+func (e *PublishExecutor) Execute(
+    ctx context.Context,
+    message ruleengine.Message,
+    action ruleengine.Action,
+) error {
+    topic, _ := action.Params["topic"].(string)
+    if topic == "" {
+        return fmt.Errorf("publish action requires params.topic")
+    }
+    return e.client.Publish(ctx, topic, message)
+}
+```
+
+Keep executors stateless when practical. If an executor owns shared state, make it concurrency-safe because different input callbacks may process messages concurrently.
+
+## Failure Semantics
+
+The pipeline attempts every action in the plan even if an earlier action fails. It then returns one `pipeline.ExecutionError` containing all failures. This is useful for independent notifications, but it is not a transaction.
+
+For operations that must be atomic, place the transaction inside one executor or build a domain-specific executor that owns compensation and idempotency.
 
 ## Demo Executors
 
-The reference runtime also registers demo executors:
+The reference runtime optionally registers:
 
 - `mattermost` from `internal/adapters/mattermost`
 - `db` from `internal/adapters/badgedb`
 
-These demonstrate framework extension points and are not core SDK dependencies.
+They demonstrate extension points and are intentionally excluded from the public core packages. Enable them with `config/profiles/demo/runtime.yaml` or `make dev`.

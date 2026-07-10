@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 
 	"github.com/stretchr/testify/require"
 )

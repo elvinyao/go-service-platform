@@ -1,8 +1,8 @@
 package ruleengine
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -68,7 +68,7 @@ func (p *YAMLProvider) Start(ctx context.Context) error {
 func (p *YAMLProvider) Snapshot(ctx context.Context) RuleSet {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return cloneRuleSet(p.snapshot)
+	return CloneRuleSet(p.snapshot)
 }
 
 func (p *YAMLProvider) load(ctx context.Context) (RuleSet, error) {
@@ -83,27 +83,29 @@ func (p *YAMLProvider) load(ctx context.Context) (RuleSet, error) {
 
 	data, err := os.ReadFile(p.path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return RuleSet{
-				Source:   p.name,
-				Version:  "1",
-				LoadedAt: time.Now(),
-				Rules:    []Rule{},
-			}, nil
-		}
-		return RuleSet{}, err
+		return RuleSet{}, fmt.Errorf("read rules file: %w", err)
 	}
 
 	var file yamlRulesFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
-		return RuleSet{}, err
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&file); err != nil {
+		return RuleSet{}, fmt.Errorf("parse rules file: %w", err)
+	}
+	if err := rejectAdditionalYAMLDocuments(decoder); err != nil {
+		return RuleSet{}, fmt.Errorf("parse rules file: %w", err)
 	}
 
 	rules := make([]Rule, 0, len(file.Rules))
+	ruleIDs := make(map[string]struct{}, len(file.Rules))
 	for i, r := range file.Rules {
 		if err := validateRule(r, i); err != nil {
 			return RuleSet{}, err
 		}
+		if _, exists := ruleIDs[r.ID]; exists {
+			return RuleSet{}, fmt.Errorf("rules[%d].id %q is duplicated", i, r.ID)
+		}
+		ruleIDs[r.ID] = struct{}{}
 
 		enabled := true
 		if r.Enabled != nil {
@@ -136,12 +138,16 @@ func (p *YAMLProvider) load(ctx context.Context) (RuleSet, error) {
 		version = "1"
 	}
 
-	return RuleSet{
+	ruleSet := RuleSet{
 		Source:   p.name,
 		Version:  version,
 		LoadedAt: time.Now(),
 		Rules:    rules,
-	}, nil
+	}
+	if err := ValidateRuleSet(ruleSet); err != nil {
+		return RuleSet{}, fmt.Errorf("validate rules file: %w", err)
+	}
+	return ruleSet, nil
 }
 
 func validateRule(rule yamlRule, idx int) error {
@@ -172,14 +178,4 @@ func validateRule(rule yamlRule, idx int) error {
 	}
 
 	return nil
-}
-
-func cloneRuleSet(in RuleSet) RuleSet {
-	out := in
-	out.Rules = append([]Rule(nil), in.Rules...)
-	for i := range out.Rules {
-		out.Rules[i].Conditions = append([]Condition(nil), in.Rules[i].Conditions...)
-		out.Rules[i].Actions = append([]Action(nil), in.Rules[i].Actions...)
-	}
-	return out
 }

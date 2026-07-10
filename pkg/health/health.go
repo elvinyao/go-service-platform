@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -71,6 +72,11 @@ type ServiceChecker interface {
 	GetMetrics(ctx context.Context) map[string]interface{}
 }
 
+// ServiceHealthProvider exposes service-specific health checks.
+type ServiceHealthProvider interface {
+	RegisterHealthChecks() []Checker
+}
+
 // CheckResult represents the result of a single health check
 type CheckResult struct {
 	Name        string                 `json:"name"`
@@ -102,9 +108,9 @@ type Checker interface {
 	Check(ctx context.Context) *CheckResult
 }
 
-// Reporter defines the interface for services that can report their health
+// Reporter contributes health check results to a report.
 type Reporter interface {
-	// ReportHealth performs all health checks and returns a consolidated report
+	// ReportHealth runs synchronously and must return after updating the report.
 	ReportHealth(ctx context.Context, report *Report)
 }
 
@@ -178,7 +184,7 @@ func DetermineStatus(results []CheckResult) Status {
 	} else if hasDegraded {
 		return StatusDegraded
 	} else if hasUnknown {
-		return StatusDegraded
+		return StatusUnknown
 	}
 
 	return StatusUp
@@ -256,45 +262,92 @@ func (r *Report) IsHealthy() bool {
 	return r.Status == StatusUp
 }
 
-// RunChecksParallel runs multiple health checks in parallel and returns the results
+const defaultParallelCheckTimeout = 10 * time.Second
+
+type indexedCheckResult struct {
+	index  int
+	result *CheckResult
+}
+
+// RunChecksParallel runs health checks concurrently and returns results in input order.
 func RunChecksParallel(ctx context.Context, checks []func(context.Context) *CheckResult) []*CheckResult {
+	return runChecksParallel(ctx, defaultParallelCheckTimeout, checks)
+}
+
+func runChecksParallel(
+	ctx context.Context,
+	timeout time.Duration,
+	checks []func(context.Context) *CheckResult,
+) []*CheckResult {
+	if len(checks) == 0 {
+		return []*CheckResult{}
+	}
+	ctx = nonNilContext(ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	var results []*CheckResult
-	resultCh := make(chan *CheckResult, len(checks))
-
-	// Start all checks in parallel
-	for _, check := range checks {
-		go func(check func(context.Context) *CheckResult) {
-			resultCh <- check(ctx)
-		}(check)
+	if ctx.Err() != nil {
+		return []*CheckResult{newControlCheckResult("cancelled", "Health check was cancelled")}
 	}
 
-	// Collect results with timeout
-	timeout := time.After(10 * time.Second)
-	for i := 0; i < len(checks); i++ {
+	results := make([]*CheckResult, len(checks))
+	resultCh := make(chan indexedCheckResult, len(checks))
+
+	// Start all checks in parallel
+	for index, check := range checks {
+		go func(index int, check func(context.Context) *CheckResult) {
+			resultCh <- indexedCheckResult{index: index, result: runHealthCheck(ctx, check)}
+		}(index, check)
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	completed := 0
+	for completed < len(checks) {
 		select {
-		case result := <-resultCh:
-			results = append(results, result)
-		case <-timeout:
-			// Timeout occurred, mark remaining checks as unknown
-			result := NewCheckResult("timeout", CategoryConnectivity)
-			result.Level = LevelCritical
-			result.SetStatus(StatusUnknown, "Health check timed out")
-			result.Complete()
-			results = append(results, result)
-			return results
+		case indexed := <-resultCh:
+			results[indexed.index] = indexed.result
+			completed++
+		case <-timer.C:
+			cancel()
+			return append(compactCheckResults(results), newControlCheckResult("timeout", "Health check timed out"))
 		case <-ctx.Done():
-			// Context was cancelled, mark remaining checks as unknown
-			res := NewCheckResult("cancelled", CategoryConnectivity)
-			res.Level = LevelCritical
-			res.SetStatus(StatusUnknown, "Health check was cancelled")
-			res.Complete()
-			results = append(results, res)
-			return results
+			return append(compactCheckResults(results), newControlCheckResult("cancelled", "Health check was cancelled"))
 		}
 	}
 
 	return results
+}
+
+func runHealthCheck(ctx context.Context, check func(context.Context) *CheckResult) (result *CheckResult) {
+	if check == nil {
+		return newControlCheckResult("invalid", "Health check function is nil")
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result = newControlCheckResult("panic", fmt.Sprintf("Health check panicked: %v", recovered))
+		}
+		if result == nil {
+			result = newControlCheckResult("invalid", "Health check returned no result")
+		}
+	}()
+	return check(ctx)
+}
+
+func newControlCheckResult(name, description string) *CheckResult {
+	result := NewCheckResult(name, CategoryConnectivity)
+	result.Level = LevelCritical
+	result.SetStatus(StatusUnknown, description)
+	result.Complete()
+	return result
+}
+
+func compactCheckResults(results []*CheckResult) []*CheckResult {
+	compacted := make([]*CheckResult, 0, len(results))
+	for _, result := range results {
+		if result != nil {
+			compacted = append(compacted, result)
+		}
+	}
+	return compacted
 }

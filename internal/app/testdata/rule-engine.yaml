@@ -14,7 +14,3 @@ workflows:
 action_merge:
   dedup: true
   order: priority
-
-confluence:
-  refresh_interval: 5m
-  on_refresh_failure: use_last_snapshot

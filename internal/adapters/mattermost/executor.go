@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"project/internal/manager"
-	"project/internal/service"
-	coreexecutor "project/pkg/executor"
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/service"
+	coreexecutor "github.com/elvinyao/go-service-platform/pkg/executor"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 type Executor struct {
@@ -23,7 +23,7 @@ func (e *Executor) Type() string {
 }
 
 func (e *Executor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
-	svc, ok := e.serviceManager.GetServiceByName(ctx, "MattermostService")
+	svc, ok := e.serviceManager.GetServiceByName(ctx, service.MattermostServiceName)
 	if !ok {
 		return fmt.Errorf("MattermostService not found")
 	}

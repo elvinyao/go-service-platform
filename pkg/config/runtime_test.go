@@ -50,6 +50,9 @@ adapters:
 	if cfg.Inputs.WebSocket.ReconnectInterval != 2*time.Second {
 		t.Fatalf("reconnect interval = %v, want 2s", cfg.Inputs.WebSocket.ReconnectInterval)
 	}
+	if cfg.Admin.ReadTimeout != 10*time.Second {
+		t.Fatalf("admin read timeout = %v, want default 10s", cfg.Admin.ReadTimeout)
+	}
 }
 
 func TestLoadRuntimeConfigRejectsEmptyAdminAddress(t *testing.T) {
@@ -218,6 +221,132 @@ func TestLoadRuntimeConfigReturnsErrorForMalformedYAML(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "parse runtime config") {
 		t.Fatalf("error = %q, want parse runtime config", got)
+	}
+}
+
+func TestLoadRuntimeConfigRejectsUnknownFields(t *testing.T) {
+	_, err := LoadRuntimeConfig(writeRuntimeConfig(t, `admin:
+  address: ":18080"
+  read_timout: "2s"
+`))
+	if err == nil || !strings.Contains(err.Error(), "field read_timout not found") {
+		t.Fatalf("unknown field error = %v", err)
+	}
+}
+
+func TestLoadRuntimeConfigRejectsMultipleYAMLDocuments(t *testing.T) {
+	_, err := LoadRuntimeConfig(writeRuntimeConfig(t, `admin:
+  address: ":18080"
+---
+admin:
+  address: ":19090"
+`))
+	if err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Fatalf("multiple document error = %v", err)
+	}
+}
+
+func TestRuntimeConfigRejectsUnsafeEnabledComponentSettings(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*RuntimeConfig)
+		want   string
+	}{
+		{
+			name: "negative websocket reconnect",
+			mutate: func(cfg *RuntimeConfig) {
+				cfg.Inputs.WebSocket.ReconnectInterval = -time.Second
+			},
+			want: "reconnect_interval must be greater than zero",
+		},
+		{
+			name: "invalid websocket scheme",
+			mutate: func(cfg *RuntimeConfig) {
+				cfg.Inputs.WebSocket.ServerURL = "http://localhost:8093"
+			},
+			want: "must use one of these schemes",
+		},
+		{
+			name: "invalid websocket path",
+			mutate: func(cfg *RuntimeConfig) {
+				cfg.Inputs.WebSocket.Path = "events"
+			},
+			want: "path must start with /",
+		},
+		{
+			name: "missing confluence page",
+			mutate: func(cfg *RuntimeConfig) {
+				cfg.Adapters.Confluence.Enabled = true
+				cfg.Adapters.Confluence.SettingsPageID = ""
+			},
+			want: "settings_page_id is required",
+		},
+		{
+			name: "missing mattermost channel",
+			mutate: func(cfg *RuntimeConfig) {
+				cfg.Adapters.Mattermost.Enabled = true
+				cfg.Adapters.Mattermost.Channel = ""
+			},
+			want: "channel is required",
+		},
+		{
+			name: "missing badgedb path",
+			mutate: func(cfg *RuntimeConfig) {
+				cfg.Adapters.BadgeDB.Enabled = true
+				cfg.Adapters.BadgeDB.Path = ""
+			},
+			want: "badgedb.path is required",
+		},
+		{
+			name: "invalid admin timeout",
+			mutate: func(cfg *RuntimeConfig) {
+				cfg.Admin.WriteTimeout = 0
+			},
+			want: "write_timeout must be greater than zero",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultRuntimeConfig()
+			tt.mutate(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validation error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestRuntimeConfigAppliesAdminTimeoutEnvironmentOverrides(t *testing.T) {
+	t.Setenv("ADMIN_READ_HEADER_TIMEOUT", "1s")
+	t.Setenv("ADMIN_READ_TIMEOUT", "2s")
+	t.Setenv("ADMIN_WRITE_TIMEOUT", "3s")
+	t.Setenv("ADMIN_IDLE_TIMEOUT", "4s")
+
+	cfg := DefaultRuntimeConfig()
+	cfg.ApplyEnv()
+	if err := cfg.Normalize(); err != nil {
+		t.Fatalf("normalize config: %v", err)
+	}
+	if cfg.Admin.ReadHeaderTimeout != time.Second || cfg.Admin.ReadTimeout != 2*time.Second ||
+		cfg.Admin.WriteTimeout != 3*time.Second || cfg.Admin.IdleTimeout != 4*time.Second {
+		t.Fatalf("admin timeouts = %+v", cfg.Admin)
+	}
+}
+
+func TestDefaultRuntimeConfigMatchesRepositoryAdminAddress(t *testing.T) {
+	cfg := DefaultRuntimeConfig()
+	if cfg.Admin.Address != "127.0.0.1:18080" {
+		t.Fatalf("admin address = %q, want 127.0.0.1:18080", cfg.Admin.Address)
+	}
+}
+
+func TestRuntimeConfigAllowsMattermostWithoutWebSocket(t *testing.T) {
+	cfg := DefaultRuntimeConfig()
+	cfg.Adapters.Mattermost.Enabled = true
+	cfg.Adapters.Mattermost.WebsocketURL = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate HTTP-only Mattermost config: %v", err)
 	}
 }
 

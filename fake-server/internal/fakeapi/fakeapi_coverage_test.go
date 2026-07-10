@@ -3,16 +3,44 @@ package fakeapi
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
+type fakeMemoryAddr string
+
+func (a fakeMemoryAddr) Network() string { return "memory" }
+func (a fakeMemoryAddr) String() string  { return string(a) }
+
+type fakeMemoryListener struct {
+	address net.Addr
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (l *fakeMemoryListener) Accept() (net.Conn, error) {
+	<-l.closed
+	return nil, net.ErrClosed
+}
+func (l *fakeMemoryListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+func (l *fakeMemoryListener) Addr() net.Addr { return l.address }
+
+func fakeMemoryListen(_ string, address string) (net.Listener, error) {
+	return &fakeMemoryListener{address: fakeMemoryAddr(address), closed: make(chan struct{})}, nil
+}
+
 func TestFakeConfluenceHandlersAndLifecycle(t *testing.T) {
 	server := NewFakeConfluenceServer(0)
+	server.listen = fakeMemoryListen
 	if server.GetPort() != 0 {
 		t.Fatalf("port = %d, want 0", server.GetPort())
 	}
@@ -62,6 +90,7 @@ func TestFakeConfluenceHandlersAndLifecycle(t *testing.T) {
 
 func TestFakeMattermostHandlersWebSocketAndLifecycle(t *testing.T) {
 	server := NewFakeMattermostServer(0, 0)
+	server.listen = fakeMemoryListen
 	if server.GetHTTPPort() != 0 || server.GetWSPort() != 0 {
 		t.Fatalf("ports = %d/%d, want 0/0", server.GetHTTPPort(), server.GetWSPort())
 	}
@@ -222,6 +251,7 @@ func TestFakeWebSocketUtilityMethodsAndLifecycle(t *testing.T) {
 	}
 
 	lifecycle := NewFakeWebSocketServer(0)
+	lifecycle.listen = fakeMemoryListen
 	if err := lifecycle.Start(); err != nil {
 		t.Fatalf("start websocket server: %v", err)
 	}
@@ -233,6 +263,48 @@ func TestFakeWebSocketUtilityMethodsAndLifecycle(t *testing.T) {
 	}
 }
 
+func TestFakeWebSocketHTTPMessagesWithoutNetwork(t *testing.T) {
+	server := NewFakeWebSocketServer(0)
+	send := httptest.NewRecorder()
+	server.handleSendMessage(send, httptest.NewRequest(http.MethodPost, "/api/send", bytes.NewBufferString(`{"type":"AAA","content":"from HTTP"}`)))
+	if send.Code != http.StatusOK {
+		t.Fatalf("send status = %d, want 200", send.Code)
+	}
+	if got := server.GetReceivedMessages(); len(got) != 1 || got[0].ID == "" || got[0].Type != "AAA" {
+		t.Fatalf("messages after HTTP send = %+v", got)
+	}
+
+	list := httptest.NewRecorder()
+	server.handleListMessages(list, httptest.NewRequest(http.MethodGet, "/api/messages", nil))
+	var messages []WebSocketMessage
+	if err := json.NewDecoder(list.Body).Decode(&messages); err != nil {
+		t.Fatalf("decode listed messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Type != "AAA" {
+		t.Fatalf("listed messages = %+v", messages)
+	}
+}
+
+func TestFakeServersRejectInvalidListenAddressesWithoutNetwork(t *testing.T) {
+	if err := NewFakeConfluenceServer(-1).Start(); err == nil {
+		t.Fatalf("invalid Confluence port error = nil")
+	}
+	if err := NewFakeMattermostServer(-1, -1).Start(); err == nil {
+		t.Fatalf("invalid Mattermost port error = nil")
+	}
+	if err := NewFakeWebSocketServer(-1).Start(); err == nil {
+		t.Fatalf("invalid WebSocket port error = nil")
+	}
+
+	manager := NewFakeAPIManagerWithPorts(-1, -1, -1, -1)
+	if err := manager.Start(); err == nil {
+		t.Fatalf("invalid manager port error = nil")
+	}
+	if manager.IsRunning() {
+		t.Fatalf("manager should not be running after startup failure")
+	}
+}
+
 func TestFakeAPIManagerLifecycleAndAccessors(t *testing.T) {
 	manager := NewFakeAPIManager()
 	if manager.GetConfluence() == nil || manager.GetMattermost() == nil || manager.GetWebSocket() == nil {
@@ -240,6 +312,9 @@ func TestFakeAPIManagerLifecycleAndAccessors(t *testing.T) {
 	}
 
 	manager = NewFakeAPIManagerWithPorts(0, 0, 0, 0)
+	manager.GetConfluence().listen = fakeMemoryListen
+	manager.GetMattermost().listen = fakeMemoryListen
+	manager.GetWebSocket().listen = fakeMemoryListen
 	if manager.IsRunning() {
 		t.Fatalf("manager should not be running before start")
 	}

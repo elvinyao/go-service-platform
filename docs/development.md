@@ -2,7 +2,7 @@
 
 This guidebook is for new developers who want to run, debug, read, and extend the Go Service Framework locally.
 
-The most important local rule is simple: the admin API address comes from `config/runtime.yaml`, unless `ADMIN_ADDR` is set. In this working tree the local admin address may be `:18080`; if your file says `:8080`, use port `8080` in the curl examples below.
+The most important local rule is simple: the admin API address comes from the selected runtime YAML unless `ADMIN_ADDR` is set. Both repository profiles use `127.0.0.1:18080`, and the examples below use that port.
 
 ## What This Project Is
 
@@ -30,10 +30,10 @@ Read the runtime as four layers:
 | --- | --- | --- |
 | Runtime | `cmd/service-workflow/main.go`, `internal/app/app.go` | Load config, start services, wire managers, expose admin API |
 | Services | `internal/service/*` | Connect to inputs and demo dependencies |
-| Rules | `pkg/ruleengine/*`, `internal/workflow/workflow_engine.go` | Build execution plans from rule providers |
+| Rules | `pkg/ruleengine/*`, `pkg/pipeline/*`, `internal/workflow/workflow_engine.go` | Build and execute plans from rule providers |
 | Actions | `pkg/executor/*`, `internal/adapters/*` | Execute selected actions |
 
-The central file for learning is `internal/workflow/workflow_engine.go`. From there you can step upward to see where messages come from, or downward to see how rules and executors work.
+The public orchestration boundary is `pkg/pipeline/engine.go`. The reference runtime adapts it in `internal/workflow/workflow_engine.go`; from there you can step upward to see where messages come from, or downward to see how rules and executors work.
 
 ## Startup Flow
 
@@ -45,7 +45,7 @@ Startup does this:
 2. Load rule engine config from `RULE_ENGINE_CONFIG` or `config/rule-engine.yaml`.
 3. Load local YAML rules from `WORKFLOW_RULES` or `config/workflow-rules.yaml`.
 4. Create `internal/app.App`.
-5. Register and start services through `pkg/di` and `internal/manager`.
+5. Register and start services through `internal/di` and `internal/manager`.
 6. Create `internal/workflow.WorkflowEngine`.
 7. Bind WebSocket messages to `WorkflowManager.DispatchMessage`.
 8. Start the admin HTTP server.
@@ -58,6 +58,7 @@ fake WebSocket message
 -> internal/app.setupMessageListeners
 -> internal/manager.WorkflowManager.DispatchMessage
 -> internal/workflow.WorkflowEngine.ProcessMessage
+-> pkg/pipeline.Engine.Process
 -> pkg/ruleengine.Composer.BuildExecutionPlan
 -> pkg/executor.Registry
 -> executor.Execute
@@ -84,9 +85,7 @@ go install github.com/go-delve/delve/cmd/dlv@latest
 From the repository root:
 
 ```bash
-make test
-make test-fake
-make build
+make verify
 ```
 
 Start the fake APIs:
@@ -95,7 +94,7 @@ Start the fake APIs:
 make fake-server
 ```
 
-In another terminal, start the reference runtime:
+In another terminal, start the YAML-first reference runtime:
 
 ```bash
 make run
@@ -130,13 +129,19 @@ Expected behavior:
 
 ## One-Terminal Development
 
-You can run fake APIs and the runtime together:
+You can run fake APIs and the full demo profile together:
 
 ```bash
 make dev
 ```
 
-This is convenient for quick smoke testing. For debugging, use two terminals so you can restart the runtime without restarting fake dependencies.
+This enables the YAML and Confluence providers plus the Mattermost and BadgeDB executors. For debugging, use two terminals and the explicit profile environment variables so you can restart the runtime without restarting fake dependencies:
+
+```bash
+RUNTIME_CONFIG=config/profiles/demo/runtime.yaml \
+RULE_ENGINE_CONFIG=config/profiles/demo/rule-engine.yaml \
+go run ./cmd/service-workflow
+```
 
 ## Docker Compose
 
@@ -151,7 +156,7 @@ curl -s http://localhost:18080/health
 curl -s http://localhost:18080/rule-engine
 ```
 
-Compose publishes the admin API on host port `18080` by default to avoid local `8080` conflicts. Override it with:
+Compose publishes the admin and fake API ports on the host loopback interface. The admin API uses host port `18080` by default to avoid local `8080` conflicts. Override it with:
 
 ```bash
 ADMIN_PORT=8080 docker compose up --build
@@ -192,6 +197,7 @@ Useful breakpoints:
 | Understand listener wiring | `internal/app/app.go:setupMessageListeners` |
 | See message dispatch | `internal/manager/workflow_manager.go:DispatchMessage` |
 | See rule matching and execution | `internal/workflow/workflow_engine.go:ProcessMessage` |
+| See public pipeline execution | `pkg/pipeline/engine.go:Process` |
 | See provider composition | `pkg/ruleengine/composer.go:BuildExecutionPlan` |
 | See condition matching | `pkg/ruleengine/matcher.go:MatchRules` |
 | See log actions | `pkg/executor/log_executor.go:Execute` |
@@ -200,23 +206,44 @@ Useful breakpoints:
 
 ## VS Code Debugging
 
-Create `.vscode/launch.json` if you want editor debugging:
+The repository includes `.vscode/launch.json` with three configurations:
+
+- `Debug service-workflow (YAML-first)`
+- `Debug service-workflow (demo profile)`
+- `Debug fake-server`
+
+The checked-in configuration is equivalent to:
 
 ```json
 {
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug service-workflow",
+      "name": "Debug service-workflow (YAML-first)",
       "type": "go",
       "request": "launch",
       "mode": "debug",
       "program": "${workspaceFolder}/cmd/service-workflow",
+      "cwd": "${workspaceFolder}",
       "env": {
         "RUNTIME_CONFIG": "config/runtime.yaml",
         "RULE_ENGINE_CONFIG": "config/rule-engine.yaml",
         "WORKFLOW_RULES": "config/workflow-rules.yaml",
-        "ADMIN_ADDR": ":18080"
+        "ADMIN_ADDR": "127.0.0.1:18080"
+      }
+    },
+    {
+      "name": "Debug service-workflow (demo profile)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/cmd/service-workflow",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUNTIME_CONFIG": "config/profiles/demo/runtime.yaml",
+        "RULE_ENGINE_CONFIG": "config/profiles/demo/rule-engine.yaml",
+        "WORKFLOW_RULES": "config/workflow-rules.yaml",
+        "ADMIN_ADDR": "127.0.0.1:18080"
       }
     },
     {
@@ -234,9 +261,9 @@ Create `.vscode/launch.json` if you want editor debugging:
 Recommended order:
 
 1. Start `Debug fake-server`.
-2. Start `Debug service-workflow`.
+2. Start either runtime profile.
 3. Send a message with `/api/send`.
-4. Step through `WorkflowEngine.ProcessMessage`.
+4. Step through `WorkflowEngine.ProcessMessage` and `pipeline.Engine.Process`.
 
 ## Learning Path
 
@@ -265,8 +292,9 @@ Read in this order:
 2. `internal/app/app.go`
 3. `internal/manager/workflow_manager.go`
 4. `internal/workflow/workflow_engine.go`
-5. `pkg/ruleengine/composer.go`
-6. `pkg/executor/executor.go`
+5. `pkg/pipeline/engine.go`
+6. `pkg/ruleengine/composer.go`
+7. `pkg/executor/executor.go`
 
 ### Stage 3: Change a Rule
 
@@ -281,7 +309,7 @@ conditions:
     value: urgent
 ```
 
-Send:
+Restart the runtime so the YAML provider loads the edited file, then send:
 
 ```bash
 curl -s -X POST http://localhost:8093/api/send \
@@ -303,7 +331,7 @@ Compare the logs and step through `pkg/ruleengine/matcher.go`.
 
 Goal: understand how multiple providers combine.
 
-Open `config/rule-engine.yaml`.
+Run the demo profile and open `config/profiles/demo/rule-engine.yaml`. It contains both `yaml` and `confluence`, so changing composition mode has an observable effect.
 
 Try:
 
@@ -324,6 +352,8 @@ curl -s http://localhost:18080/rule-engine
 ```
 
 Watch how provider snapshots and selected rules change.
+
+Restart the runtime after every rule-engine configuration change. Providers expose snapshots, but the engine configuration itself is loaded only during startup.
 
 ### Stage 5: Add an Action
 
@@ -361,7 +391,7 @@ type Executor interface {
 }
 ```
 
-Then register it in `internal/workflow/workflow_engine.go` next to the built-in and demo executors.
+Register it with `pipeline.New` next to the executors owned by your application. `examples/basic-rule-pipeline` is the smallest complete registration example. If you intentionally extend this repository's reference runtime, its application-owned registration is in `internal/workflow/workflow_engine.go`.
 
 Minimum checklist:
 
@@ -382,9 +412,9 @@ These scenarios show what the platform is especially good at: local-first event 
 5. Inspect `/rule-engine`, logs, and health endpoints.
 6. Step through the rule engine and executor path.
 
-The examples below are intentionally written as learning scenarios. They use the current local runtime, fake WebSocket input, YAML rules, log executor, HTTP executor, Mattermost demo executor, and BadgeDB demo executor.
+The examples below are intentionally written as learning scenarios. They use the fake WebSocket input, YAML rules, built-in log and HTTP executors, and optional Mattermost and BadgeDB demo executors.
 
-The default `config/rule-engine.yaml` is YAML-first, so these scenarios work by adding YAML rules and restarting the runtime. To experiment with the Confluence demo provider, enable `adapters.confluence.enabled` in `config/runtime.yaml`, add `confluence` to the provider list, and use `mode: or` while learning.
+The simplest way to run every scenario is `make dev`, which selects the full demo profile. The base `make run` profile is YAML-first and supports scenarios that use only `log` and `http`. Always restart the runtime after changing rule YAML. Use `mode: or` while learning with YAML and Confluence so one provider without a match does not suppress the other provider's actions.
 
 ### Scenario 1: Incident Alert Router
 
@@ -460,11 +490,10 @@ Add a rule to `config/workflow-rules.yaml`:
 
 #### Local Exercise
 
-Start fake APIs and the runtime:
+Start the full demo profile in one terminal:
 
 ```bash
-make fake-server
-make run
+make dev
 ```
 
 Send a critical alert:
@@ -614,7 +643,7 @@ Expected result:
 Set breakpoints in:
 
 1. `pkg/ruleengine/composer.go:BuildExecutionPlan`
-2. `pkg/ruleengine/matcher.go:matchCondition`
+2. `pkg/ruleengine/matcher.go:MatchCondition`
 3. `pkg/executor/http_executor.go:Execute`
 4. `pkg/executor/template.go:RenderTemplate`
 
@@ -704,6 +733,8 @@ Required fields:
 
 #### Local Exercise
 
+This rule uses the demo `mattermost` executor. Start with `make dev` if the full demo profile is not already running.
+
 Send a ticket that should match:
 
 ```bash
@@ -729,8 +760,8 @@ Expected result:
 
 Set breakpoints in:
 
-1. `pkg/ruleengine/matcher.go:getFieldValue`
-2. `pkg/ruleengine/matcher.go:matchCondition`
+1. `pkg/ruleengine/matcher.go:getMessageField`
+2. `pkg/ruleengine/matcher.go:MatchCondition`
 3. `internal/adapters/mattermost/executor.go:Execute`
 
 #### Extension Ideas
@@ -939,6 +970,8 @@ Required fields:
 
 #### Local Exercise
 
+This rule uses the demo `db` executor. Start with `make dev` if the full demo profile is not already running.
+
 Send an audit event:
 
 ```bash
@@ -979,7 +1012,7 @@ Set breakpoints in:
 
 - The BadgeDB service is not running.
 - `metadata.role` is missing or uses a different value such as `administrator`.
-- Stateful tests need to account for async backup timing.
+- The demo store is in-memory and must not be treated as durable audit storage.
 - Audit rules should avoid broad matches that create noisy records.
 
 ### Scenario 6: Local Learning Sandbox
@@ -1038,7 +1071,7 @@ Use a simple learning event:
 Run with debug logging:
 
 ```bash
-LOG_LEVEL=debug make run
+LOG_LEVEL=debug make dev
 ```
 
 Send the learning event:
@@ -1091,6 +1124,8 @@ curl -s http://localhost:18080/health/liveness
 curl -s http://localhost:18080/services
 ```
 
+`/health` includes real memory and goroutine checks, a critical running check for every registered service, and each service's custom checks. Critical failures return HTTP 503 and make readiness `NOT_READY`; warning-level degradation returns HTTP 200 and remains ready. During shutdown, readiness immediately returns `NOT_READY`. Liveness remains `UP` while the process can serve the endpoint, independent of external dependency failures.
+
 Read:
 
 - `pkg/health/manager.go`
@@ -1103,13 +1138,13 @@ Read:
 Run two instances on the same admin address:
 
 ```bash
-ADMIN_ADDR=:18080 make run
+ADMIN_ADDR=127.0.0.1:18080 make run
 ```
 
 In another terminal:
 
 ```bash
-ADMIN_ADDR=:18080 make run
+ADMIN_ADDR=127.0.0.1:18080 make run
 ```
 
 The second instance should fail fast. Read:
@@ -1141,7 +1176,7 @@ Read:
 
 ### Use Case: Debug Confluence-Backed Rules
 
-Start fake APIs and inspect the fake Confluence page:
+Start `make dev`, then inspect the fake Confluence page:
 
 ```bash
 curl -s http://localhost:8090/rest/api/content/settings-page-1
@@ -1161,7 +1196,7 @@ Read:
 
 ### Use Case: Debug Mattermost Actions
 
-Send a matching message and inspect fake Mattermost posts by watching fake-server logs.
+Start `make dev`, send a rule that uses the `mattermost` executor, and inspect fake Mattermost posts in the combined logs.
 
 Read:
 
@@ -1190,18 +1225,16 @@ make test-fake
 Run race tests:
 
 ```bash
-go test -race ./...
-cd fake-server && go test -race ./...
+make test-race
 ```
 
 Run coverage:
 
 ```bash
-go test -cover ./...
-cd fake-server && go test -cover ./...
+make coverage
 ```
 
-Current project expectation: packages with tests should stay at or above 90% statement coverage.
+`make coverage` checks both Go modules and fails when any package with test files is below 90% statement coverage. Packages without tests, including runnable examples, are excluded from the threshold. Override the gate for an experiment with `COVERAGE_MIN=95 make coverage`.
 
 When adding behavior:
 
@@ -1223,7 +1256,7 @@ cat config/runtime.yaml
 Or force it:
 
 ```bash
-ADMIN_ADDR=:18080 make run
+ADMIN_ADDR=127.0.0.1:18080 make run
 ```
 
 ### `/rule-engine` returns no expected rules
@@ -1235,6 +1268,21 @@ Check:
 - `config/rule-engine.yaml`
 - `config/workflow-rules.yaml`
 - provider mode: `single`, `or`, `and`, or `pipeline`
+
+The admin snapshot reports what was loaded at startup. Restart after changing either configuration file.
+
+### Startup reports a configuration error
+
+Configuration is intentionally strict. Check the complete error for:
+
+- an unknown YAML field or misspelling
+- an invalid URL, address, or duration
+- a missing explicitly selected config file
+- a duplicate workflow, provider, or rule ID
+- a provider disabled by runtime configuration
+- an enabled rule that references an unregistered executor
+
+Do not work around these errors by removing validation. Correct the selected profile or register the missing capability.
 
 ### Messages do not trigger actions
 
@@ -1255,6 +1303,8 @@ Check:
 - `MATTERMOST_API_TOKEN`
 - `adapters.mattermost.channel`
 - fake-server logs
+
+Also confirm that `RUNTIME_CONFIG` selects `config/profiles/demo/runtime.yaml`; the base profile intentionally does not register the Mattermost executor.
 
 ### Tests fail because a port is busy
 
@@ -1278,5 +1328,6 @@ Treat race failures as real bugs. Common causes:
 - Configuration details: `docs/configuration.md`
 - Rule engine concepts: `docs/rule-engine.md`
 - Executor SDK: `docs/executors.md`
+- Bounded concurrency: `docs/concurrency.md`
 - Demo adapters: `docs/adapters.md`
 - Fake API server: `fake-server/README.md`

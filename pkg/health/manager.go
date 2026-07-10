@@ -2,16 +2,20 @@ package health
 
 import (
 	"context"
-	appctx "project/pkg/context"
-	"project/pkg/logger"
+	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
 )
 
 // HealthManager manages system health checks
 type HealthManager struct {
 	mu               sync.RWMutex
+	refreshMu        sync.Mutex
 	checkers         []Checker
 	reporters        []Reporter
 	refreshInterval  time.Duration
@@ -37,6 +41,10 @@ func NewHealthManager(refreshInterval time.Duration, version string) *HealthMana
 
 // RegisterChecker registers a health checker
 func (h *HealthManager) RegisterChecker(checker Checker) {
+	if isNilValue(checker) {
+		return
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -45,6 +53,10 @@ func (h *HealthManager) RegisterChecker(checker Checker) {
 
 // RegisterReporter registers a health reporter
 func (h *HealthManager) RegisterReporter(reporter Reporter) {
+	if isNilValue(reporter) {
+		return
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -53,6 +65,10 @@ func (h *HealthManager) RegisterReporter(reporter Reporter) {
 
 // RegisterService registers a service for health checking
 func (h *HealthManager) RegisterService(service ServiceChecker) {
+	if isNilValue(service) {
+		return
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -75,7 +91,7 @@ func (h *HealthManager) GetHealthReport(ctx context.Context) *Report {
 
 	// If the last refresh was within the refresh interval, return the cached report
 	if time.Since(h.lastRefresh) < h.refreshInterval && h.lastReport != nil {
-		report := h.lastReport
+		report := CloneReport(h.lastReport)
 		h.mu.RUnlock()
 		return report
 	}
@@ -93,26 +109,45 @@ func (h *HealthManager) RefreshReport(ctx context.Context) *Report {
 
 	logger.DebugWithContext(ctx, "Refreshing health report")
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.refreshMu.Lock()
+	defer h.refreshMu.Unlock()
+
+	checkers, reporters, services, managerStartTime, version := h.snapshot()
 
 	// Create new report
 	report := &Report{
 		ServiceName:  "system",
 		Status:       StatusUp,
 		CheckResults: []CheckResult{},
-		StartTime:    h.startTime,
-		Version:      h.version,
+		StartTime:    managerStartTime,
+		Uptime:       time.Since(managerStartTime),
+		Version:      version,
 		RefreshedAt:  time.Now(),
 	}
 
 	// Run all checkers
-	results := h.runCheckers(ctx)
+	results := h.runCheckers(ctx, checkers, services)
 
 	// Add results to report
 	for _, result := range results {
+		if result == nil {
+			continue
+		}
 		checkResult := *result // Convert to value type
 		report.CheckResults = append(report.CheckResults, checkResult)
+	}
+
+	// Reporters synchronously contribute results before status calculation and caching.
+	for index, reporter := range reporters {
+		if recovered := callReporter(ctx, reporter, report); recovered != nil {
+			logger.ErrorfWithContext(ctx, "Health reporter %T panicked: %v", reporter, recovered)
+			result := newControlCheckResult(
+				fmt.Sprintf("reporter.%d", index),
+				"Health reporter panicked",
+			)
+			result.AddDetail("reporter_type", fmt.Sprintf("%T", reporter))
+			report.CheckResults = append(report.CheckResults, *result)
+		}
 	}
 
 	// Calculate overall status
@@ -122,54 +157,39 @@ func (h *HealthManager) RefreshReport(ctx context.Context) *Report {
 	report.RefreshElapsed = time.Since(startTime)
 
 	// Save report
-	h.lastReport = report
+	h.mu.Lock()
+	h.lastReport = CloneReport(report)
 	h.lastRefresh = time.Now()
+	h.mu.Unlock()
 
-	// Notify reporters
-	for _, reporter := range h.reporters {
-		go reporter.ReportHealth(ctx, report)
+	return CloneReport(report)
+}
+
+func (h *HealthManager) snapshot() ([]Checker, []Reporter, map[string]ServiceChecker, time.Time, string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	checkers := append([]Checker(nil), h.checkers...)
+	reporters := append([]Reporter(nil), h.reporters...)
+	services := make(map[string]ServiceChecker, len(h.serviceInstances))
+	for name, service := range h.serviceInstances {
+		services[name] = service
 	}
 
-	return report
+	return checkers, reporters, services, h.startTime, h.version
 }
 
 // determineOverallStatus determines the overall status based on check results
 func (h *HealthManager) determineOverallStatus(results []CheckResult) Status {
-	var criticalCount, warningCount, upCount, unknownCount int
-
-	for _, result := range results {
-		switch result.Status {
-		case StatusUp:
-			upCount++
-		case StatusDegraded:
-			if result.Level == LevelCritical {
-				criticalCount++
-			} else {
-				warningCount++
-			}
-		case StatusDown:
-			criticalCount++
-		case StatusUnknown:
-			unknownCount++
-		}
-	}
-
-	// Determine overall status
-	if criticalCount > 0 {
-		return StatusDegraded
-	} else if warningCount > 0 {
-		return StatusDegraded
-	} else if upCount > 0 && upCount == len(results) {
-		return StatusUp
-	} else if unknownCount > 0 && unknownCount == len(results) {
-		return StatusUnknown
-	}
-
-	return StatusUnknown
+	return DetermineStatus(results)
 }
 
 // runCheckers runs all health checkers
-func (h *HealthManager) runCheckers(ctx context.Context) []*CheckResult {
+func (h *HealthManager) runCheckers(
+	ctx context.Context,
+	checkers []Checker,
+	services map[string]ServiceChecker,
+) []*CheckResult {
 	ctx = appctx.WithOperationName(ctx, "run_health_checks")
 
 	// Collect all checks
@@ -179,10 +199,10 @@ func (h *HealthManager) runCheckers(ctx context.Context) []*CheckResult {
 	checks = append(checks, h.systemChecks()...)
 
 	// Add service checks
-	checks = append(checks, h.serviceChecks()...)
+	checks = append(checks, h.serviceChecks(services)...)
 
 	// Add registered checkers
-	for _, checker := range h.checkers {
+	for _, checker := range checkers {
 		checkFunc := func(checker Checker) func(context.Context) *CheckResult {
 			return func(ctx context.Context) *CheckResult {
 				return checker.Check(ctx)
@@ -198,20 +218,28 @@ func (h *HealthManager) runCheckers(ctx context.Context) []*CheckResult {
 
 // systemChecks returns system-level health checks
 func (h *HealthManager) systemChecks() []func(context.Context) *CheckResult {
+	memoryChecker := NewMemoryUsageChecker()
+	goroutineChecker := NewGoroutineCountChecker()
 	checks := []func(context.Context) *CheckResult{
-		h.checkMemory,
-		h.checkCPU,
-		h.checkDiskSpace,
+		memoryChecker.Check,
+		goroutineChecker.Check,
 	}
 
 	return checks
 }
 
 // serviceChecks returns service-level health checks
-func (h *HealthManager) serviceChecks() []func(context.Context) *CheckResult {
+func (h *HealthManager) serviceChecks(services map[string]ServiceChecker) []func(context.Context) *CheckResult {
 	var checks []func(context.Context) *CheckResult
 
-	for name, svc := range h.serviceInstances {
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		svc := services[name]
 		checkFunc := func(name string, svc ServiceChecker) func(context.Context) *CheckResult {
 			return func(ctx context.Context) *CheckResult {
 				ctx = appctx.WithOperationName(ctx, "check_service_"+name)
@@ -236,81 +264,29 @@ func (h *HealthManager) serviceChecks() []func(context.Context) *CheckResult {
 		}(name, svc)
 
 		checks = append(checks, checkFunc)
+
+		if provider, ok := svc.(ServiceHealthProvider); ok {
+			for _, checker := range provider.RegisterHealthChecks() {
+				if checker == nil {
+					continue
+				}
+				customCheck := func(serviceName string, checker Checker) func(context.Context) *CheckResult {
+					return func(ctx context.Context) *CheckResult {
+						result := checker.Check(ctx)
+						if result == nil {
+							result = NewCheckResult("invalid", CategoryDependency)
+							result.Level = LevelCritical
+							result.SetStatus(StatusUnknown, "Health checker returned no result")
+							result.Complete()
+						}
+						result.Name = "service." + serviceName + "." + result.Name
+						return result
+					}
+				}(name, checker)
+				checks = append(checks, customCheck)
+			}
+		}
 	}
 
 	return checks
-}
-
-// System health checks
-
-// checkMemory checks system memory usage
-func (h *HealthManager) checkMemory(ctx context.Context) *CheckResult {
-	ctx = appctx.WithOperationName(ctx, "check_memory")
-	result := NewCheckResult("system.memory", CategoryResources)
-	result.Level = LevelWarning
-
-	// Deterministic default value keeps the framework check portable.
-	memoryUsage := 0.6 // 60% usage
-
-	result.AddDetail("usage_percent", memoryUsage*100)
-
-	if memoryUsage > DefaultThresholds.MemoryCritical {
-		result.SetStatus(StatusDegraded, "Memory usage is critical")
-		result.Level = LevelCritical
-	} else if memoryUsage > DefaultThresholds.MemoryWarning {
-		result.SetStatus(StatusDegraded, "Memory usage is high")
-	} else {
-		result.SetStatus(StatusUp, "Memory usage is normal")
-	}
-
-	result.Complete()
-	return result
-}
-
-// checkCPU checks CPU usage
-func (h *HealthManager) checkCPU(ctx context.Context) *CheckResult {
-	ctx = appctx.WithOperationName(ctx, "check_cpu")
-	result := NewCheckResult("system.cpu", CategoryResources)
-	result.Level = LevelWarning
-
-	// Deterministic default value keeps the framework check portable.
-	cpuUsage := 0.3 // 30% usage
-
-	result.AddDetail("usage_percent", cpuUsage*100)
-
-	if cpuUsage > DefaultThresholds.CPUCritical {
-		result.SetStatus(StatusDegraded, "CPU usage is critical")
-		result.Level = LevelCritical
-	} else if cpuUsage > DefaultThresholds.CPUWarning {
-		result.SetStatus(StatusDegraded, "CPU usage is high")
-	} else {
-		result.SetStatus(StatusUp, "CPU usage is normal")
-	}
-
-	result.Complete()
-	return result
-}
-
-// checkDiskSpace checks disk space usage
-func (h *HealthManager) checkDiskSpace(ctx context.Context) *CheckResult {
-	ctx = appctx.WithOperationName(ctx, "check_disk")
-	result := NewCheckResult("system.disk", CategoryResources)
-	result.Level = LevelWarning
-
-	// Deterministic default value keeps the framework check portable.
-	diskUsage := 0.7 // 70% usage
-
-	result.AddDetail("usage_percent", diskUsage*100)
-
-	if diskUsage > DefaultThresholds.DiskCritical {
-		result.SetStatus(StatusDegraded, "Disk usage is critical")
-		result.Level = LevelCritical
-	} else if diskUsage > DefaultThresholds.DiskWarning {
-		result.SetStatus(StatusDegraded, "Disk usage is high")
-	} else {
-		result.SetStatus(StatusUp, "Disk usage is normal")
-	}
-
-	result.Complete()
-	return result
 }

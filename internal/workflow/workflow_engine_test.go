@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"project/internal/manager"
-	"project/internal/model"
-	runtimeconfig "project/pkg/config"
-	coreexecutor "project/pkg/executor"
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/model"
+	runtimeconfig "github.com/elvinyao/go-service-platform/pkg/config"
+	coreexecutor "github.com/elvinyao/go-service-platform/pkg/executor"
+	"github.com/elvinyao/go-service-platform/pkg/pipeline"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 type recordingWorkflowExecutor struct {
@@ -123,28 +124,6 @@ func TestWorkflowEngineProcessMessageReturnsNilWhenNoRulesMatch(t *testing.T) {
 	}
 }
 
-func TestWorkflowEngineProcessMessageReportsMissingExecutor(t *testing.T) {
-	engine := newTestWorkflowEngine(t, []ruleengine.Rule{
-		{
-			ID:       "rule-aaa",
-			Workflow: ruleengine.DefaultWorkflowName,
-			Enabled:  true,
-			Conditions: []ruleengine.Condition{
-				{Field: "type", Op: ruleengine.OpEq, Value: "AAA"},
-			},
-			Actions: []ruleengine.Action{{ID: "missing-action", Executor: "missing"}},
-		},
-	})
-
-	err := engine.ProcessMessage(context.Background(), model.Message{ID: "m1", Type: "AAA"})
-	if err == nil {
-		t.Fatalf("process message error = nil, want partial failure")
-	}
-	if !strings.Contains(err.Error(), "partial failures") {
-		t.Fatalf("error = %q, want partial failure", err.Error())
-	}
-}
-
 func TestWorkflowEngineProcessMessageContinuesAfterExecutorFailure(t *testing.T) {
 	failing := &recordingWorkflowExecutor{executorType: "fail", err: errors.New("boom")}
 	success := &recordingWorkflowExecutor{executorType: "success"}
@@ -213,7 +192,7 @@ func TestWorkflowManagerDispatchMessageRunsWorkflowEngineIntegration(t *testing.
 	}
 }
 
-func TestWorkflowEngineAdminSnapshotAndFactories(t *testing.T) {
+func TestWorkflowEngineAdminSnapshot(t *testing.T) {
 	recorder := &recordingWorkflowExecutor{executorType: "record"}
 	engine := newTestWorkflowEngine(t, []ruleengine.Rule{
 		{
@@ -235,10 +214,6 @@ func TestWorkflowEngineAdminSnapshotAndFactories(t *testing.T) {
 		t.Fatalf("snapshot providers = %+v", snapshot.Composer.Providers)
 	}
 
-	factories := RegisterWorkflowFactories()
-	if len(factories) != 1 {
-		t.Fatalf("factories len = %d, want 1", len(factories))
-	}
 }
 
 func TestNewWorkflowEngineLoadsConfiguredProvidersAndExecutors(t *testing.T) {
@@ -378,6 +353,35 @@ rules:
 	}
 }
 
+func TestNewWorkflowEngineRegistersEnabledDemoCapabilities(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rule-engine.yaml")
+	writeFile(t, configPath, `workflows:
+  - name: WorkflowEngine
+    providers: [confluence]
+    mode: single
+`)
+
+	cfg := runtimeconfig.DefaultRuntimeConfig()
+	cfg.Adapters.Confluence.Enabled = true
+	cfg.Adapters.Mattermost.Enabled = true
+	cfg.Adapters.BadgeDB.Enabled = true
+
+	engine, err := NewWorkflowEngine(context.Background(), manager.NewServiceManager("test"), configPath, "", cfg)
+	if err != nil {
+		t.Fatalf("new workflow engine: %v", err)
+	}
+	snapshot := engine.AdminSnapshot(context.Background())
+	if _, ok := snapshot.Composer.Providers["confluence"]; !ok {
+		t.Fatalf("confluence provider missing: %+v", snapshot.Composer.Providers)
+	}
+	for _, executorType := range []string{"log", "http", "mattermost", "db"} {
+		if !slices.Contains(snapshot.Executors, executorType) {
+			t.Fatalf("executor %q missing: %+v", executorType, snapshot.Executors)
+		}
+	}
+}
+
 func TestNewWorkflowEngineReturnsConfigError(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "bad-rule-engine.yaml")
@@ -389,13 +393,131 @@ func TestNewWorkflowEngineReturnsConfigError(t *testing.T) {
 	}
 }
 
-func TestCreateWorkflowEngineFactoryReturnsWorkflow(t *testing.T) {
-	created, err := CreateWorkflowEngine(manager.NewServiceManager("test"))
-	if err != nil {
-		t.Fatalf("create workflow engine: %v", err)
+func TestNewWorkflowEngineRejectsInvalidRuntimeConfig(t *testing.T) {
+	cfg := runtimeconfig.DefaultRuntimeConfig()
+	cfg.Admin.Address = "invalid"
+
+	_, err := NewWorkflowEngine(context.Background(), manager.NewServiceManager("test"), "", "", cfg)
+	if err == nil || !strings.Contains(err.Error(), "invalid runtime config") {
+		t.Fatalf("runtime config error = %v", err)
 	}
-	if created.GetName() != ruleengine.DefaultWorkflowName {
-		t.Fatalf("created workflow name = %q", created.GetName())
+}
+
+func TestNewWorkflowEngineRejectsUnknownProviderAndDisabledExecutor(t *testing.T) {
+	t.Run("unknown provider", func(t *testing.T) {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "rule-engine.yaml")
+		rulesPath := filepath.Join(dir, "workflow-rules.yaml")
+		writeFile(t, configPath, `workflows:
+  - name: WorkflowEngine
+    providers: [unknown]
+    mode: single
+`)
+		writeFile(t, rulesPath, "version: test\n")
+
+		_, err := NewWorkflowEngine(context.Background(), manager.NewServiceManager("test"), configPath, rulesPath)
+		if err == nil || !strings.Contains(err.Error(), "provider unknown is not registered") {
+			t.Fatalf("provider error = %v", err)
+		}
+	})
+
+	t.Run("only disabled provider", func(t *testing.T) {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "rule-engine.yaml")
+		writeFile(t, configPath, `workflows:
+  - name: WorkflowEngine
+    providers: [confluence]
+    mode: single
+`)
+		cfg := runtimeconfig.DefaultRuntimeConfig()
+		cfg.Adapters.Confluence.Enabled = false
+
+		_, err := NewWorkflowEngine(context.Background(), manager.NewServiceManager("test"), configPath, "", cfg)
+		if err == nil || !strings.Contains(err.Error(), "no enabled providers") {
+			t.Fatalf("disabled provider error = %v", err)
+		}
+	})
+
+	t.Run("disabled executor", func(t *testing.T) {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "rule-engine.yaml")
+		rulesPath := filepath.Join(dir, "workflow-rules.yaml")
+		writeFile(t, configPath, `workflows:
+  - name: WorkflowEngine
+    providers: [yaml]
+    mode: single
+`)
+		writeFile(t, rulesPath, `rules:
+  - id: store
+    actions:
+      - executor: db
+`)
+		cfg := runtimeconfig.DefaultRuntimeConfig()
+		cfg.Adapters.BadgeDB.Enabled = false
+
+		_, err := NewWorkflowEngine(context.Background(), manager.NewServiceManager("test"), configPath, rulesPath, cfg)
+		if err == nil || !strings.Contains(err.Error(), "unregistered executor db") {
+			t.Fatalf("executor error = %v", err)
+		}
+	})
+
+	t.Run("confluence requires mattermost executor", func(t *testing.T) {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "rule-engine.yaml")
+		writeFile(t, configPath, `workflows:
+  - name: WorkflowEngine
+    providers: [confluence]
+    mode: single
+`)
+		cfg := runtimeconfig.DefaultRuntimeConfig()
+		cfg.Adapters.Confluence.Enabled = true
+		cfg.Adapters.Mattermost.Enabled = false
+
+		_, err := NewWorkflowEngine(context.Background(), manager.NewServiceManager("test"), configPath, "", cfg)
+		if err == nil || !strings.Contains(err.Error(), "requires the mattermost executor") {
+			t.Fatalf("adapter dependency error = %v", err)
+		}
+	})
+}
+
+func TestWorkflowEngineWrapsPipelineErrors(t *testing.T) {
+	provider := ruleengine.NewStaticProvider("test", ruleengine.RuleSet{})
+	engine, err := pipeline.New(testEngineConfig("test"), []ruleengine.RuleProvider{provider}, nil)
+	if err != nil {
+		t.Fatalf("new pipeline: %v", err)
+	}
+	workflowEngine := &WorkflowEngine{name: ruleengine.DefaultWorkflowName, engine: engine}
+
+	err = workflowEngine.ProcessMessage(context.Background(), model.Message{ID: "m1"})
+	if err == nil || !strings.Contains(err.Error(), "failed to process rule pipeline") {
+		t.Fatalf("process error = %v", err)
+	}
+}
+
+func TestRuntimeProviderFilteringHelpers(t *testing.T) {
+	cfg := ruleengine.DefaultEngineConfig()
+	cfg.Workflows[0].Providers = []string{"yaml", "confluence", "custom"}
+	cfg.Workflows[0].PipelineOrder = []string{"yaml", "confluence", "custom"}
+	runtimeCfg := runtimeconfig.DefaultRuntimeConfig()
+
+	filtered, err := filterEngineConfigForRuntime(cfg, runtimeCfg)
+	if err != nil {
+		t.Fatalf("filter config: %v", err)
+	}
+	if got := filtered.Workflows[0].Providers; !slices.Equal(got, []string{"yaml", "custom"}) {
+		t.Fatalf("filtered providers = %+v", got)
+	}
+	if !engineUsesProvider(filtered, "custom") || engineUsesProvider(filtered, "confluence") {
+		t.Fatalf("provider detection failed for %+v", filtered.Workflows[0].Providers)
+	}
+
+	invalid := ruleengine.DefaultEngineConfig()
+	invalid.ActionMerge.Order = "invalid"
+	if _, err := filterEngineConfigForRuntime(invalid, runtimeCfg); err == nil || !strings.Contains(err.Error(), "validate filtered") {
+		t.Fatalf("filtered validation error = %v", err)
+	}
+	if err := validateRuntimeAdapterDependencies(filtered, runtimeCfg); err != nil {
+		t.Fatalf("unexpected adapter dependency error: %v", err)
 	}
 }
 
@@ -420,18 +542,25 @@ func newTestWorkflowEngine(t *testing.T, rules []ruleengine.Rule, executors ...c
 		},
 	}
 	provider := ruleengine.NewStaticProvider("test", ruleengine.RuleSet{Rules: rules})
-	registry := coreexecutor.NewRegistry()
-	for _, executor := range executors {
-		if err := registry.Register(executor); err != nil {
-			t.Fatalf("register executor: %v", err)
-		}
+	engine, err := pipeline.New(cfg, []ruleengine.RuleProvider{provider}, executors)
+	if err != nil {
+		t.Fatalf("new pipeline: %v", err)
+	}
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatalf("start pipeline: %v", err)
 	}
 
 	return &WorkflowEngine{
-		name:      ruleengine.DefaultWorkflowName,
-		composer:  ruleengine.NewComposer(cfg, map[string]ruleengine.RuleProvider{"test": provider}),
-		executors: registry,
+		name:   ruleengine.DefaultWorkflowName,
+		engine: engine,
 	}
+}
+
+func testEngineConfig(provider string) ruleengine.EngineConfig {
+	cfg := ruleengine.DefaultEngineConfig()
+	cfg.Workflows[0].Providers = []string{provider}
+	cfg.Workflows[0].PipelineOrder = []string{provider}
+	return cfg
 }
 
 func writeFile(t *testing.T, path, contents string) {

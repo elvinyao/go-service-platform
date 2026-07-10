@@ -11,12 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"project/internal/manager"
-	"project/internal/model"
-	workflowimpl "project/internal/workflow"
-	"project/pkg/config"
-	"project/pkg/health"
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/model"
+	"github.com/elvinyao/go-service-platform/internal/service"
+	workflowimpl "github.com/elvinyao/go-service-platform/internal/workflow"
+	"github.com/elvinyao/go-service-platform/pkg/config"
+	"github.com/elvinyao/go-service-platform/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 type appTestWorkflow struct {
@@ -40,7 +41,6 @@ func (s appTestService) Stop(ctx context.Context) error     { return nil }
 func (s appTestService) Restart(ctx context.Context) error  { return nil }
 func (s appTestService) GetName() string                    { return s.name }
 func (s appTestService) GetWorkflow() string                { return "test" }
-func (s appTestService) GetWorkflowName() string            { return "test-workflow" }
 func (s appTestService) GetType() string                    { return "test" }
 func (s appTestService) IsRunning(ctx context.Context) bool { return true }
 func (s appTestService) GetMetrics(ctx context.Context) map[string]interface{} {
@@ -51,6 +51,14 @@ func (s appTestService) Configure(ctx context.Context, cfg interface{}) error {
 }
 func (s appTestService) RegisterHealthChecks() []health.Checker { return nil }
 func (s appTestService) ReportHealth(ctx context.Context, report *health.Report) {
+}
+
+type appFailingStopService struct {
+	appTestService
+}
+
+func (s appFailingStopService) Stop(ctx context.Context) error {
+	return fmt.Errorf("stop failed")
 }
 
 type failingResponseWriter struct {
@@ -129,7 +137,7 @@ workflows:
 	ruleEngineInfo(&failingResponseWriter{}, req, wm)
 }
 
-func TestServicesListIncludesOptionalWorkflowName(t *testing.T) {
+func TestServicesListIncludesWorkflowName(t *testing.T) {
 	sm := manager.NewServiceManager("test")
 	sm.RegisterService(appTestService{name: "svc"})
 
@@ -138,8 +146,35 @@ func TestServicesListIncludesOptionalWorkflowName(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("services status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"workflow":"test-workflow"`) {
+	if !strings.Contains(rec.Body.String(), `"workflow":"test"`) {
 		t.Fatalf("services response missing workflow name: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"type":"test"`) {
+		t.Fatalf("services response missing stable service type: %s", rec.Body.String())
+	}
+}
+
+func TestAdminMuxRejectsUnsupportedMethods(t *testing.T) {
+	mux := newAdminMux(
+		manager.NewServiceManager("test"),
+		manager.NewWorkflowManager(),
+		health.NewHealthManager(time.Hour, "test"),
+	)
+
+	for _, path := range []string{
+		"/health",
+		"/health/service?service=missing",
+		"/health/readiness",
+		"/health/liveness",
+		"/services",
+		"/workflows",
+		"/rule-engine",
+	} {
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, nil))
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("POST %s status = %d, want 405", path, recorder.Code)
+		}
 	}
 }
 
@@ -149,15 +184,29 @@ func TestSetupMessageListenersReturnsMissingAndTypeMismatchErrors(t *testing.T) 
 
 	missing := manager.NewServiceManager("test")
 	err := setupMessageListeners(ctx, missing, wm)
-	if err == nil || !strings.Contains(err.Error(), "WebSocketServiceA") {
+	if err == nil || !strings.Contains(err.Error(), service.WebSocketInputServiceName) {
 		t.Fatalf("missing service error = %v", err)
 	}
 
 	wrongType := manager.NewServiceManager("test")
-	wrongType.RegisterService(appTestService{name: "WebSocketServiceA"})
+	wrongType.RegisterService(appTestService{name: service.WebSocketInputServiceName})
 	err = setupMessageListeners(ctx, wrongType, wm)
 	if err == nil || !strings.Contains(err.Error(), "not of type") {
 		t.Fatalf("wrong type error = %v", err)
+	}
+}
+
+func TestAppStopReturnsServiceShutdownError(t *testing.T) {
+	sm := manager.NewServiceManager("test")
+	sm.RegisterService(appFailingStopService{appTestService{name: "failing"}})
+	application := &App{serviceManager: sm, started: true}
+
+	err := application.Stop(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "stop services") {
+		t.Fatalf("stop error = %v, want service shutdown error", err)
+	}
+	if !application.started {
+		t.Fatalf("failed stop cleared lifecycle state")
 	}
 }
 

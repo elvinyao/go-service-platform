@@ -33,7 +33,7 @@ func (c *Composer) Snapshot(ctx context.Context) ComposerSnapshot {
 
 	providers := make(map[string]RuleSet, len(c.providers))
 	for _, name := range providerNames {
-		providers[name] = c.providers[name].Snapshot(ctx)
+		providers[name] = CloneRuleSet(c.providers[name].Snapshot(ctx))
 	}
 
 	return ComposerSnapshot{
@@ -43,7 +43,13 @@ func (c *Composer) Snapshot(ctx context.Context) ComposerSnapshot {
 }
 
 func (c *Composer) BuildExecutionPlan(ctx context.Context, workflow string, msg Message) (ExecutionPlan, error) {
-	policy := c.config.PolicyForWorkflow(workflow)
+	policy, exists := c.config.LookupPolicyForWorkflow(workflow)
+	if !exists {
+		return ExecutionPlan{}, fmt.Errorf("workflow %s has no configured policy", workflow)
+	}
+	if !validCompositionMode(policy.Mode) {
+		return ExecutionPlan{}, fmt.Errorf("workflow %s has invalid composition mode %q", workflow, policy.Mode)
+	}
 	providerNames := providerOrder(policy)
 
 	if len(providerNames) == 0 {
@@ -56,7 +62,10 @@ func (c *Composer) BuildExecutionPlan(ctx context.Context, workflow string, msg 
 		if !ok {
 			return ExecutionPlan{}, fmt.Errorf("rule provider %s not found", name)
 		}
-		rs := provider.Snapshot(ctx)
+		rs := CloneRuleSet(provider.Snapshot(ctx))
+		if err := ValidateRuleSet(rs); err != nil {
+			return ExecutionPlan{}, fmt.Errorf("rule provider %s published invalid rules: %w", name, err)
+		}
 		workflowRules := filterRulesByWorkflow(rs.Rules, workflow)
 		matchedByProvider[name] = MatchRules(workflowRules, msg)
 	}
@@ -133,20 +142,22 @@ func selectRules(policy WorkflowPolicy, order []string, matched map[string][]Rul
 		}
 		return all, true
 	case CompositionOr:
-		fallthrough
-	default:
 		all := make([]Rule, 0)
 		for _, name := range order {
 			all = append(all, matched[name]...)
 		}
 		return all, len(all) > 0
+	default:
+		return nil, false
 	}
 }
 
 func collectActions(rules []Rule) []Action {
 	out := make([]Action, 0)
 	for _, r := range rules {
-		out = append(out, r.Actions...)
+		for _, action := range r.Actions {
+			out = append(out, cloneAction(action))
+		}
 	}
 	return out
 }

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"project/internal/interfaces"
-	"project/internal/model"
+	"github.com/elvinyao/go-service-platform/internal/interfaces"
+	"github.com/elvinyao/go-service-platform/internal/model"
 )
 
 type testWorkflow struct {
@@ -71,15 +71,11 @@ func TestWorkflowManagerDispatchMessageStopsAfterFirstSuccessfulWorkflow(t *test
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
-	if first.calls+second.calls != 1 {
-		t.Fatalf("total calls = %d, want 1", first.calls+second.calls)
+	if first.calls != 1 || second.calls != 0 {
+		t.Fatalf("calls = first:%d second:%d, want first workflow only", first.calls, second.calls)
 	}
-	called := first
-	if second.calls == 1 {
-		called = second
-	}
-	if called.lastMsg.Content != "hello" {
-		t.Fatalf("last content = %q, want hello", called.lastMsg.Content)
+	if first.lastMsg.Content != "hello" {
+		t.Fatalf("last content = %q, want hello", first.lastMsg.Content)
 	}
 }
 
@@ -88,28 +84,32 @@ func TestWorkflowManagerRegisterWorkflowRejectsNilAndEmptyName(t *testing.T) {
 	if err := wm.RegisterWorkflow(nil); err == nil {
 		t.Fatalf("expected nil workflow error")
 	}
+	var typedNil *testWorkflow
+	if err := wm.RegisterWorkflow(typedNil); err == nil {
+		t.Fatalf("expected typed nil workflow error")
+	}
 	if err := wm.RegisterWorkflow(&testWorkflow{}); err == nil {
 		t.Fatalf("expected empty workflow name error")
 	}
 }
 
-func TestWorkflowManagerDuplicateRegistrationOverwritesWorkflow(t *testing.T) {
+func TestWorkflowManagerDuplicateRegistrationIsRejected(t *testing.T) {
 	wm := NewWorkflowManager()
 	first := &testWorkflow{name: "same", err: fmt.Errorf("old")}
 	second := &testWorkflow{name: "same"}
 	if err := wm.RegisterWorkflow(first); err != nil {
 		t.Fatalf("register first: %v", err)
 	}
-	if err := wm.RegisterWorkflow(second); err != nil {
-		t.Fatalf("register second: %v", err)
+	if err := wm.RegisterWorkflow(second); err == nil {
+		t.Fatalf("duplicate registration error = nil")
 	}
 
 	got, ok := wm.GetWorkflow("same")
 	if !ok {
 		t.Fatalf("workflow not found")
 	}
-	if got != second {
-		t.Fatalf("duplicate registration did not overwrite")
+	if got != first {
+		t.Fatalf("registered workflow = %v, want first instance", got)
 	}
 }
 
@@ -145,6 +145,20 @@ func TestNewWorkflowManagerWithDIReturnsFactoryError(t *testing.T) {
 	}
 }
 
+func TestNewWorkflowManagerWithDIRejectsNilFactoriesAndWorkflows(t *testing.T) {
+	sm := NewServiceManager("test")
+	if _, err := NewWorkflowManagerWithDI(context.Background(), sm, nil); err == nil {
+		t.Fatalf("expected nil factory error")
+	}
+
+	if _, err := NewWorkflowManagerWithDI(context.Background(), sm, func(*ServiceManager) (interfaces.Workflow, error) {
+		var workflow *testWorkflow
+		return workflow, nil
+	}); err == nil {
+		t.Fatalf("expected typed nil workflow error")
+	}
+}
+
 func TestWorkflowManagerLookupAndListMethods(t *testing.T) {
 	wm := NewWorkflowManager()
 	first := &testWorkflow{name: "first"}
@@ -163,8 +177,8 @@ func TestWorkflowManagerLookupAndListMethods(t *testing.T) {
 		t.Fatalf("expected missing workflow error")
 	}
 	names := wm.ListWorkflows(context.Background())
-	if len(names) != 2 {
-		t.Fatalf("names len = %d, want 2", len(names))
+	if len(names) != 2 || names[0] != "first" || names[1] != "second" {
+		t.Fatalf("workflow names = %+v, want [first second]", names)
 	}
 	all := wm.GetAllWorkflows(context.Background())
 	if len(all) != 2 || all["first"] != first || all["second"] != second {

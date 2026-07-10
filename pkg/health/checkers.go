@@ -92,18 +92,29 @@ type ConnectivityChecker struct {
 	Port            string
 	TimeoutMs       int
 	ExpectedLatency int // in milliseconds
+	Dialer          ContextDialer
+}
+
+// ContextDialer establishes network connections with context cancellation.
+type ContextDialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // Check implements the Checker interface
 func (c *ConnectivityChecker) Check(ctx context.Context) *CheckResult {
+	ctx = nonNilContext(ctx)
 	result := NewCheckResult("connectivity-"+c.Host+":"+c.Port, CategoryConnectivity)
 	result.Level = LevelCritical
 
 	timeout := time.Duration(c.TimeoutMs) * time.Millisecond
 	start := time.Now()
 
-	// Try to connect
-	conn, err := net.DialTimeout("tcp", c.Host+":"+c.Port, timeout)
+	// Try to connect while honoring caller cancellation and deadlines.
+	dialer := c.Dialer
+	if isNilValue(dialer) {
+		dialer = &net.Dialer{Timeout: timeout}
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(c.Host, c.Port))
 	elapsed := time.Since(start)
 
 	result.AddDetail("latency_ms", elapsed.Milliseconds())
@@ -143,15 +154,20 @@ type HTTPEndpointChecker struct {
 	TimeoutMs       int
 	ExpectedStatus  int
 	ExpectedLatency int // in milliseconds
+	HTTPClient      *http.Client
 }
 
 // Check implements the Checker interface
 func (c *HTTPEndpointChecker) Check(ctx context.Context) *CheckResult {
+	ctx = nonNilContext(ctx)
 	result := NewCheckResult("http-"+c.URL, CategoryConnectivity)
 	result.Level = LevelWarning
 
-	client := &http.Client{
-		Timeout: time.Duration(c.TimeoutMs) * time.Millisecond,
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{
+			Timeout: time.Duration(c.TimeoutMs) * time.Millisecond,
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, c.Method, c.URL, nil)
@@ -218,9 +234,18 @@ func (c *DependencyChecker) Check(ctx context.Context) *CheckResult {
 		Status:      StatusUnknown,
 		RefreshedAt: time.Now(),
 	}
+	if isNilValue(c.Reporter) {
+		result.SetStatus(StatusUnknown, fmt.Sprintf("Dependency %s has no health reporter", c.ServiceName))
+		result.Complete()
+		return result
+	}
 
 	// Get the health report from the reporter
-	c.Reporter.ReportHealth(ctx, report)
+	if recovered := callReporter(ctx, c.Reporter, report); recovered != nil {
+		result.SetStatus(StatusUnknown, fmt.Sprintf("Dependency %s health reporter panicked", c.ServiceName))
+		result.Complete()
+		return result
+	}
 
 	// Map the dependency status to our result
 	result.AddDetail("dependency_status", string(report.Status))
@@ -259,19 +284,36 @@ type DataAccessChecker struct {
 
 // Check implements the Checker interface
 func (c *DataAccessChecker) Check(ctx context.Context) *CheckResult {
+	ctx = nonNilContext(ctx)
 	result := NewCheckResult("data-access-"+c.Name, CategoryData)
 	result.Level = LevelCritical
+	result.AddDetail("description", c.Description)
+
+	if c.AccessFn == nil {
+		result.SetStatus(StatusDown, fmt.Sprintf("Data access to %s has no access function", c.Name))
+		result.Complete()
+		return result
+	}
 
 	// Create a timeout context
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMs)*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
-	err := c.AccessFn(timeoutCtx)
+	operationResult := make(chan error, 1)
+	go func() {
+		operationResult <- runDataAccess(c.AccessFn, timeoutCtx)
+	}()
+
+	var err error
+	select {
+	case err = <-operationResult:
+	case <-timeoutCtx.Done():
+		err = timeoutCtx.Err()
+	}
 	elapsed := time.Since(start)
 
 	result.AddDetail("latency_ms", elapsed.Milliseconds())
-	result.AddDetail("description", c.Description)
 
 	if err != nil {
 		if timeoutCtx.Err() == context.DeadlineExceeded {
@@ -285,6 +327,15 @@ func (c *DataAccessChecker) Check(ctx context.Context) *CheckResult {
 
 	result.Complete()
 	return result
+}
+
+func runDataAccess(accessFn func(context.Context) error, ctx context.Context) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("data access panicked: %v", recovered)
+		}
+	}()
+	return accessFn(ctx)
 }
 
 // NewDataAccessChecker creates a new data access checker

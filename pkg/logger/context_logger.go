@@ -2,7 +2,7 @@ package logger
 
 import (
 	"context"
-	appctx "project/pkg/context"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
 	"time"
 )
 
@@ -93,7 +93,12 @@ func FatalfWithContext(ctx context.Context, format string, args ...interface{}) 
 func WithContextError(ctx context.Context, err error) *Entry {
 	entry := FromContext(ctx).WithError(err)
 
-	if fieldErr, ok := err.(interface{ Fields() map[string]interface{} }); ok {
+	if fieldErr, ok := err.(interface{ GetFields() map[string]interface{} }); ok {
+		fields := fieldErr.GetFields()
+		if len(fields) > 0 {
+			entry = entry.WithFields(fields)
+		}
+	} else if fieldErr, ok := err.(interface{ Fields() map[string]interface{} }); ok {
 		fields := fieldErr.Fields()
 		if len(fields) > 0 {
 			entry = entry.WithFields(fields)

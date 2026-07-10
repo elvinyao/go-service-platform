@@ -10,6 +10,7 @@ import (
 
 type testFakeAPIManager struct {
 	startErr       error
+	stopErr        error
 	started        bool
 	stopped        bool
 	printed        bool
@@ -26,7 +27,7 @@ func (m *testFakeAPIManager) Start() error {
 
 func (m *testFakeAPIManager) Stop() error {
 	m.stopped = true
-	return nil
+	return m.stopErr
 }
 
 func (m *testFakeAPIManager) PrintEndpoints() {
@@ -79,6 +80,20 @@ func TestRunReturnsStartAndFlagErrors(t *testing.T) {
 	err = run([]string{"-unknown"}, make(chan os.Signal), &bytes.Buffer{})
 	if err == nil {
 		t.Fatalf("expected flag parse error")
+	}
+}
+
+func TestRunReturnsStopError(t *testing.T) {
+	stopErr := fmt.Errorf("stop failed")
+	restore := replaceManagerFactory(func(confluencePort, mmHTTPPort, mmWSPort, wsPort int) fakeAPIManager {
+		return &testFakeAPIManager{stopErr: stopErr}
+	})
+	defer restore()
+
+	signals := make(chan os.Signal, 1)
+	signals <- os.Interrupt
+	if err := run(nil, signals, &bytes.Buffer{}); err == nil {
+		t.Fatalf("expected stop error")
 	}
 }
 

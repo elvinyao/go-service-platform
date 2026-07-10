@@ -262,3 +262,49 @@ func TestRunChecksParallel(t *testing.T) {
 	assert.True(t, names["check2"])
 	assert.True(t, names["check3"])
 }
+
+func TestRunChecksParallelContainsExtensionFailures(t *testing.T) {
+	checks := []func(context.Context) *CheckResult{
+		func(context.Context) *CheckResult {
+			time.Sleep(10 * time.Millisecond)
+			result := NewCheckResult("first", CategoryDependency)
+			result.SetStatus(StatusUp, "")
+			return result
+		},
+		func(context.Context) *CheckResult {
+			result := NewCheckResult("second", CategoryDependency)
+			result.SetStatus(StatusUp, "")
+			return result
+		},
+		nil,
+		func(context.Context) *CheckResult { panic("boom") },
+		func(context.Context) *CheckResult { return nil },
+	}
+
+	results := RunChecksParallel(nil, checks)
+
+	assert.Equal(t, []string{"first", "second", "invalid", "panic", "invalid"}, checkResultNames(results))
+	assert.Equal(t, StatusUnknown, results[2].Status)
+	assert.Contains(t, results[3].Description, "boom")
+}
+
+func TestRunChecksParallelTimesOutUnfinishedChecks(t *testing.T) {
+	results := runChecksParallel(context.Background(), 10*time.Millisecond, []func(context.Context) *CheckResult{
+		func(ctx context.Context) *CheckResult {
+			<-ctx.Done()
+			return NewCheckResult("late", CategoryDependency)
+		},
+	})
+
+	assert.Len(t, results, 1)
+	assert.Equal(t, "timeout", results[0].Name)
+	assert.Equal(t, StatusUnknown, results[0].Status)
+}
+
+func checkResultNames(results []*CheckResult) []string {
+	names := make([]string, len(results))
+	for i, result := range results {
+		names[i] = result.Name
+	}
+	return names
+}

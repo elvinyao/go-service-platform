@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/elvinyao/go-service-platform/internal/config"
+	"github.com/elvinyao/go-service-platform/internal/dataaccess"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/errors"
+	"github.com/elvinyao/go-service-platform/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
 	"io"
 	"net/http"
-	"project/internal/config"
-	"project/internal/dataaccess"
-	appctx "project/pkg/context"
-	"project/pkg/errors"
-	"project/pkg/health"
-	"project/pkg/logger"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -44,18 +46,29 @@ type confluenceSettings struct {
 // ConfluenceSettingsService manages settings from Confluence with periodic refresh
 type ConfluenceSettingsService struct {
 	*BaseService
-	dataAccessor dataaccess.DataAccessor
-	mu           sync.RWMutex
-	config       config.ConfluenceSettingsConfig
-	settings     []SettingRule
-	lastRefresh  time.Time
-	stopRefresh  chan struct{}
-	refreshDone  chan struct{}
-	httpClient   *http.Client
+	dataAccessor  dataaccess.DataAccessor
+	mu            sync.RWMutex
+	config        config.ConfluenceSettingsConfig
+	settings      []SettingRule
+	lastRefresh   time.Time
+	stopRefresh   chan struct{}
+	refreshDone   chan struct{}
+	refreshCancel context.CancelFunc
+	httpClient    *http.Client
 }
 
 // NewConfluenceSettingsService creates a new ConfluenceSettingsService
-func NewConfluenceSettingsService(name, workflow string, da dataaccess.DataAccessor, cfg config.ConfluenceSettingsConfig, version string) *ConfluenceSettingsService {
+func NewConfluenceSettingsService(
+	name, workflow string,
+	da dataaccess.DataAccessor,
+	cfg config.ConfluenceSettingsConfig,
+	version string,
+	clients ...*http.Client,
+) *ConfluenceSettingsService {
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	if len(clients) > 0 && clients[0] != nil {
+		httpClient = clients[0]
+	}
 	s := &ConfluenceSettingsService{
 		BaseService:  NewBaseService(name, workflow, "confluence-settings", version),
 		dataAccessor: da,
@@ -63,7 +76,7 @@ func NewConfluenceSettingsService(name, workflow string, da dataaccess.DataAcces
 		settings:     make([]SettingRule, 0),
 		stopRefresh:  make(chan struct{}),
 		refreshDone:  make(chan struct{}),
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		httpClient:   httpClient,
 	}
 
 	// Add custom health checker
@@ -94,9 +107,14 @@ func (s *ConfluenceSettingsService) Start(ctx context.Context) error {
 	// Start periodic refresh
 	s.stopRefresh = make(chan struct{})
 	s.refreshDone = make(chan struct{})
-	go s.periodicRefresh(ctx)
+	stopRefresh := s.stopRefresh
+	refreshDone := s.refreshDone
+	refreshInterval := s.config.RefreshInterval
+	refreshCtx, refreshCancel := context.WithCancel(ctx)
+	s.refreshCancel = refreshCancel
+	go s.periodicRefresh(refreshCtx, refreshInterval, stopRefresh, refreshDone)
 
-	s.setRunningLocked(true)
+	s.LockRunning(true)
 	logger.InfofWithContext(ctx, "Service %s started successfully", s.GetName())
 	return nil
 }
@@ -116,19 +134,29 @@ func (s *ConfluenceSettingsService) Stop(ctx context.Context) error {
 	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
 
 	// Signal the refresh goroutine to stop and mark as not running
-	close(s.stopRefresh)
-	s.setRunningLocked(false)
+	stopRefresh := s.stopRefresh
+	refreshDone := s.refreshDone
+	refreshCancel := s.refreshCancel
+	s.refreshCancel = nil
+	close(stopRefresh)
+	if refreshCancel != nil {
+		refreshCancel()
+	}
+	s.LockRunning(false)
 
 	// Release the lock BEFORE waiting, so periodicRefresh can finish
 	// its current cycle and see the stop signal
 	s.mu.Unlock()
 
-	// Wait for refresh goroutine to complete with timeout
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
 	select {
-	case <-s.refreshDone:
+	case <-refreshDone:
 		logger.DebugfWithContext(ctx, "Periodic refresh stopped")
-	case <-time.After(5 * time.Second):
-		logger.WarnfWithContext(ctx, "Timeout waiting for periodic refresh to stop")
+	case <-ctx.Done():
+		return fmt.Errorf("wait for periodic refresh shutdown: %w", ctx.Err())
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for periodic refresh shutdown")
 	}
 
 	logger.InfofWithContext(ctx, "Service %s stopped successfully", s.GetName())
@@ -146,28 +174,27 @@ func (s *ConfluenceSettingsService) Restart(ctx context.Context) error {
 }
 
 // periodicRefresh runs in a goroutine and periodically refreshes settings
-func (s *ConfluenceSettingsService) periodicRefresh(ctx context.Context) {
-	defer close(s.refreshDone)
+func (s *ConfluenceSettingsService) periodicRefresh(ctx context.Context, refreshInterval time.Duration, stopRefresh <-chan struct{}, refreshDone chan<- struct{}) {
+	defer close(refreshDone)
 
-	ticker := time.NewTicker(s.config.RefreshInterval)
+	ticker := time.NewTicker(refreshInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-s.stopRefresh:
+		case <-ctx.Done():
+			return
+		case <-stopRefresh:
 			return
 		case <-ticker.C:
-			s.mu.Lock()
-			if err := s.refreshSettingsLocked(ctx); err != nil {
+			if err := s.refreshSettings(ctx); err != nil && ctx.Err() == nil {
 				logger.WithContextError(ctx, err).Warn("Failed to refresh settings")
 			}
-			s.mu.Unlock()
 		}
 	}
 }
 
-// refreshSettingsLocked fetches settings from Confluence (must hold lock)
-func (s *ConfluenceSettingsService) refreshSettingsLocked(ctx context.Context) error {
+func (s *ConfluenceSettingsService) refreshSettings(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "refresh_settings")
 	logger.DebugfWithContext(ctx, "Refreshing settings from Confluence")
 
@@ -176,28 +203,62 @@ func (s *ConfluenceSettingsService) refreshSettingsLocked(ctx context.Context) e
 		return err
 	}
 
+	s.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.settings = settings
+	s.lastRefresh = time.Now()
+	s.mu.Unlock()
+	s.cacheSettings(ctx, settings)
+	return nil
+}
+
+// refreshSettingsLocked fetches settings from Confluence (must hold lock)
+func (s *ConfluenceSettingsService) refreshSettingsLocked(ctx context.Context) error {
+	ctx = appctx.WithOperationName(ctx, "refresh_settings")
+	logger.DebugfWithContext(ctx, "Refreshing settings from Confluence")
+
+	settings, err := fetchConfluenceSettings(ctx, s.httpClient, s.config.APIEndpoint, s.config.PageID)
+	if err != nil {
+		return err
+	}
+
 	s.settings = settings
 	s.lastRefresh = time.Now()
 
-	// Cache the settings
+	s.cacheSettings(ctx, settings)
+	return nil
+}
+
+func (s *ConfluenceSettingsService) cacheSettings(ctx context.Context, settings []SettingRule) {
 	if err := s.dataAccessor.SetData("confluence_settings", settings); err != nil {
 		logger.WithContextError(ctx, err).Warn("Failed to cache settings")
 	}
 
 	logger.InfofWithContext(ctx, "Refreshed %d settings rules", len(settings))
-	return nil
 }
 
 // fetchSettingsFromConfluence fetches settings from the Confluence REST API
 func (s *ConfluenceSettingsService) fetchSettingsFromConfluence(ctx context.Context) ([]SettingRule, error) {
-	url := s.config.APIEndpoint + "/rest/api/content/" + s.config.PageID
+	s.mu.RLock()
+	client := s.httpClient
+	apiEndpoint := s.config.APIEndpoint
+	pageID := s.config.PageID
+	s.mu.RUnlock()
+	return fetchConfluenceSettings(ctx, client, apiEndpoint, pageID)
+}
+
+func fetchConfluenceSettings(ctx context.Context, client *http.Client, apiEndpoint, pageID string) ([]SettingRule, error) {
+	url := strings.TrimRight(apiEndpoint, "/") + "/rest/api/content/" + pageID
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, errors.New(errors.TypeServiceUnavailable, fmt.Sprintf("failed to create request: %v", err), err)
 	}
 
-	resp, err := s.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, errors.New(errors.TypeServiceUnavailable, fmt.Sprintf("failed to fetch Confluence page: %v", err), err)
 	}
@@ -219,7 +280,7 @@ func (s *ConfluenceSettingsService) fetchSettingsFromConfluence(ctx context.Cont
 		return nil, errors.New(errors.TypeInvalidInput, fmt.Sprintf("failed to parse settings from page body: %v", err), err)
 	}
 
-	logger.InfofWithContext(ctx, "Fetched %d setting rules from Confluence page %s", len(settings.Rules), s.config.PageID)
+	logger.InfofWithContext(ctx, "Fetched %d setting rules from Confluence page %s", len(settings.Rules), pageID)
 	return settings.Rules, nil
 }
 
@@ -292,7 +353,7 @@ func (s *ConfluenceSettingsService) GetMetrics(ctx context.Context) map[string]i
 	return metrics
 }
 
-// Configure implements Service interface
+// Configure replaces validated settings for the next restart.
 func (s *ConfluenceSettingsService) Configure(ctx context.Context, cfg interface{}) error {
 	ctx = appctx.WithOperationName(ctx, "configure_service")
 
@@ -300,12 +361,29 @@ func (s *ConfluenceSettingsService) Configure(ctx context.Context, cfg interface
 	if !ok {
 		return errors.New(errors.TypeInvalidInput, "Invalid configuration type", nil)
 	}
+	if err := validateConfluenceSettingsConfig(confCfg); err != nil {
+		return errors.Wrap(err, "Invalid Confluence settings configuration", errors.TypeInvalidInput)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.config = confCfg
 	logger.InfofWithContext(ctx, "Service %s configured successfully", s.GetName())
+	return nil
+}
+
+func validateConfluenceSettingsConfig(cfg config.ConfluenceSettingsConfig) error {
+	if cfg.PageID == "" {
+		return fmt.Errorf("page ID is required")
+	}
+	if cfg.RefreshInterval <= 0 {
+		return fmt.Errorf("refresh interval must be greater than zero")
+	}
+	parsed, err := url.ParseRequestURI(cfg.APIEndpoint)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("API endpoint must be an absolute http or https URL")
+	}
 	return nil
 }
 
@@ -325,7 +403,10 @@ func (c *settingsRefreshChecker) Check(ctx context.Context) *health.CheckResult 
 		return result
 	}
 
-	lastRefresh := c.service.GetLastRefreshTime()
+	c.service.mu.RLock()
+	lastRefresh := c.service.lastRefresh
+	refreshInterval := c.service.config.RefreshInterval
+	c.service.mu.RUnlock()
 	if lastRefresh.IsZero() {
 		result.SetStatus(health.StatusDegraded, "Settings have never been refreshed")
 		result.Complete()
@@ -336,7 +417,7 @@ func (c *settingsRefreshChecker) Check(ctx context.Context) *health.CheckResult 
 	result.AddDetail("last_refresh_age_seconds", refreshAge.Seconds())
 
 	// Check if refresh is stale (more than 2x the refresh interval)
-	staleThreshold := c.service.config.RefreshInterval * 2
+	staleThreshold := refreshInterval * 2
 	if refreshAge > staleThreshold {
 		result.SetStatus(health.StatusDegraded, fmt.Sprintf("Settings are stale: last refresh was %v ago", refreshAge))
 	} else {

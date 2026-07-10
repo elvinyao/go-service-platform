@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"text/template"
 
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 func RenderTemplate(tmpl string, msg ruleengine.Message) (string, error) {

@@ -123,6 +123,12 @@ func TestUnwrap(t *testing.T) {
 }
 
 func TestErrorIs(t *testing.T) {
+	t.Run("TypeSentinelMatch", func(t *testing.T) {
+		err := New(TypeNotFound, "resource not found", nil)
+		assert.True(t, Is(err, ErrNotFound))
+		assert.False(t, Is(err, ErrInvalidInput))
+	})
+
 	// Test direct match
 	t.Run("DirectMatch", func(t *testing.T) {
 		err := New(TypeNotFound, "resource not found", ErrNotFound)
@@ -141,6 +147,39 @@ func TestErrorIs(t *testing.T) {
 		err := New(TypeTimeout, "timeout error", nil)
 		assert.False(t, Is(err, ErrNotFound))
 	})
+}
+
+func TestGetFieldsReturnsCopy(t *testing.T) {
+	err := New(TypeInvalidInput, "invalid", nil).WithField("field", "original")
+	fields := err.GetFields()
+	fields["field"] = "changed"
+	assert.Equal(t, "original", err.Fields["field"])
+}
+
+func TestAppErrorMatchesEveryTypeSentinel(t *testing.T) {
+	tests := []struct {
+		errType ErrorType
+		target  error
+	}{
+		{errType: TypeNotFound, target: ErrNotFound},
+		{errType: TypeInvalidInput, target: ErrInvalidInput},
+		{errType: TypeServiceUnavailable, target: ErrServiceUnavailable},
+		{errType: TypeUnauthorized, target: ErrUnauthorized},
+		{errType: TypeForbidden, target: ErrForbidden},
+		{errType: TypeInternal, target: ErrInternal},
+		{errType: TypeTimeout, target: ErrTimeout},
+		{errType: TypePartialFailure, target: ErrPartialFailure},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.errType), func(t *testing.T) {
+			assert.True(t, Is(New(tt.errType, "typed error", nil), tt.target))
+		})
+	}
+
+	unknown := New(ErrorType("unknown"), "unknown", nil)
+	assert.False(t, unknown.Is(nil))
+	assert.False(t, Is(unknown, ErrInternal))
+	assert.Empty(t, unknown.GetFields())
 }
 
 func TestErrorAs(t *testing.T) {

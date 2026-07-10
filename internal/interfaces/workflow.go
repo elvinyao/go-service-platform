@@ -2,7 +2,7 @@ package interfaces
 
 import (
 	"context"
-	"project/internal/model"
+	"github.com/elvinyao/go-service-platform/internal/model"
 )
 
 type Workflow interface {

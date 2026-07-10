@@ -1,14 +1,62 @@
 # Configuration
 
-The reference runtime uses separate configuration files for runtime wiring, rule composition, and local rules.
+The reference runtime uses three strict YAML files. Runtime wiring, rule composition, and rule content are deliberately separate so that operational changes do not require recompiling the service.
 
-## `config/runtime.yaml`
+## Configuration Layers
 
-`runtime.yaml` configures the reference application.
+Values are resolved in this order:
+
+1. Built-in defaults from Go code.
+2. The selected YAML file.
+3. Supported environment-variable overrides.
+
+The entry point selects files with:
+
+| Variable | Default |
+| --- | --- |
+| `RUNTIME_CONFIG` | `config/runtime.yaml` |
+| `RULE_ENGINE_CONFIG` | `config/rule-engine.yaml` |
+| `WORKFLOW_RULES` | `config/workflow-rules.yaml` |
+
+An explicitly selected file must exist. YAML decoding rejects unknown fields and multiple-document files. Invalid configuration fails startup before the admin server begins accepting traffic.
+
+## Base and Demo Profiles
+
+The base profile is YAML-first and disables business-specific adapters:
+
+```bash
+make fake-server
+# Run this in another terminal.
+make run
+```
+
+The full demo profile enables Confluence, Mattermost, and BadgeDB:
+
+```bash
+make dev
+```
+
+The demo profile uses a five-second Confluence refresh interval so local and Compose startup can recover quickly if the fake dependency becomes ready slightly later than the runtime.
+
+The equivalent explicit command is:
+
+```bash
+RUNTIME_CONFIG=config/profiles/demo/runtime.yaml \
+RULE_ENGINE_CONFIG=config/profiles/demo/rule-engine.yaml \
+go run ./cmd/service-workflow
+```
+
+## Runtime Configuration
+
+`config/runtime.yaml` configures the reference application. The repository default is:
 
 ```yaml
 admin:
-  address: ":18080"
+  address: "127.0.0.1:18080"
+  read_header_timeout: "5s"
+  read_timeout: "10s"
+  write_timeout: "10s"
+  idle_timeout: "120s"
 
 inputs:
   websocket:
@@ -19,51 +67,89 @@ inputs:
 
 adapters:
   confluence:
-    enabled: true
+    enabled: false
     api_endpoint: "http://localhost:8090"
     settings_page_id: "settings-page-1"
     refresh_interval: "5m"
   mattermost:
-    enabled: true
+    enabled: false
     server_url: "http://localhost:8091"
     websocket_url: "ws://localhost:8092"
     api_token: "test-token-123"
     channel: "test-channel-1"
   badgedb:
-    enabled: true
+    enabled: false
     path: "/tmp/service-workflow-badges.db"
 ```
 
-Fields:
+### Admin Fields
 
-- `admin.address`: HTTP admin listener address. Startup fails if this address cannot bind. Override with `ADMIN_ADDR` for local debugging.
-- `inputs.websocket.enabled`: enables the demo WebSocket input.
-- `inputs.websocket.server_url`: WebSocket server base URL.
-- `inputs.websocket.path`: WebSocket endpoint path.
-- `inputs.websocket.reconnect_interval`: reconnect delay after connection loss.
-- `adapters.confluence.enabled`: enables the demo Confluence rule provider.
-- `adapters.confluence.api_endpoint`: Confluence API base URL.
-- `adapters.confluence.settings_page_id`: page ID for rule settings.
-- `adapters.confluence.refresh_interval`: settings refresh interval.
-- `adapters.mattermost.enabled`: enables the demo Mattermost executor.
-- `adapters.mattermost.server_url`: Mattermost HTTP API base URL.
-- `adapters.mattermost.websocket_url`: Mattermost WebSocket URL.
-- `adapters.mattermost.api_token`: demo API token.
-- `adapters.mattermost.channel`: default channel ID.
-- `adapters.badgedb.enabled`: enables the demo BadgeDB executor.
-- `adapters.badgedb.path`: local demo database path.
+| Field | Meaning | Validation |
+| --- | --- | --- |
+| `admin.address` | Admin HTTP listen address | Required `host:port` form |
+| `admin.read_header_timeout` | Maximum time to read request headers | Positive Go duration |
+| `admin.read_timeout` | Maximum time to read a request | Positive Go duration |
+| `admin.write_timeout` | Maximum response write time | Positive Go duration |
+| `admin.idle_timeout` | Keep-alive idle timeout | Positive Go duration |
 
-Environment overrides:
+The admin listener is critical. A bind failure stops startup and rolls back services that already started.
 
-- `ADMIN_ADDR`
-- `WEBSOCKET_SERVER_URL`
-- `CONFLUENCE_API_ENDPOINT`
-- `MATTERMOST_SERVER_URL`
-- `MATTERMOST_WS_URL`
+### WebSocket Input Fields
 
-## `config/rule-engine.yaml`
+| Field | Meaning | Validation when enabled |
+| --- | --- | --- |
+| `enabled` | Registers and starts the input service | Boolean |
+| `server_url` | WebSocket server base URL | Absolute `ws` or `wss` URL |
+| `path` | WebSocket endpoint path | Must start with `/` |
+| `reconnect_interval` | Delay between reconnect attempts | Positive Go duration |
 
-`rule-engine.yaml` configures provider composition and action merge behavior.
+The final local endpoint is `server_url + path`, for example `ws://localhost:8093/ws`.
+
+### Demo Adapter Fields
+
+| Field | Meaning | Validation when enabled |
+| --- | --- | --- |
+| `adapters.confluence.api_endpoint` | Confluence-like HTTP base URL | Absolute `http` or `https` URL |
+| `adapters.confluence.settings_page_id` | Settings page identifier | Required |
+| `adapters.confluence.refresh_interval` | Refresh interval | Positive Go duration |
+| `adapters.mattermost.server_url` | Mattermost-like HTTP base URL | Absolute `http` or `https` URL |
+| `adapters.mattermost.websocket_url` | Optional Mattermost-like event WebSocket URL | Empty, or an absolute `ws` or `wss` URL |
+| `adapters.mattermost.api_token` | Bearer token used by the demo client | Optional at schema level |
+| `adapters.mattermost.channel` | Default target channel | Required |
+| `adapters.badgedb.path` | Demo database identity/path | Required |
+
+Runtime `enabled` values control registration. A disabled provider or executor is not available to the rule pipeline. If filtering disabled providers leaves a workflow with no provider, startup fails instead of silently changing the workflow policy.
+
+The local profiles bind the unauthenticated admin API to loopback. Set `ADMIN_ADDR=:18080` only when an all-interface listener is intentionally required. The container image sets `ADMIN_ADDR=:8080` explicitly because published container ports must be reachable outside the container network namespace.
+
+In the reference demo wiring, a workflow that uses the enabled `confluence` provider also requires the Mattermost adapter because every generated Confluence rule targets the `mattermost` executor. This dependency is validated before provider startup.
+
+## Runtime Environment Overrides
+
+| Variable | Field |
+| --- | --- |
+| `ADMIN_ADDR` | `admin.address` |
+| `ADMIN_READ_HEADER_TIMEOUT` | `admin.read_header_timeout` |
+| `ADMIN_READ_TIMEOUT` | `admin.read_timeout` |
+| `ADMIN_WRITE_TIMEOUT` | `admin.write_timeout` |
+| `ADMIN_IDLE_TIMEOUT` | `admin.idle_timeout` |
+| `WEBSOCKET_SERVER_URL` | `inputs.websocket.server_url` |
+| `WEBSOCKET_PATH` | `inputs.websocket.path` |
+| `CONFLUENCE_API_ENDPOINT` | `adapters.confluence.api_endpoint` |
+| `CONFLUENCE_SETTINGS_PAGE_ID` | `adapters.confluence.settings_page_id` |
+| `MATTERMOST_SERVER_URL` | `adapters.mattermost.server_url` |
+| `MATTERMOST_WS_URL` | `adapters.mattermost.websocket_url` |
+| `MATTERMOST_API_TOKEN` | `adapters.mattermost.api_token` |
+| `MATTERMOST_CHANNEL` | `adapters.mattermost.channel` |
+| `BADGEDB_PATH` | `adapters.badgedb.path` |
+
+The demo wiring also reads `CONFLUENCE_SPACE_KEY`, `MATTERMOST_USERNAME`, and `MATTERMOST_PASSWORD`. They are compatibility options for the reference services, not fields in the public runtime schema.
+
+Logging is configured independently with `LOG_LEVEL`, `LOG_FORMAT`, `LOG_TIME_FORMAT`, `LOG_CALLER_INFO`, and `LOG_OUTPUT`.
+
+## Rule Engine Configuration
+
+`config/rule-engine.yaml` selects providers and composition behavior:
 
 ```yaml
 workflows:
@@ -76,34 +162,30 @@ workflows:
     action_merge:
       dedup: true
       order: priority
+
+action_merge:
+  dedup: true
+  order: priority
 ```
 
-The default runtime is YAML-first so new rules can run locally without Confluence, Mattermost, or BadgeDB knowledge. To use the Confluence demo provider, enable `adapters.confluence.enabled` in `runtime.yaml` and add `confluence` to the provider list:
+The demo profile adds the `confluence` provider and uses `or` composition. Supported modes are:
 
-```yaml
-workflows:
-  - name: WorkflowEngine
-    providers:
-      - yaml
-      - confluence
-    mode: or
-    pipeline_order:
-      - yaml
-      - confluence
-```
+- `single`: use the first configured provider.
+- `or`: accept matches from any configured provider.
+- `and`: require every configured provider to match.
+- `pipeline`: require every provider to match in `pipeline_order`.
 
-Composition modes:
+Provider names and workflow names must be unique. `pipeline_order` must contain every configured provider exactly once when mode is `pipeline`. The only action order currently supported is `priority`.
 
-- `single`: use the first provider only.
-- `or`: use rules from any provider that matches.
-- `and`: all providers must match.
-- `pipeline`: providers run in the configured order and all must match.
+Omitted workflow and provider fields receive documented defaults. Explicit empty `workflows: []` or `providers: []` values are configuration errors; they are never silently replaced with defaults.
 
-Runtime `enabled` flags are applied before the workflow engine starts. If an adapter is disabled in `runtime.yaml`, its provider or executor is not registered even if it appears in `rule-engine.yaml`.
+A workflow-level `action_merge` block overrides the global block. Explicit `dedup: false` disables deduplication for that workflow; an omitted `dedup` value inherits the global setting. Runtime processing requires an exact workflow policy and never silently falls back to the first configured workflow.
 
-## `config/workflow-rules.yaml`
+The reference runtime recognizes `yaml` and, when enabled by runtime configuration, `confluence`. Applications built with `pkg/pipeline` can register any provider name they own.
 
-`workflow-rules.yaml` defines local YAML rules.
+## YAML Rules
+
+`config/workflow-rules.yaml` defines local rules:
 
 ```yaml
 version: "1"
@@ -125,11 +207,26 @@ rules:
           template: "YAML matched event type={{.Type}} id={{.ID}}"
 ```
 
-Rules contain:
+Rule behavior:
 
-- `id`: unique rule ID.
-- `workflow`: workflow policy name, usually `WorkflowEngine`.
-- `enabled`: whether the rule can match.
-- `priority`: lower values run first.
-- `conditions`: predicates over message fields.
-- `actions`: executor actions to run when the rule matches.
+- `id` is required and unique within the file.
+- `workflow` defaults to `WorkflowEngine` when omitted.
+- `enabled` defaults to `true` when omitted.
+- Lower numeric priorities run first.
+- A rule with no conditions matches every message for its workflow.
+- Every rule requires at least one action.
+- Every action requires an `executor`.
+- Referencing an executor that was not registered fails pipeline startup.
+
+## Strict Validation Examples
+
+These errors intentionally stop the process:
+
+```text
+parse runtime config: field reconnect_intervl not found
+inputs.websocket.server_url must use one of these schemes: ws, wss
+workflows[0].mode "orr" is invalid
+provider yaml rule duplicate-id references unregistered executor custom
+```
+
+This fail-fast behavior keeps misspelled or partially wired policies from running with surprising semantics.

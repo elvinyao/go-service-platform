@@ -20,20 +20,15 @@ func TestFakeConfluenceGetPageAndUpdateSettings(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
-	httpServer := httptest.NewServer(mux)
-	defer httpServer.Close()
 
-	resp, err := http.Get(httpServer.URL + "/rest/api/content/settings-page-1")
-	if err != nil {
-		t.Fatalf("get page: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	pageResponse := httptest.NewRecorder()
+	mux.ServeHTTP(pageResponse, httptest.NewRequest(http.MethodGet, "/rest/api/content/settings-page-1", nil))
+	if pageResponse.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", pageResponse.Code)
 	}
 
 	var page ConfluencePage
-	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+	if err := json.NewDecoder(pageResponse.Body).Decode(&page); err != nil {
 		t.Fatalf("decode page: %v", err)
 	}
 	if page.ID != "settings-page-1" {
@@ -43,19 +38,16 @@ func TestFakeConfluenceGetPageAndUpdateSettings(t *testing.T) {
 		t.Fatalf("version = %d, want 1", page.Version.Number)
 	}
 
-	err = server.UpdateSettings("settings-page-1", &ConfluenceSettings{
+	err := server.UpdateSettings("settings-page-1", &ConfluenceSettings{
 		Rules: []SettingRule{{EventType: "DDD", Pattern: ".*", Enabled: true}},
 	})
 	if err != nil {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	resp, err = http.Get(httpServer.URL + "/rest/api/content/settings-page-1")
-	if err != nil {
-		t.Fatalf("get updated page: %v", err)
-	}
-	defer resp.Body.Close()
-	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+	updatedResponse := httptest.NewRecorder()
+	mux.ServeHTTP(updatedResponse, httptest.NewRequest(http.MethodGet, "/rest/api/content/settings-page-1", nil))
+	if err := json.NewDecoder(updatedResponse.Body).Decode(&page); err != nil {
 		t.Fatalf("decode updated page: %v", err)
 	}
 	if page.Version.Number != 2 {
@@ -71,25 +63,17 @@ func TestFakeConfluenceReturnsNotFoundAndHealth(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
-	httpServer := httptest.NewServer(mux)
-	defer httpServer.Close()
 
-	resp, err := http.Get(httpServer.URL + "/rest/api/content/missing")
-	if err != nil {
-		t.Fatalf("get missing page: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("missing status = %d, want 404", resp.StatusCode)
+	missing := httptest.NewRecorder()
+	mux.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/rest/api/content/missing", nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, want 404", missing.Code)
 	}
 
-	resp, err = http.Get(httpServer.URL + "/health")
-	if err != nil {
-		t.Fatalf("get health: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("health status = %d, want 200", resp.StatusCode)
+	healthResponse := httptest.NewRecorder()
+	mux.ServeHTTP(healthResponse, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if healthResponse.Code != http.StatusOK {
+		t.Fatalf("health status = %d, want 200", healthResponse.Code)
 	}
 }
 

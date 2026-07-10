@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"project/pkg/logger"
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 type LogExecutor struct{}
@@ -30,7 +30,7 @@ func (e *LogExecutor) Execute(ctx context.Context, msg ruleengine.Message, actio
 		message = fmt.Sprintf("workflow action log message=%s type=%s id=%s", msg.Content, msg.Type, msg.ID)
 	}
 
-	entry := logger.WithFields(map[string]interface{}{
+	entry := logger.WithContextFields(ctx, logger.Fields{
 		"executor": "log",
 		"action":   action.ID,
 		"type":     msg.Type,

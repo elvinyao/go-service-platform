@@ -49,43 +49,43 @@ func NewContext(parent context.Context) *AppContext {
 
 // WithTimeout returns a copy of the parent context with a timeout
 func WithTimeout(parent context.Context, timeout time.Duration) (*AppContext, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithTimeout(ToContext(parent), timeout)
 	return &AppContext{Context: ctx}, cancel
 }
 
 // WithDeadline returns a copy of the parent context with a deadline
 func WithDeadline(parent context.Context, deadline time.Time) (*AppContext, context.CancelFunc) {
-	ctx, cancel := context.WithDeadline(parent, deadline)
+	ctx, cancel := context.WithDeadline(ToContext(parent), deadline)
 	return &AppContext{Context: ctx}, cancel
 }
 
 // WithRequestID adds a request ID to the context
 func WithRequestID(parent context.Context, requestID string) *AppContext {
-	ctx := context.WithValue(parent, requestIDKey, requestID)
+	ctx := context.WithValue(ToContext(parent), requestIDKey, requestID)
 	return &AppContext{Context: ctx}
 }
 
 // WithTraceID adds a trace ID to the context
 func WithTraceID(parent context.Context, traceID string) *AppContext {
-	ctx := context.WithValue(parent, traceIDKey, traceID)
+	ctx := context.WithValue(ToContext(parent), traceIDKey, traceID)
 	return &AppContext{Context: ctx}
 }
 
 // WithUserID adds a user ID to the context
 func WithUserID(parent context.Context, userID string) *AppContext {
-	ctx := context.WithValue(parent, userIDKey, userID)
+	ctx := context.WithValue(ToContext(parent), userIDKey, userID)
 	return &AppContext{Context: ctx}
 }
 
 // WithServiceName adds a service name to the context
 func WithServiceName(parent context.Context, serviceName string) *AppContext {
-	ctx := context.WithValue(parent, serviceNameKey, serviceName)
+	ctx := context.WithValue(ToContext(parent), serviceNameKey, serviceName)
 	return &AppContext{Context: ctx}
 }
 
 // WithOperationName adds an operation name to the context
 func WithOperationName(parent context.Context, operationName string) *AppContext {
-	ctx := context.WithValue(parent, operationNameKey, operationName)
+	ctx := context.WithValue(ToContext(parent), operationNameKey, operationName)
 	return &AppContext{Context: ctx}
 }
 
@@ -174,7 +174,7 @@ func FromContext(ctx context.Context) *AppContext {
 	if appCtx, ok := ctx.(*AppContext); ok {
 		return appCtx
 	}
-	return &AppContext{Context: ctx}
+	return &AppContext{Context: ToContext(ctx)}
 }
 
 // ToContext ensures we have a standard context

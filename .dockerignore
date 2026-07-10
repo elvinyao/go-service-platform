@@ -1,0 +1,8 @@
+.git
+.vscode
+bin
+coverage.out
+*.cover
+fake-server
+docs
+examples

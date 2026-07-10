@@ -71,6 +71,14 @@ func TestContextWithValues(t *testing.T) {
 		ctx := WithOperationName(context.Background(), "login")
 		assert.Equal(t, "login", GetOperationName(ctx))
 	})
+
+	t.Run("NilParents", func(t *testing.T) {
+		assert.Equal(t, "req", GetRequestID(WithRequestID(nil, "req")))
+		assert.Equal(t, "trace", GetTraceID(WithTraceID(nil, "trace")))
+		assert.Equal(t, "user", GetUserID(WithUserID(nil, "user")))
+		assert.Equal(t, "service", GetServiceName(WithServiceName(nil, "service")))
+		assert.Equal(t, "operation", GetOperationName(WithOperationName(nil, "operation")))
+	})
 }
 
 func TestGetters(t *testing.T) {
@@ -99,6 +107,16 @@ func TestGetters(t *testing.T) {
 }
 
 func TestTimeoutAndDeadline(t *testing.T) {
+	t.Run("NilParents", func(t *testing.T) {
+		timeoutCtx, timeoutCancel := WithTimeout(nil, time.Second)
+		defer timeoutCancel()
+		assert.NotNil(t, timeoutCtx.Context)
+
+		deadlineCtx, deadlineCancel := WithDeadline(nil, time.Now().Add(time.Second))
+		defer deadlineCancel()
+		assert.NotNil(t, deadlineCtx.Context)
+	})
+
 	// Test timeout
 	t.Run("WithTimeout", func(t *testing.T) {
 		parent := context.Background()
@@ -158,6 +176,11 @@ func TestGenerateRequestID(t *testing.T) {
 }
 
 func TestFromContext(t *testing.T) {
+	t.Run("NilContext", func(t *testing.T) {
+		appCtx := FromContext(nil)
+		assert.NotNil(t, appCtx.Context)
+	})
+
 	// Test with regular context
 	t.Run("RegularContext", func(t *testing.T) {
 		ctx := context.Background()

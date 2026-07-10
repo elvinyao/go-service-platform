@@ -2,12 +2,12 @@ package manager
 
 import (
 	"context"
-	"project/internal/interfaces"
-	"project/internal/service"
-	appctx "project/pkg/context"
-	"project/pkg/errors"
-	"project/pkg/health"
-	"project/pkg/logger"
+	"github.com/elvinyao/go-service-platform/internal/service"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/errors"
+	"github.com/elvinyao/go-service-platform/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
+	"sort"
 	"sync"
 	"time"
 )
@@ -20,45 +20,44 @@ type ServiceManager struct {
 	startTime time.Time
 }
 
-// Ensure ServiceManager implements the interfaces.ServiceManager interface
-var _ interfaces.ServiceManager = (*ServiceManager)(nil)
-
-func NewServiceManager(version string) *ServiceManager {
+func NewServiceManager(version string, healthManagers ...*health.HealthManager) *ServiceManager {
+	healthManager := health.NewHealthManager(30*time.Second, version)
+	if len(healthManagers) > 0 && healthManagers[0] != nil {
+		healthManager = healthManagers[0]
+	}
 	manager := &ServiceManager{
 		services:  make(map[string]service.Service),
 		version:   version,
 		startTime: time.Now(),
+		healthMgr: healthManager,
 	}
-
-	// Initialize health manager
-	manager.healthMgr = health.NewHealthManager(30*time.Second, version)
 
 	return manager
 }
 
-func (sm *ServiceManager) RegisterService(s service.Service) {
+func (sm *ServiceManager) RegisterService(s service.Service) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	if s == nil {
-		logger.Errorf("Attempted to register nil service")
-		return
+	if isNilRegistration(s) {
+		return errors.New(errors.TypeInvalidInput, "Cannot register nil service", nil)
 	}
 
 	serviceName := s.GetName()
 	if serviceName == "" {
-		logger.Errorf("Attempted to register service with empty name")
-		return
+		return errors.New(errors.TypeInvalidInput, "Cannot register service with empty name", nil)
 	}
 
 	if _, exists := sm.services[serviceName]; exists {
-		logger.Warnf("Service with name %s already registered, overwriting", serviceName)
+		return errors.New(errors.TypeInvalidInput, "Service is already registered", nil).
+			WithField("service_name", serviceName)
 	}
 
 	sm.services[serviceName] = s
 
 	// Register the service with the health check manager
 	sm.healthMgr.RegisterService(s)
+	return nil
 }
 
 // GetServiceHealth retrieves health information for a specific service
@@ -74,9 +73,9 @@ func (sm *ServiceManager) GetServiceHealth(ctx context.Context, serviceName stri
 	}
 
 	// Get service
-	sm.mu.Lock()
+	sm.mu.RLock()
 	svc, exists := sm.services[serviceName]
-	sm.mu.Unlock()
+	sm.mu.RUnlock()
 
 	if !exists {
 		return report, false
@@ -112,12 +111,12 @@ func (sm *ServiceManager) GetAllServicesHealth(ctx context.Context) map[string]h
 
 	result := make(map[string]health.Report)
 
-	sm.mu.Lock()
+	sm.mu.RLock()
 	serviceNames := make([]string, 0, len(sm.services))
 	for name := range sm.services {
 		serviceNames = append(serviceNames, name)
 	}
-	sm.mu.Unlock()
+	sm.mu.RUnlock()
 
 	for _, name := range serviceNames {
 		if report, exists := sm.GetServiceHealth(ctx, name); exists {
@@ -198,44 +197,98 @@ func (sm *ServiceManager) StartAll(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "start_all_services")
 	logger.InfoWithContext(ctx, "Starting all services")
 
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	sm.mu.RLock()
+	services := make([]service.Service, 0, len(sm.services))
+	for _, svc := range sm.services {
+		services = append(services, svc)
+	}
+	sm.mu.RUnlock()
 
-	if len(sm.services) == 0 {
+	if len(services) == 0 {
 		logger.ErrorWithContext(ctx, "No services registered to start")
 		return errors.New(errors.TypeInvalidInput, "No services registered to start", nil)
 	}
 
-	var startErrors []string
-	var errMu sync.Mutex
+	type startResult struct {
+		service       service.Service
+		err           error
+		startedByCall bool
+	}
+	results := make(chan startResult, len(services))
 	wg := sync.WaitGroup{}
 
-	for _, svc := range sm.services {
+	for _, svc := range services {
 		wg.Add(1)
 		go func(s service.Service) {
 			defer wg.Done()
-			// Create service-specific context
 			serviceCtx := appctx.WithServiceName(ctx, s.GetName())
-
-			if err := sm.startService(serviceCtx, s); err != nil {
+			wasRunning := s.IsRunning(serviceCtx)
+			err := sm.startService(serviceCtx, s)
+			startedByCall := !wasRunning && s.IsRunning(context.WithoutCancel(serviceCtx))
+			if err != nil {
 				logger.WithContextError(serviceCtx, err).Errorf("Failed to start service")
-				errMu.Lock()
-				startErrors = append(startErrors, s.GetName())
-				errMu.Unlock()
 			}
+			results <- startResult{service: s, err: err, startedByCall: startedByCall}
 		}(svc)
 	}
 
 	wg.Wait()
+	close(results)
+
+	var startErrors []string
+	var startedServices []service.Service
+	for result := range results {
+		if result.err != nil {
+			startErrors = append(startErrors, result.service.GetName())
+		}
+		if result.startedByCall {
+			startedServices = append(startedServices, result.service)
+		}
+	}
 
 	if len(startErrors) > 0 {
+		sort.Strings(startErrors)
+		rollbackErrors := rollbackStartedServices(ctx, startedServices)
+		sort.Strings(rollbackErrors)
 		logger.ErrorfWithContext(ctx, "Failed to start %d services", len(startErrors))
-		return errors.New(errors.TypeServiceUnavailable, "Failed to start some services", nil).
+		err := errors.New(errors.TypeServiceUnavailable, "Failed to start some services", nil).
 			WithField("failed_services", startErrors)
+		if len(rollbackErrors) > 0 {
+			err.WithField("rollback_failures", rollbackErrors)
+		}
+		return err
 	}
 
 	logger.InfoWithContext(ctx, "All services started successfully")
 	return nil
+}
+
+func rollbackStartedServices(ctx context.Context, services []service.Service) []string {
+	if len(services) == 0 {
+		return nil
+	}
+
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
+	var rollbackErrors []string
+	var errMu sync.Mutex
+	var wg sync.WaitGroup
+	for _, svc := range services {
+		wg.Add(1)
+		go func(s service.Service) {
+			defer wg.Done()
+			serviceCtx := appctx.WithServiceName(rollbackCtx, s.GetName())
+			if err := s.Stop(serviceCtx); err != nil {
+				logger.WithContextError(serviceCtx, err).Error("Failed to roll back started service")
+				errMu.Lock()
+				rollbackErrors = append(rollbackErrors, s.GetName())
+				errMu.Unlock()
+			}
+		}(svc)
+	}
+	wg.Wait()
+	return rollbackErrors
 }
 
 func (sm *ServiceManager) startService(ctx context.Context, s service.Service) error {
@@ -291,6 +344,9 @@ func (sm *ServiceManager) GetServicesByWorkflowAndType(ctx context.Context, work
 			result = append(result, s)
 		}
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].GetName() < result[j].GetName()
+	})
 
 	logger.DebugfWithContext(ctx, "Found %d services with workflow=%s and type=%s", len(result), workflow, serviceType)
 	return result
@@ -377,14 +433,18 @@ func (sm *ServiceManager) StopAll(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "stop_all_services")
 	logger.InfoWithContext(ctx, "Stopping all services")
 
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	sm.mu.RLock()
+	services := make([]service.Service, 0, len(sm.services))
+	for _, svc := range sm.services {
+		services = append(services, svc)
+	}
+	sm.mu.RUnlock()
 
 	var stopErrors []string
 	var errMu sync.Mutex
 	wg := sync.WaitGroup{}
 
-	for _, svc := range sm.services {
+	for _, svc := range services {
 		wg.Add(1)
 		go func(s service.Service) {
 			defer wg.Done()
@@ -407,6 +467,7 @@ func (sm *ServiceManager) StopAll(ctx context.Context) error {
 	wg.Wait()
 
 	if len(stopErrors) > 0 {
+		sort.Strings(stopErrors)
 		logger.ErrorfWithContext(ctx, "Failed to stop %d services", len(stopErrors))
 		return errors.New(errors.TypeServiceUnavailable, "Failed to stop some services", nil).
 			WithField("failed_services", stopErrors)
@@ -421,13 +482,16 @@ func (sm *ServiceManager) ListServices(ctx context.Context) []service.Service {
 	ctx = appctx.WithOperationName(ctx, "list_services")
 	logger.DebugWithContext(ctx, "Listing all services")
 
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
 
 	services := make([]service.Service, 0, len(sm.services))
 	for _, s := range sm.services {
 		services = append(services, s)
 	}
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].GetName() < services[j].GetName()
+	})
 
 	return services
 }

@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"project/internal/manager"
-	"project/internal/service"
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/service"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 func TestExecutorType(t *testing.T) {

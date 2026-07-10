@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"project/internal/model"
-	"project/pkg/config"
+	"github.com/elvinyao/go-service-platform/internal/model"
+	"github.com/elvinyao/go-service-platform/internal/service"
+	"github.com/elvinyao/go-service-platform/pkg/config"
 
 	"github.com/gorilla/websocket"
 )
@@ -32,8 +33,7 @@ func TestAppProcessesWebSocketMessageThroughRulesAndExecutors(t *testing.T) {
 	t.Setenv("MATTERMOST_SERVER_URL", mattermostServer.URL)
 	t.Setenv("MATTERMOST_WS_URL", "ws://127.0.0.1:1")
 
-	cfg := config.DefaultRuntimeConfig()
-	cfg.ApplyEnv()
+	cfg := demoRuntimeConfig()
 	cfg.Admin.Address = "127.0.0.1:0"
 
 	application := New("test-service-workflow", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")
@@ -97,8 +97,7 @@ func TestAppAdminEndpointsReturnContracts(t *testing.T) {
 	t.Setenv("MATTERMOST_SERVER_URL", mattermostServer.URL)
 	t.Setenv("MATTERMOST_WS_URL", "ws://127.0.0.1:1")
 
-	cfg := config.DefaultRuntimeConfig()
-	cfg.ApplyEnv()
+	cfg := demoRuntimeConfig()
 	cfg.Admin.Address = "127.0.0.1:0"
 
 	application := New("test-service-workflow", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")
@@ -119,9 +118,12 @@ func TestAppAdminEndpointsReturnContracts(t *testing.T) {
 	baseURL := "http://" + application.adminServer.Addr()
 
 	var healthResponse struct {
-		ServiceName string `json:"service_name"`
-		Status      string `json:"status"`
-		Version     string `json:"version"`
+		ServiceName  string `json:"service_name"`
+		Status       string `json:"status"`
+		Version      string `json:"version"`
+		CheckResults []struct {
+			Name string `json:"name"`
+		} `json:"check_results"`
 	}
 	getJSON(t, baseURL+"/health", &healthResponse)
 	if healthResponse.ServiceName != "system" {
@@ -130,6 +132,12 @@ func TestAppAdminEndpointsReturnContracts(t *testing.T) {
 	if healthResponse.Status == "" {
 		t.Fatalf("health status is empty")
 	}
+	if !containsHealthCheck(healthResponse.CheckResults, "service."+service.WebSocketInputServiceName) {
+		t.Fatalf("health response missing %s: %+v", service.WebSocketInputServiceName, healthResponse.CheckResults)
+	}
+	if !containsHealthCheck(healthResponse.CheckResults, "service."+service.MattermostServiceName+".mattermost-connection") {
+		t.Fatalf("health response missing Mattermost connection check: %+v", healthResponse.CheckResults)
+	}
 
 	var servicesResponse []struct {
 		Name    string `json:"name"`
@@ -137,8 +145,8 @@ func TestAppAdminEndpointsReturnContracts(t *testing.T) {
 		Type    string `json:"type"`
 	}
 	getJSON(t, baseURL+"/services", &servicesResponse)
-	if !containsService(servicesResponse, "WebSocketServiceA") {
-		t.Fatalf("services response missing WebSocketServiceA: %+v", servicesResponse)
+	if !containsService(servicesResponse, service.WebSocketInputServiceName) {
+		t.Fatalf("services response missing %s: %+v", service.WebSocketInputServiceName, servicesResponse)
 	}
 	if !containsService(servicesResponse, "ConfluenceSettingsService") {
 		t.Fatalf("services response missing ConfluenceSettingsService: %+v", servicesResponse)
@@ -342,4 +350,24 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func containsHealthCheck(results []struct {
+	Name string `json:"name"`
+}, name string) bool {
+	for _, result := range results {
+		if result.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func demoRuntimeConfig() config.RuntimeConfig {
+	cfg := config.DefaultRuntimeConfig()
+	cfg.Adapters.Confluence.Enabled = true
+	cfg.Adapters.Mattermost.Enabled = true
+	cfg.Adapters.BadgeDB.Enabled = true
+	cfg.ApplyEnv()
+	return cfg
 }

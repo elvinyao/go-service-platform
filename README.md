@@ -1,144 +1,221 @@
-# Go Service Framework
+# Go Service Platform
 
-A configurable, rule-driven Go service framework for building event processing runtimes. The framework provides a reusable rule engine, executor SDK, runtime lifecycle helpers, structured logging, health checks, and a runnable reference application.
+Go Service Platform is a configurable, rule-driven framework for building event-processing services. It separates reusable rule and action orchestration from transport and business integrations, while keeping a complete reference runtime that can be started locally with one command.
 
-The reference app receives messages from a demo WebSocket input, matches rules from YAML and optional adapter providers, then executes configured actions such as logging, HTTP calls, demo database writes, or Mattermost notifications.
+The platform provides:
+
+- strict YAML configuration with environment overrides
+- composable rule providers and deterministic action plans
+- pluggable action executors
+- lifecycle-managed services with startup rollback and graceful shutdown
+- structured logging and health, readiness, liveness, and admin APIs
+- runnable examples that use only public framework packages
+
+Confluence, Mattermost, and BadgeDB are optional demo adapters. They are not required by the framework SDK or the default YAML-first profile.
+
+## Requirements
+
+- Go 1.26 or later
+- `curl` for the verification commands
+- Docker with Compose only for the containerized path
 
 ## Quick Start
 
-Run the test suites:
-
-```bash
-make test
-make test-fake
-```
-
-Build the reference runtime:
-
-```bash
-make build
-```
-
-Start the fake APIs and runtime in one terminal:
+Start the fake external APIs and the reference runtime with the full demo profile:
 
 ```bash
 make dev
 ```
 
-Or start them separately:
+In another terminal, verify the runtime and send an event:
 
 ```bash
-make fake-server
-```
-
-In another terminal:
-
-```bash
-make run
-```
-
-Verify the runtime:
-
-```bash
-curl -s http://localhost:18080/health
+curl -s http://localhost:18080/health/readiness
+curl -s http://localhost:18080/services
 curl -s http://localhost:18080/rule-engine
+
 curl -s -X POST http://localhost:8093/api/send \
   -H 'Content-Type: application/json' \
-  -d '{"id":"m1","type":"AAA","content":"hello from README","user_id":"u1","timestamp":"2026-06-20T00:00:00Z"}'
+  -d '{"id":"quickstart-1","type":"AAA","content":"hello from README","user_id":"local-user"}'
 ```
 
-The local admin port is controlled by `config/runtime.yaml` or `ADMIN_ADDR`. Adjust the examples if your local config uses a different port.
+The runtime log should report a matched YAML rule and action. Stop both processes with `Ctrl+C` in the `make dev` terminal.
 
-## Docker Compose
+## Runtime Profiles
+
+The repository intentionally has two local modes:
+
+| Mode | Command | Providers | Executors | Purpose |
+| --- | --- | --- | --- | --- |
+| YAML-first | `make fake-server`, then `make run` | YAML | `log`, `http` | Learn and build without business-specific adapters |
+| Full demo | `make dev` | YAML, Confluence | `log`, `http`, Mattermost, BadgeDB | Exercise all reference integrations |
+
+`make run` loads `config/runtime.yaml`, `config/rule-engine.yaml`, and `config/workflow-rules.yaml`. `make dev` selects `config/profiles/demo/runtime.yaml` and `config/profiles/demo/rule-engine.yaml` while using the same YAML rules.
+
+Run the equivalent full demo with Docker:
 
 ```bash
 docker compose up --build
 ```
 
-Then verify:
+Compose publishes the admin API at `http://localhost:18080` on the host loopback interface. Use `ADMIN_PORT=8080 docker compose up --build` to choose another host port.
 
-```bash
-curl -s http://localhost:18080/health
-curl -s http://localhost:18080/rule-engine
+## Processing Model
+
+```text
+input event
+  -> ruleengine.RuleProvider snapshots
+  -> ruleengine.Composer
+  -> ruleengine.ExecutionPlan
+  -> pipeline.Engine
+  -> executor.Executor implementations
 ```
 
-The Compose stack publishes the admin API on host port `18080` by default to avoid common local `8080` conflicts. Override it with `ADMIN_PORT=8080 docker compose up --build` if you prefer `8080`.
+A provider supplies rules. The composer matches and merges those rules according to a workflow policy. The pipeline executes the resulting actions in priority order and returns both the plan and any action failures.
 
-## Core Packages
+The smallest in-process pipeline looks like this:
 
-- `pkg/ruleengine`: public rule model, matching, composition, YAML provider, and execution plans.
-- `pkg/executor`: public executor interface, registry, template renderer, and built-in `log` and `http` executors.
-- `pkg/runtime`: runtime helpers such as the fail-fast admin server.
-- `pkg/config`: runtime configuration loading, defaults, environment overrides, and validation.
-- `pkg/logger`: structured logging.
-- `pkg/health`: health, readiness, and liveness checks.
-- `pkg/errors`: typed application errors.
+```go
+provider := ruleengine.NewStaticProvider("local", ruleengine.RuleSet{Rules: rules})
 
-## Demo Adapters
+cfg := ruleengine.DefaultEngineConfig()
+cfg.Workflows[0].Providers = []string{"local"}
+cfg.Workflows[0].PipelineOrder = []string{"local"}
 
-Demo integrations live under `internal/adapters` and are used by the reference runtime:
+engine, err := pipeline.New(
+    cfg,
+    []ruleengine.RuleProvider{provider},
+    []executor.Executor{executor.NewLogExecutor()},
+)
+if err != nil {
+    return err
+}
+if err := engine.Start(ctx); err != nil {
+    return err
+}
 
-- WebSocket input service, currently backed by `internal/service.WebSocketService`.
-- Confluence settings rule provider.
-- Mattermost action executor.
-- BadgeDB demo action executor.
+plan, err := engine.Process(ctx, ruleengine.DefaultWorkflowName, message)
+```
 
-These adapters show how to integrate a real system without making those integrations part of the core framework SDK.
+See `examples/basic-rule-pipeline` for the complete runnable program.
 
 ## Configuration
 
-The reference runtime uses three configuration files:
+Configuration is split by responsibility:
 
-- `config/runtime.yaml`: admin server, inputs, and demo adapter settings.
-- `config/rule-engine.yaml`: rule provider composition and merge policy.
-- `config/workflow-rules.yaml`: local YAML rules.
+- `config/runtime.yaml`: admin server, input, and adapter wiring
+- `config/rule-engine.yaml`: provider composition and action merge policy
+- `config/workflow-rules.yaml`: local YAML rules
+- `config/profiles/demo/`: opt-in configuration for all demo adapters
 
-Common environment overrides:
+Select files with `RUNTIME_CONFIG`, `RULE_ENGINE_CONFIG`, and `WORKFLOW_RULES`. Operational values such as `ADMIN_ADDR`, integration URLs, and logging options can be overridden through environment variables.
 
-- `RUNTIME_CONFIG`
-- `RULE_ENGINE_CONFIG`
-- `WORKFLOW_RULES`
-- `ADMIN_ADDR`
-- `WEBSOCKET_SERVER_URL`
-- `WEBSOCKET_PATH`
-- `CONFLUENCE_API_ENDPOINT`
-- `CONFLUENCE_SETTINGS_PAGE_ID`
-- `MATTERMOST_SERVER_URL`
-- `MATTERMOST_WS_URL`
-- `MATTERMOST_API_TOKEN`
-- `MATTERMOST_CHANNEL`
-- `BADGEDB_PATH`
+Configuration loading is strict. Unknown YAML fields, multiple YAML documents, invalid durations or URLs, duplicate names, invalid composition modes, missing explicitly selected files, unavailable providers, and rules that reference unregistered executors fail startup with a descriptive error.
 
-## Documentation
+See [Configuration](docs/configuration.md) for every field and override.
 
-- [Configuration](docs/configuration.md)
-- [Rule Engine](docs/rule-engine.md)
-- [Executors](docs/executors.md)
-- [Adapters](docs/adapters.md)
-- [Development Guidebook](docs/development.md)
+## Rules
+
+The default rule matches an `AAA` event and logs it:
+
+```yaml
+rules:
+  - id: yaml_log_aaa
+    workflow: WorkflowEngine
+    enabled: true
+    priority: 100
+    conditions:
+      - field: type
+        op: eq
+        value: AAA
+    actions:
+      - id: log_aaa
+        executor: log
+        priority: 100
+        params:
+          level: info
+          template: "YAML matched event type={{.Type}} id={{.ID}}"
+```
+
+Rules support `eq`, `contains`, and `regex` conditions. Built-in executors are `log` and `http`; applications can register their own `executor.Executor` implementations.
+
+## Public Packages
+
+- `pkg/ruleengine`: messages, rules, matching, composition, static and YAML providers
+- `pkg/executor`: executor API, registry, templates, and built-in `log` and `http` executors
+- `pkg/pipeline`: provider startup, configuration preflight, plan execution, and snapshots
+- `pkg/config`: strict runtime configuration loading and validation
+- `pkg/runtime`: fail-fast admin HTTP server lifecycle
+- `pkg/health`: health checks and HTTP handlers
+- `pkg/logger`: structured logging and context fields
+- `pkg/errors`: typed application errors
+- `pkg/concurrency`: worker-pool and concurrency helpers
+
+Packages below `internal/` implement the reference application and demo adapters. External applications cannot and should not import them.
+
+## Admin API
+
+The reference runtime exposes:
+
+- `GET /health`
+- `GET /health/readiness`
+- `GET /health/liveness`
+- `GET /health/service?service=<name>`
+- `GET /services`
+- `GET /workflows`
+- `GET /rule-engine`
+
+Critical service failures make health and readiness return HTTP 503. Warning-level degradation remains ready. The current runtime does not expose `/metrics`; defining and implementing a stable metrics contract is future work.
+
+Liveness reports only whether the process and admin server can respond; dependency failures do not turn liveness into 503 and therefore do not create orchestrator restart loops. The repository profiles bind the unauthenticated admin API to `127.0.0.1` by default. Containers opt in to an all-interface listener explicitly.
+
+## Examples
+
+```bash
+go run ./examples/basic-rule-pipeline
+go run ./examples/websocket-to-log
+go run ./examples/websocket-to-mattermost
+```
+
+The WebSocket examples require `make fake-server` in another terminal. See [Runnable Examples](examples/README.md) for inputs and environment variables.
+
+## Development
+
+```bash
+make verify
+make test-race
+make coverage
+```
+
+`make coverage` enforces at least 90% statement coverage for every package that contains tests in both Go modules.
+
+The full developer workflow, debugger setup, architecture tour, troubleshooting steps, and six realistic use cases are in the [Development Guidebook](docs/development.md).
 
 ## Project Layout
 
 ```text
 cmd/service-workflow/       Reference runtime entry point
-config/                     Default local configuration
-docs/                       Framework documentation
-fake-server/                Local fake APIs for development
-internal/adapters/          Demo integrations
-internal/app/               Reference runtime wiring
-internal/service/           Demo services used by adapters
+config/                     Base and demo-profile configuration
+docs/                       Architecture and developer documentation
+examples/                   Programs using public framework packages
+fake-server/                Local Confluence-, Mattermost-, and WebSocket-like APIs
+internal/adapters/          Optional demo provider and executors
+internal/app/               Reference runtime wiring and admin API
+internal/di/                Reference runtime dependency wiring
+internal/service/           Lifecycle-managed reference services
 pkg/config/                 Public runtime configuration package
 pkg/executor/               Public executor SDK
-pkg/ruleengine/             Public rule engine SDK
+pkg/pipeline/               Public rule-to-action orchestration
+pkg/ruleengine/             Public rule model and composition SDK
 pkg/runtime/                Public runtime helpers
 ```
 
-## Extension Model
+## Further Reading
 
-Framework users extend behavior by adding:
-
-- rules in YAML or custom `ruleengine.RuleProvider` implementations
-- action executors implementing `executor.Executor`
-- input adapters that translate external events into `ruleengine.Message`
-
-The old Go workflow struct model is no longer the primary extension point. The reference app is rule-driven by default.
+- [Configuration](docs/configuration.md)
+- [Rule Engine](docs/rule-engine.md)
+- [Executors](docs/executors.md)
+- [Bounded Concurrency](docs/concurrency.md)
+- [Adapters](docs/adapters.md)
+- [Development Guidebook](docs/development.md)
+- [Framework Design](docs/superpowers/specs/2026-06-20-go-service-framework-design.md)

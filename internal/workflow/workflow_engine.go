@@ -4,23 +4,23 @@ import (
 	"context"
 	"fmt"
 
-	"project/internal/adapters/badgedb"
-	"project/internal/adapters/confluence"
-	"project/internal/adapters/mattermost"
-	"project/internal/manager"
-	"project/internal/model"
-	runtimeconfig "project/pkg/config"
-	appctx "project/pkg/context"
-	"project/pkg/errors"
-	coreexecutor "project/pkg/executor"
-	"project/pkg/logger"
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/internal/adapters/badgedb"
+	"github.com/elvinyao/go-service-platform/internal/adapters/confluence"
+	"github.com/elvinyao/go-service-platform/internal/adapters/mattermost"
+	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/model"
+	runtimeconfig "github.com/elvinyao/go-service-platform/pkg/config"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/errors"
+	coreexecutor "github.com/elvinyao/go-service-platform/pkg/executor"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
+	"github.com/elvinyao/go-service-platform/pkg/pipeline"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 type WorkflowEngine struct {
-	name      string
-	composer  *ruleengine.Composer
-	executors *coreexecutor.Registry
+	name   string
+	engine *pipeline.Engine
 }
 
 type EngineAdminSnapshot struct {
@@ -36,28 +36,26 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 	}
 
 	runtimeCfg := runtimeconfig.DefaultRuntimeConfig()
-	runtimeCfg.ApplyEnv()
-	_ = runtimeCfg.Normalize()
 	if len(configs) > 0 {
 		runtimeCfg = configs[0]
 	}
-	cfg = filterEngineConfigForRuntime(cfg, runtimeCfg)
+	if err := runtimeCfg.Validate(); err != nil {
+		return nil, errors.Wrap(err, "invalid runtime config", errors.TypeInvalidInput)
+	}
+	cfg, err = filterEngineConfigForRuntime(cfg, runtimeCfg)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to apply runtime config to rule engine", errors.TypeInvalidInput)
+	}
+	if err := validateRuntimeAdapterDependencies(cfg, runtimeCfg); err != nil {
+		return nil, errors.Wrap(err, "invalid runtime adapter wiring", errors.TypeInvalidInput)
+	}
 
 	providers := map[string]ruleengine.RuleProvider{
 		"yaml": ruleengine.NewYAMLProvider("yaml", rulesPath, ruleengine.DefaultWorkflowName),
 	}
-	if runtimeCfg.Adapters.Confluence.Enabled {
+	if runtimeCfg.Adapters.Confluence.Enabled && engineUsesProvider(cfg, "confluence") {
 		providers["confluence"] = confluence.NewProvider("confluence", ruleengine.DefaultWorkflowName, sm)
 	}
-
-	for _, provider := range providers {
-		if err := provider.Start(ctx); err != nil {
-			return nil, errors.Wrap(err, "failed to start rule provider", errors.TypeServiceUnavailable).
-				WithField("provider", provider.Name())
-		}
-	}
-
-	registry := coreexecutor.NewRegistry()
 	allExecutors := []coreexecutor.Executor{
 		coreexecutor.NewLogExecutor(),
 		coreexecutor.NewHTTPExecutor(),
@@ -68,20 +66,32 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 	if runtimeCfg.Adapters.Mattermost.Enabled {
 		allExecutors = append(allExecutors, mattermost.NewExecutor(sm))
 	}
-	for _, exe := range allExecutors {
-		if err := registry.Register(exe); err != nil {
-			return nil, errors.Wrap(err, "failed to register executor", errors.TypeInternal)
-		}
+	providerList := make([]ruleengine.RuleProvider, 0, len(providers))
+	for _, provider := range providers {
+		providerList = append(providerList, provider)
+	}
+	engine, err := pipeline.New(cfg, providerList, allExecutors)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create rule pipeline", errors.TypeInvalidInput)
+	}
+	if err := engine.Start(ctx); err != nil {
+		return nil, errors.Wrap(err, "failed to start rule pipeline", errors.TypeInvalidInput)
 	}
 
 	return &WorkflowEngine{
-		name:      ruleengine.DefaultWorkflowName,
-		composer:  ruleengine.NewComposer(cfg, providers),
-		executors: registry,
+		name:   ruleengine.DefaultWorkflowName,
+		engine: engine,
 	}, nil
 }
 
-func filterEngineConfigForRuntime(cfg ruleengine.EngineConfig, runtimeCfg runtimeconfig.RuntimeConfig) ruleengine.EngineConfig {
+func validateRuntimeAdapterDependencies(cfg ruleengine.EngineConfig, runtimeCfg runtimeconfig.RuntimeConfig) error {
+	if engineUsesProvider(cfg, "confluence") && runtimeCfg.Adapters.Confluence.Enabled && !runtimeCfg.Adapters.Mattermost.Enabled {
+		return fmt.Errorf("confluence provider requires the mattermost executor to be enabled")
+	}
+	return nil
+}
+
+func filterEngineConfigForRuntime(cfg ruleengine.EngineConfig, runtimeCfg runtimeconfig.RuntimeConfig) (ruleengine.EngineConfig, error) {
 	enabledProviders := map[string]bool{
 		"yaml":       true,
 		"confluence": runtimeCfg.Adapters.Confluence.Enabled,
@@ -92,24 +102,39 @@ func filterEngineConfigForRuntime(cfg ruleengine.EngineConfig, runtimeCfg runtim
 		wf.Providers = filterProviderList(wf.Providers, enabledProviders)
 		wf.PipelineOrder = filterProviderList(wf.PipelineOrder, enabledProviders)
 		if len(wf.Providers) == 0 {
-			wf.Providers = []string{"yaml"}
+			return ruleengine.EngineConfig{}, fmt.Errorf("workflow %q has no enabled providers after applying runtime config", wf.Name)
 		}
 		if len(wf.PipelineOrder) == 0 {
 			wf.PipelineOrder = append([]string(nil), wf.Providers...)
 		}
 	}
 
-	return cfg
+	if err := cfg.Validate(); err != nil {
+		return ruleengine.EngineConfig{}, fmt.Errorf("validate filtered rule engine config: %w", err)
+	}
+	return cfg, nil
 }
 
 func filterProviderList(providers []string, enabled map[string]bool) []string {
 	filtered := make([]string, 0, len(providers))
 	for _, provider := range providers {
-		if enabled[provider] {
+		providerEnabled, knownProvider := enabled[provider]
+		if !knownProvider || providerEnabled {
 			filtered = append(filtered, provider)
 		}
 	}
 	return filtered
+}
+
+func engineUsesProvider(cfg ruleengine.EngineConfig, name string) bool {
+	for _, workflow := range cfg.Workflows {
+		for _, provider := range workflow.Providers {
+			if provider == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (w *WorkflowEngine) GetName() string {
@@ -117,10 +142,11 @@ func (w *WorkflowEngine) GetName() string {
 }
 
 func (w *WorkflowEngine) AdminSnapshot(ctx context.Context) EngineAdminSnapshot {
+	snapshot := w.engine.Snapshot(ctx)
 	return EngineAdminSnapshot{
 		Name:      w.name,
-		Composer:  w.composer.Snapshot(ctx),
-		Executors: w.executors.ListTypes(),
+		Composer:  snapshot.Composer,
+		Executors: snapshot.Executors,
 	}
 }
 
@@ -128,9 +154,10 @@ func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg model.Message) 
 	ctx = appctx.WithServiceName(ctx, w.name)
 	ctx = appctx.WithOperationName(ctx, "process_message")
 
-	plan, err := w.composer.BuildExecutionPlan(ctx, w.name, toRuleEngineMessage(msg))
-	if err != nil {
-		return errors.Wrap(err, "failed to build execution plan", errors.TypeInternal)
+	plan, processErr := w.engine.Process(ctx, w.name, toRuleEngineMessage(msg))
+	var executionError *pipeline.ExecutionError
+	if processErr != nil && !errors.As(processErr, &executionError) {
+		return errors.Wrap(processErr, "failed to process rule pipeline", errors.TypeInternal)
 	}
 
 	if len(plan.Actions) == 0 {
@@ -140,20 +167,11 @@ func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg model.Message) 
 
 	logger.InfofWithContext(ctx, "WorkflowEngine matched %d rules and %d actions", len(plan.Rules), len(plan.Actions))
 
-	var execErrs []string
-	for idx, action := range plan.Actions {
-		exe, ok := w.executors.Get(action.Executor)
-		if !ok {
-			execErrs = append(execErrs, fmt.Sprintf("action[%d] executor=%s not registered", idx, action.Executor))
-			continue
+	if processErr != nil {
+		execErrs := make([]string, 0, len(executionError.Failures))
+		for idx, failure := range executionError.Failures {
+			execErrs = append(execErrs, fmt.Sprintf("action[%d] id=%s executor=%s failed: %v", idx, failure.ActionID, failure.Executor, failure.Err))
 		}
-
-		if err := exe.Execute(ctx, toRuleEngineMessage(msg), action); err != nil {
-			execErrs = append(execErrs, fmt.Sprintf("action[%d] executor=%s failed: %v", idx, action.Executor, err))
-		}
-	}
-
-	if len(execErrs) > 0 {
 		return errors.New(errors.TypePartialFailure, "workflow execution had partial failures", nil).
 			WithField("errors", execErrs).
 			WithField("message_id", msg.ID).

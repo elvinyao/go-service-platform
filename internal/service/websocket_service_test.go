@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"project/internal/config"
-	"project/internal/model"
-	"project/pkg/health"
+	"github.com/elvinyao/go-service-platform/internal/config"
+	"github.com/elvinyao/go-service-platform/internal/model"
+	"github.com/elvinyao/go-service-platform/pkg/health"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -40,7 +40,7 @@ func TestNewWebSocketService(t *testing.T) {
 
 	// Check that the custom health checker was added
 	healthCheckers := service.RegisterHealthChecks()
-	assert.Greater(t, len(healthCheckers), 1)
+	assert.Len(t, healthCheckers, 1)
 
 	// One should be the websocket connection checker
 	foundConnectionChecker := false
@@ -148,8 +148,10 @@ func TestWebSocketService_GetMetrics(t *testing.T) {
 	defer service.Stop(ctx)
 
 	// Set some connection count for testing
+	service.mu.Lock()
 	service.connections = 5
 	service.lastMessage = time.Now().Add(-10 * time.Second)
+	service.mu.Unlock()
 
 	// Act
 	metrics := service.GetMetrics(ctx)
@@ -167,21 +169,23 @@ func TestWebSocketService_GetMetrics(t *testing.T) {
 }
 
 func TestWebSocketService_Configure(t *testing.T) {
-	// Arrange
 	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", testWebSocketConfig(), "1.0.0")
 	ctx := context.Background()
-
-	// Simple config object
-	config := map[string]interface{}{
-		"max_connections": 100,
+	updated := config.WebSocketConfig{
+		ServerURL:         "wss://events.example.test/",
+		Path:              "/events",
+		ReconnectInterval: 2 * time.Second,
 	}
 
-	// Act
-	err := service.Configure(ctx, config)
-
-	// Assert
-	assert.NoError(t, err)
-	// In a real test, we would check that the configuration was applied correctly
+	assert.NoError(t, service.Configure(ctx, updated))
+	metrics := service.GetMetrics(ctx)
+	assert.Equal(t, updated.ServerURL, metrics["server_url"])
+	assert.Equal(t, updated.Path, metrics["path"])
+	assert.Equal(t, updated.ReconnectInterval.String(), metrics["reconnect_interval"])
+	assert.Error(t, service.Configure(ctx, map[string]interface{}{}))
+	assert.Error(t, service.Configure(ctx, config.WebSocketConfig{ServerURL: "http://example.test", Path: "/ws", ReconnectInterval: time.Second}))
+	assert.Error(t, service.Configure(ctx, config.WebSocketConfig{ServerURL: "ws://example.test", Path: "ws", ReconnectInterval: time.Second}))
+	assert.Error(t, service.Configure(ctx, config.WebSocketConfig{ServerURL: "ws://example.test", Path: "/ws"}))
 }
 
 func TestWebSocketService_ReportHealth(t *testing.T) {

@@ -2,11 +2,12 @@ package manager
 
 import (
 	"context"
-	"project/internal/interfaces"
-	"project/internal/model"
-	appctx "project/pkg/context"
-	"project/pkg/errors"
-	"project/pkg/logger"
+	"github.com/elvinyao/go-service-platform/internal/interfaces"
+	"github.com/elvinyao/go-service-platform/internal/model"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/errors"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
+	"sort"
 	"sync"
 )
 
@@ -15,7 +16,7 @@ type WorkflowFactory func(serviceManager *ServiceManager) (interfaces.Workflow, 
 
 type WorkflowManager struct {
 	workflows map[string]interfaces.Workflow
-	mu        sync.Mutex
+	mu        sync.RWMutex
 }
 
 func NewWorkflowManager() *WorkflowManager {
@@ -33,9 +34,15 @@ func NewWorkflowManagerWithDI(ctx context.Context, serviceManager *ServiceManage
 
 	// Register all workflows provided by factories
 	for _, factory := range factories {
+		if factory == nil {
+			return nil, errors.New(errors.TypeInvalidInput, "Cannot use nil workflow factory", nil)
+		}
 		workflow, err := factory(serviceManager)
 		if err != nil {
 			return nil, errors.Wrap(err, "Failed to create workflow", errors.TypeInternal)
+		}
+		if isNilRegistration(workflow) {
+			return nil, errors.New(errors.TypeInvalidInput, "Workflow factory returned nil", nil)
 		}
 
 		if err := manager.RegisterWorkflow(workflow); err != nil {
@@ -50,7 +57,7 @@ func NewWorkflowManagerWithDI(ctx context.Context, serviceManager *ServiceManage
 }
 
 func (wm *WorkflowManager) RegisterWorkflow(w interfaces.Workflow) error {
-	if w == nil {
+	if isNilRegistration(w) {
 		return errors.New(errors.TypeInvalidInput, "Cannot register nil workflow", nil)
 	}
 
@@ -63,7 +70,8 @@ func (wm *WorkflowManager) RegisterWorkflow(w interfaces.Workflow) error {
 	defer wm.mu.Unlock()
 
 	if _, exists := wm.workflows[workflowName]; exists {
-		logger.Warnf("Workflow with name %s already registered, overwriting", workflowName)
+		return errors.New(errors.TypeInvalidInput, "Workflow is already registered", nil).
+			WithField("workflow_name", workflowName)
 	}
 
 	wm.workflows[workflowName] = w
@@ -73,8 +81,8 @@ func (wm *WorkflowManager) RegisterWorkflow(w interfaces.Workflow) error {
 
 // GetWorkflow retrieves a workflow by name
 func (wm *WorkflowManager) GetWorkflow(name string) (interfaces.Workflow, bool) {
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
 
 	workflow, exists := wm.workflows[name]
 	return workflow, exists
@@ -87,12 +95,15 @@ func (wm *WorkflowManager) DispatchMessage(ctx context.Context, msg model.Messag
 
 	// Dispatch to registered workflows until one handles the message.
 
-	wm.mu.Lock()
+	wm.mu.RLock()
 	workflows := make([]interfaces.Workflow, 0, len(wm.workflows))
 	for _, wf := range wm.workflows {
 		workflows = append(workflows, wf)
 	}
-	wm.mu.Unlock()
+	wm.mu.RUnlock()
+	sort.Slice(workflows, func(i, j int) bool {
+		return workflows[i].GetName() < workflows[j].GetName()
+	})
 
 	if len(workflows) == 0 {
 		return errors.New(errors.TypeNotFound, "No workflows registered to process messages", nil)
@@ -126,8 +137,8 @@ func (wm *WorkflowManager) GetWorkflowByName(ctx context.Context, name string) (
 		return nil, errors.New(errors.TypeInvalidInput, "Workflow name cannot be empty", nil)
 	}
 
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
 
 	logger.DebugfWithContext(ctx, "Looking up workflow: %s", name)
 
@@ -146,13 +157,14 @@ func (wm *WorkflowManager) ListWorkflows(ctx context.Context) []string {
 	ctx = appctx.WithOperationName(ctx, "list_workflows")
 	logger.DebugWithContext(ctx, "Listing all registered workflows")
 
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
 
 	workflowNames := make([]string, 0, len(wm.workflows))
 	for name := range wm.workflows {
 		workflowNames = append(workflowNames, name)
 	}
+	sort.Strings(workflowNames)
 
 	logger.InfofWithContext(ctx, "Found %d registered workflows", len(workflowNames))
 	return workflowNames
@@ -163,8 +175,8 @@ func (wm *WorkflowManager) GetAllWorkflows(ctx context.Context) map[string]inter
 	ctx = appctx.WithOperationName(ctx, "get_all_workflows")
 	logger.DebugWithContext(ctx, "Getting all workflow instances")
 
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
 
 	// Create a copy of the workflows map to avoid concurrent access issues
 	result := make(map[string]interfaces.Workflow, len(wm.workflows))

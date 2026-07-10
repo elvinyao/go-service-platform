@@ -57,7 +57,9 @@ func run(args []string, sigChan <-chan os.Signal, flagOutput io.Writer) error {
 	<-sigChan
 
 	log.Println("Shutting down...")
-	manager.Stop()
+	if err := manager.Stop(); err != nil {
+		return fmt.Errorf("failed to stop fake API servers: %w", err)
+	}
 	log.Println("Goodbye")
 	return nil
 }

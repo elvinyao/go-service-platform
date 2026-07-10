@@ -3,21 +3,23 @@ services:
     build:
       context: ./fake-server
     ports:
-      - "8090:8090"
-      - "8091:8091"
-      - "8092:8092"
-      - "8093:8093"
+      - "127.0.0.1:8090:8090"
+      - "127.0.0.1:8091:8091"
+      - "127.0.0.1:8092:8092"
+      - "127.0.0.1:8093:8093"
 
   service-workflow:
     build:
       context: .
     environment:
+      RUNTIME_CONFIG: "/app/config/profiles/demo/runtime.yaml"
+      RULE_ENGINE_CONFIG: "/app/config/profiles/demo/rule-engine.yaml"
       ADMIN_ADDR: ":8080"
       WEBSOCKET_SERVER_URL: "ws://fake-server:8093"
       CONFLUENCE_API_ENDPOINT: "http://fake-server:8090"
       MATTERMOST_SERVER_URL: "http://fake-server:8091"
       MATTERMOST_WS_URL: "ws://fake-server:8092"
     ports:
-      - "${ADMIN_PORT:-18080}:8080"
+      - "127.0.0.1:${ADMIN_PORT:-18080}:8080"
     depends_on:
       - fake-server

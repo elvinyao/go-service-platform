@@ -3,8 +3,8 @@ package logger
 import (
 	"bytes"
 	"encoding/json"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
 	"path/filepath"
-	appctx "project/pkg/context"
 	"strings"
 	"testing"
 
@@ -51,6 +51,6 @@ func TestBusinessCallerLocation(t *testing.T) {
 	assert.False(t, filepath.IsAbs(file))
 	assert.NotContains(t, file, "/pkg/logger/logger.go")
 	assert.NotContains(t, file, "/pkg/logger/context_logger.go")
-	assert.NotContains(t, function, "project/pkg/logger.Info")
-	assert.NotContains(t, function, "project/pkg/logger.InfoWithContext")
+	assert.NotContains(t, function, "github.com/elvinyao/go-service-platform/pkg/logger.Info")
+	assert.NotContains(t, function, "github.com/elvinyao/go-service-platform/pkg/logger.InfoWithContext")
 }

@@ -8,13 +8,20 @@ import (
 	"net/http"
 	"time"
 
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
-type HTTPExecutor struct{}
+type HTTPExecutor struct {
+	client *http.Client
+}
 
 func NewHTTPExecutor() *HTTPExecutor {
 	return &HTTPExecutor{}
+}
+
+// NewHTTPExecutorWithClient creates an executor with an application-owned HTTP client.
+func NewHTTPExecutorWithClient(client *http.Client) *HTTPExecutor {
+	return &HTTPExecutor{client: client}
 }
 
 func (e *HTTPExecutor) Type() string {
@@ -22,6 +29,9 @@ func (e *HTTPExecutor) Type() string {
 }
 
 func (e *HTTPExecutor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	method, _ := action.Params["method"].(string)
 	if method == "" {
 		method = http.MethodPost
@@ -76,7 +86,10 @@ func (e *HTTPExecutor) Execute(ctx context.Context, msg ruleengine.Message, acti
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	client := &http.Client{Timeout: timeout}
+	client := e.client
+	if client == nil {
+		client = &http.Client{Timeout: timeout}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("execute request: %w", err)

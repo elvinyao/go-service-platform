@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"time"
 
-	"project/internal/app"
-	"project/pkg/config"
-	"project/pkg/logger"
+	"github.com/elvinyao/go-service-platform/internal/app"
+	"github.com/elvinyao/go-service-platform/pkg/config"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
 )
 
 const (
@@ -20,6 +20,15 @@ const (
 
 var fatal = func(err error) {
 	logger.WithError(err).Fatal("Application failed")
+}
+
+type lifecycleApplication interface {
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
+}
+
+var newApplication = func(name string, cfg config.RuntimeConfig, ruleConfigPath, rulePath string) lifecycleApplication {
+	return app.New(name, cfg, ruleConfigPath, rulePath)
 }
 
 func main() {
@@ -47,7 +56,7 @@ func run(parent context.Context) error {
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 
-	application := app.New(appName, cfg, ruleConfigPath, rulePath)
+	application := newApplication(appName, cfg, ruleConfigPath, rulePath)
 	if err := application.Start(ctx); err != nil {
 		return fmt.Errorf("start application: %w", err)
 	}

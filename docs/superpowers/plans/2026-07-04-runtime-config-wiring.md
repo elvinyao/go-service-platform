@@ -1,5 +1,7 @@
 # Runtime Config Wiring Implementation Plan
 
+> Historical implementation record. Package paths in this plan predate the move from `pkg/di` to `internal/di`. Use `README.md`, `docs/configuration.md`, and `docs/development.md` for current behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the reference runtime honor `RuntimeConfig` for service wiring and make the default rule engine YAML-first.

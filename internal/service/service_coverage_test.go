@@ -4,18 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	internalconfig "project/internal/config"
-	"project/internal/dataaccess"
-	"project/internal/model"
-	"project/pkg/health"
+	internalconfig "github.com/elvinyao/go-service-platform/internal/config"
+	"github.com/elvinyao/go-service-platform/internal/dataaccess"
+	"github.com/elvinyao/go-service-platform/internal/model"
+	"github.com/elvinyao/go-service-platform/pkg/health"
 
-	mmModel "github.com/mattermost/mattermost-server/v6/model"
+	"github.com/gorilla/websocket"
 )
 
 type errorDataAccessor struct {
@@ -138,93 +138,6 @@ func TestBadgeDBServiceOperationsAndHealthChecks(t *testing.T) {
 	}
 }
 
-func TestConfluenceServiceOperationsAndHealthChecks(t *testing.T) {
-	ctx := context.Background()
-	da := newStubDataAccessor()
-	svc := NewConfluenceService("ConfluenceServiceA", "A", da, "test")
-
-	if _, err := svc.FetchData(ctx); err == nil {
-		t.Fatalf("expected fetch before start error")
-	}
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if err := svc.Restart(ctx); err != nil {
-		t.Fatalf("restart running: %v", err)
-	}
-
-	cached := map[string]interface{}{"cached": true}
-	if err := da.SetData("confluence_data", cached); err != nil {
-		t.Fatalf("set cache: %v", err)
-	}
-	data, err := svc.FetchData(ctx)
-	if err != nil {
-		t.Fatalf("fetch cached: %v", err)
-	}
-	if data["cached"] != true {
-		t.Fatalf("data = %+v, want cached data", data)
-	}
-
-	if err := svc.Configure(ctx, map[string]interface{}{"api_endpoint": "http://confluence.test"}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	if err := svc.Configure(ctx, "bad"); err == nil {
-		t.Fatalf("expected invalid config error")
-	}
-	metrics := svc.GetMetrics(ctx)
-	if metrics["api_endpoint"] != "http://confluence.test" {
-		t.Fatalf("api_endpoint metric = %v", metrics["api_endpoint"])
-	}
-
-	check := (&confluenceApiChecker{service: svc}).Check(ctx)
-	if check.Status != health.StatusUp {
-		t.Fatalf("checker status = %s, want UP", check.Status)
-	}
-	cancelCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	cancelled := (&confluenceApiChecker{service: svc}).Check(cancelCtx)
-	if cancelled.Status != health.StatusDown {
-		t.Fatalf("cancelled checker status = %s, want DOWN", cancelled.Status)
-	}
-	if err := svc.Stop(ctx); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	down := (&confluenceApiChecker{service: svc}).Check(ctx)
-	if down.Status != health.StatusDown {
-		t.Fatalf("down checker status = %s, want DOWN", down.Status)
-	}
-	if err := svc.Restart(ctx); err != nil {
-		t.Fatalf("restart stopped: %v", err)
-	}
-}
-
-func TestConfluenceServiceCacheAndStartupErrorBranches(t *testing.T) {
-	ctx := context.Background()
-	invalidCache := NewConfluenceService("ConfluenceServiceA", "A", errorDataAccessor{
-		getValue: "not-a-map",
-		setErr:   fmt.Errorf("cache write failed"),
-	}, "test")
-	if err := invalidCache.Start(ctx); err != nil {
-		t.Fatalf("start with cache write failure should continue: %v", err)
-	}
-	if _, err := invalidCache.FetchData(ctx); err != nil {
-		t.Fatalf("fetch should ignore invalid cache type and refetch: %v", err)
-	}
-	if err := invalidCache.Stop(ctx); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	if err := invalidCache.Stop(ctx); err != nil {
-		t.Fatalf("second stop: %v", err)
-	}
-
-	cancelCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	cancelledStart := NewConfluenceService("ConfluenceServiceA", "A", newStubDataAccessor(), "test")
-	if err := cancelledStart.Start(cancelCtx); err == nil {
-		t.Fatalf("expected start with cancelled context to fail")
-	}
-}
-
 func TestConfluenceSettingsServiceLifecycleMatchConfigureAndHealth(t *testing.T) {
 	settingsJSON := mustSettingsJSON(t, []map[string]interface{}{
 		{
@@ -241,24 +154,15 @@ func TestConfluenceSettingsServiceLifecycleMatchConfigureAndHealth(t *testing.T)
 			"enabled":          false,
 		},
 	})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"body": map[string]interface{}{
-				"storage": map[string]interface{}{
-					"value": settingsJSON,
-				},
-			},
-		})
-	}))
-	defer server.Close()
+	client := testHTTPClient(http.StatusOK, mustConfluencePageJSON(t, settingsJSON))
 
 	ctx := context.Background()
 	svc := NewConfluenceSettingsService("ConfluenceSettingsService", "B", dataaccess.NewCacheDataAccessor(ctx), internalconfig.ConfluenceSettingsConfig{
 		PageID:          "settings-page-1",
 		RefreshInterval: 20 * time.Millisecond,
-		APIEndpoint:     server.URL,
+		APIEndpoint:     "http://confluence.test",
 		SpaceKey:        "TEST",
-	}, "test")
+	}, "test", client)
 
 	down := (&settingsRefreshChecker{service: svc}).Check(ctx)
 	if down.Status != health.StatusDown {
@@ -305,13 +209,22 @@ func TestConfluenceSettingsServiceLifecycleMatchConfigureAndHealth(t *testing.T)
 	if err := svc.Configure(ctx, internalconfig.ConfluenceSettingsConfig{
 		PageID:          "settings-page-2",
 		RefreshInterval: time.Second,
-		APIEndpoint:     server.URL,
+		APIEndpoint:     "http://confluence.test",
 		SpaceKey:        "TEST",
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
 	if err := svc.Configure(ctx, "bad"); err == nil {
 		t.Fatalf("expected invalid config error")
+	}
+	for _, invalid := range []internalconfig.ConfluenceSettingsConfig{
+		{APIEndpoint: "http://confluence.test", RefreshInterval: time.Second},
+		{APIEndpoint: "http://confluence.test", PageID: "page"},
+		{APIEndpoint: "ftp://confluence.test", PageID: "page", RefreshInterval: time.Second},
+	} {
+		if err := svc.Configure(ctx, invalid); err == nil {
+			t.Fatalf("expected invalid Confluence config error for %+v", invalid)
+		}
 	}
 	if err := svc.Restart(ctx); err != nil {
 		t.Fatalf("restart: %v", err)
@@ -339,29 +252,20 @@ func TestConfluenceSettingsServiceErrorBranches(t *testing.T) {
 	doError := NewConfluenceSettingsService("ConfluenceSettingsService", "B", dataaccess.NewCacheDataAccessor(ctx), internalconfig.ConfluenceSettingsConfig{
 		PageID:          "settings-page-1",
 		RefreshInterval: time.Hour,
-		APIEndpoint:     "http://127.0.0.1:1",
-	}, "test")
+		APIEndpoint:     "http://confluence.test",
+	}, "test", &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("request failed")
+	})})
 	if _, err := doError.fetchSettingsFromConfluence(ctx); err == nil {
 		t.Fatalf("expected fetch error")
 	}
 
 	settingsJSON := mustSettingsJSON(t, []map[string]interface{}{{"event_type": "AAA", "enabled": true}})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"body": map[string]interface{}{
-				"storage": map[string]interface{}{
-					"value": settingsJSON,
-				},
-			},
-		})
-	}))
-	defer server.Close()
-
 	cacheError := NewConfluenceSettingsService("ConfluenceSettingsService", "B", errorDataAccessor{setErr: fmt.Errorf("cache failed")}, internalconfig.ConfluenceSettingsConfig{
 		PageID:          "settings-page-1",
 		RefreshInterval: time.Hour,
-		APIEndpoint:     server.URL,
-	}, "test")
+		APIEndpoint:     "http://confluence.test",
+	}, "test", testHTTPClient(http.StatusOK, mustConfluencePageJSON(t, settingsJSON)))
 	cacheError.mu.Lock()
 	if err := cacheError.refreshSettingsLocked(ctx); err != nil {
 		cacheError.mu.Unlock()
@@ -381,29 +285,24 @@ func TestConfluenceSettingsServiceErrorBranches(t *testing.T) {
 
 func TestMattermostServiceOperationsAndHealth(t *testing.T) {
 	var posts []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/api/v4/posts" {
-			http.NotFound(w, r)
-			return
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found")), Header: make(http.Header)}, nil
 		}
-		var post mmModel.Post
+		var post mattermostPost
 		if err := json.NewDecoder(r.Body).Decode(&post); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+			return nil, err
 		}
 		posts = append(posts, post.Message)
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "post-id"})
-	}))
-	defer server.Close()
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(`{"id":"post-id"}`)), Header: make(http.Header)}, nil
+	})}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	svc := NewMattermostService("MattermostService", "Global", internalconfig.MattermostConfig{
-		ServerURL:    server.URL,
-		APIToken:     "token",
-		Channel:      "default-channel",
-		WebsocketURL: "ws://127.0.0.1:1",
-	}, "test")
+		ServerURL: "http://mattermost.test",
+		APIToken:  "token",
+		Channel:   "default-channel",
+	}, "test", client)
 
 	if err := svc.SendMessage(ctx, "before start"); err == nil {
 		t.Fatalf("expected send before start error")
@@ -424,15 +323,23 @@ func TestMattermostServiceOperationsAndHealth(t *testing.T) {
 		t.Fatalf("channel ID = %q", svc.GetChannelID())
 	}
 	if err := svc.Configure(ctx, internalconfig.MattermostConfig{
-		ServerURL:    server.URL,
-		APIToken:     "token",
-		Channel:      "new-channel",
-		WebsocketURL: "ws://127.0.0.1:1",
+		ServerURL: "http://mattermost.test",
+		APIToken:  "token",
+		Channel:   "new-channel",
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
 	if err := svc.Configure(ctx, "bad"); err == nil {
 		t.Fatalf("expected invalid config error")
+	}
+	for _, invalid := range []internalconfig.MattermostConfig{
+		{ServerURL: "ftp://mattermost.test", Channel: "channel"},
+		{ServerURL: "http://mattermost.test"},
+		{ServerURL: "http://mattermost.test", Channel: "channel", WebsocketURL: "http://mattermost.test"},
+	} {
+		if err := svc.Configure(ctx, invalid); err == nil {
+			t.Fatalf("expected invalid Mattermost config error for %+v", invalid)
+		}
 	}
 	report := health.NewReport("mattermost", time.Now(), "test")
 	svc.ReportHealth(ctx, &report)
@@ -440,16 +347,6 @@ func TestMattermostServiceOperationsAndHealth(t *testing.T) {
 		t.Fatalf("expected mattermost health results")
 	}
 	cancel()
-	done := make(chan struct{})
-	go func() {
-		svc.processMessages(ctx)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatalf("processMessages did not exit after context cancellation")
-	}
 	if err := svc.Restart(context.Background()); err != nil {
 		t.Fatalf("restart: %v", err)
 	}
@@ -465,25 +362,19 @@ func TestMattermostServiceOperationsAndHealth(t *testing.T) {
 }
 
 func TestMattermostServiceLoginProcessMessagesAndHealthUpBranches(t *testing.T) {
-	loginServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "login failed", http.StatusUnauthorized)
-	}))
-	defer loginServer.Close()
-
 	ctx := context.Background()
 	svc := NewMattermostService("MattermostService", "Global", internalconfig.MattermostConfig{
-		ServerURL:    loginServer.URL,
-		Username:     "user",
-		Password:     "bad",
-		Channel:      "default-channel",
-		WebsocketURL: "ws://127.0.0.1:1",
-	}, "test")
+		ServerURL: "http://mattermost.test",
+		Username:  "user",
+		Password:  "bad",
+		Channel:   "default-channel",
+	}, "test", testHTTPClient(http.StatusUnauthorized, "login failed"))
 	if err := svc.Start(ctx); err != nil {
 		t.Fatalf("start with failed username login should continue: %v", err)
 	}
 
 	svc.mu.Lock()
-	svc.wsClient = &mmModel.WebSocketClient{}
+	svc.wsClient = &websocket.Conn{}
 	svc.mu.Unlock()
 	report := health.NewReport("mattermost", time.Now(), "test")
 	svc.ReportHealth(ctx, &report)
@@ -503,23 +394,11 @@ func TestMattermostServiceLoginProcessMessagesAndHealthUpBranches(t *testing.T) 
 		t.Fatalf("stop: %v", err)
 	}
 
-	closed := NewMattermostService("MattermostService", "Global", internalconfig.MattermostConfig{}, "test")
-	close(closed.msgChan)
-	done := make(chan struct{})
-	go func() {
-		closed.processMessages(context.Background())
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatalf("processMessages did not exit when channel closed")
-	}
 }
 
 func TestWebSocketServiceHealthCheckerBranches(t *testing.T) {
 	ctx := context.Background()
-	svc := NewWebSocketService("WebSocketServiceA", "A", internalconfig.WebSocketConfig{
+	svc := NewWebSocketService(WebSocketInputServiceName, "WorkflowEngine", internalconfig.WebSocketConfig{
 		ServerURL:         "ws://127.0.0.1:1",
 		Path:              "/ws",
 		ReconnectInterval: time.Millisecond,
@@ -563,7 +442,7 @@ func TestWebSocketServiceHealthCheckerBranches(t *testing.T) {
 
 func TestWebSocketServiceStopAndProcessMessageBranches(t *testing.T) {
 	ctx := context.Background()
-	svc := NewWebSocketService("WebSocketServiceA", "A", internalconfig.WebSocketConfig{
+	svc := NewWebSocketService(WebSocketInputServiceName, "WorkflowEngine", internalconfig.WebSocketConfig{
 		ServerURL:         "ws://127.0.0.1:1",
 		Path:              "/ws",
 		ReconnectInterval: time.Millisecond,
@@ -585,6 +464,22 @@ func mustSettingsJSON(t *testing.T, rules []map[string]interface{}) string {
 	data, err := json.Marshal(map[string]interface{}{"rules": rules})
 	if err != nil {
 		t.Fatalf("marshal settings: %v", err)
+	}
+	return string(data)
+}
+
+func mustConfluencePageJSON(t *testing.T, settingsJSON string) string {
+	t.Helper()
+
+	data, err := json.Marshal(map[string]interface{}{
+		"body": map[string]interface{}{
+			"storage": map[string]interface{}{
+				"value": settingsJSON,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal Confluence page: %v", err)
 	}
 	return string(data)
 }

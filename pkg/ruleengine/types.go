@@ -62,6 +62,8 @@ type Message struct {
 type ActionMergeConfig struct {
 	Dedup bool   `yaml:"dedup" json:"dedup"`
 	Order string `yaml:"order" json:"order"`
+
+	dedupConfigured bool
 }
 
 type WorkflowPolicy struct {
@@ -72,15 +74,9 @@ type WorkflowPolicy struct {
 	ActionMerge   ActionMergeConfig `yaml:"action_merge" json:"action_merge"`
 }
 
-type ConfluencePolicy struct {
-	RefreshInterval  string `yaml:"refresh_interval" json:"refresh_interval"`
-	OnRefreshFailure string `yaml:"on_refresh_failure" json:"on_refresh_failure"`
-}
-
 type EngineConfig struct {
 	Workflows   []WorkflowPolicy  `yaml:"workflows" json:"workflows"`
 	ActionMerge ActionMergeConfig `yaml:"action_merge" json:"action_merge"`
-	Confluence  ConfluencePolicy  `yaml:"confluence" json:"confluence"`
 }
 
 type ExecutionPlan struct {

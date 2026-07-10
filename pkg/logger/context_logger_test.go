@@ -5,7 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	appctx "project/pkg/context"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	apperrors "github.com/elvinyao/go-service-platform/pkg/errors"
 	"testing"
 	"time"
 
@@ -223,6 +224,19 @@ func TestWithContextError(t *testing.T) {
 		assert.Equal(t, "custom error", logMap["error"])
 		assert.Equal(t, float64(500), logMap["error_code"])
 		assert.Equal(t, "internal", logMap["error_type"])
+	})
+
+	t.Run("AppError", func(t *testing.T) {
+		buf.Reset()
+		appErr := apperrors.New(apperrors.TypeInvalidInput, "invalid request", nil).
+			WithField("field", "event_type")
+		WithContextError(ctx, appErr).Error("error occurred")
+
+		var logMap map[string]interface{}
+		err := json.Unmarshal(buf.Bytes(), &logMap)
+		assert.NoError(t, err)
+		assert.Equal(t, "invalid request", logMap["error"])
+		assert.Equal(t, "event_type", logMap["field"])
 	})
 }
 

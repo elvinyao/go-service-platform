@@ -1,0 +1,41 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug service-workflow (YAML-first)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/cmd/service-workflow",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUNTIME_CONFIG": "config/runtime.yaml",
+        "RULE_ENGINE_CONFIG": "config/rule-engine.yaml",
+        "WORKFLOW_RULES": "config/workflow-rules.yaml",
+        "ADMIN_ADDR": "127.0.0.1:18080"
+      }
+    },
+    {
+      "name": "Debug service-workflow (demo profile)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/cmd/service-workflow",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUNTIME_CONFIG": "config/profiles/demo/runtime.yaml",
+        "RULE_ENGINE_CONFIG": "config/profiles/demo/rule-engine.yaml",
+        "WORKFLOW_RULES": "config/workflow-rules.yaml",
+        "ADMIN_ADDR": "127.0.0.1:18080"
+      }
+    },
+    {
+      "name": "Debug fake-server",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/fake-server/cmd/fake-server",
+      "cwd": "${workspaceFolder}/fake-server"
+    }
+  ]
+}

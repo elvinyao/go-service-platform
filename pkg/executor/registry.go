@@ -2,6 +2,7 @@ package executor
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 )
@@ -18,7 +19,7 @@ func NewRegistry() *Registry {
 }
 
 func (r *Registry) Register(executor Executor) error {
-	if executor == nil {
+	if isNilExecutor(executor) {
 		return fmt.Errorf("executor is nil")
 	}
 	name := executor.Type()
@@ -27,9 +28,25 @@ func (r *Registry) Register(executor Executor) error {
 	}
 
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.executors[name]; exists {
+		return fmt.Errorf("executor %s is registered more than once", name)
+	}
 	r.executors[name] = executor
-	r.mu.Unlock()
 	return nil
+}
+
+func isNilExecutor(executor Executor) bool {
+	if executor == nil {
+		return true
+	}
+	value := reflect.ValueOf(executor)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (r *Registry) Get(name string) (Executor, bool) {

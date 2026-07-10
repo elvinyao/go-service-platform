@@ -73,9 +73,58 @@ func TestYAMLProviderNameAndStartWithMissingOrEmptyPath(t *testing.T) {
 	}
 
 	provider = NewYAMLProvider("yaml", filepath.Join(t.TempDir(), "missing.yaml"), DefaultWorkflowName)
-	if err := provider.Start(context.Background()); err != nil {
-		t.Fatalf("start missing path: %v", err)
+	if err := provider.Start(context.Background()); err == nil {
+		t.Fatalf("start missing path error = nil")
 	}
+}
+
+func TestYAMLProviderRejectsUnknownFieldsAndDuplicateRuleIDs(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "unknown field",
+			data: `rules:
+  - id: r1
+    actons:
+      - executor: log
+`,
+		},
+		{
+			name: "duplicate rule id",
+			data: `rules:
+  - id: r1
+    actions:
+      - executor: log
+  - id: r1
+    actions:
+      - executor: log
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "rules.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(tt.data), 0o600))
+			require.Error(t, NewYAMLProvider("yaml", path, DefaultWorkflowName).Start(context.Background()))
+		})
+	}
+}
+
+func TestYAMLProviderRejectsMultipleYAMLDocuments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.yaml")
+	data := `rules:
+  - id: r1
+    actions:
+      - executor: log
+---
+rules: []
+`
+	require.NoError(t, os.WriteFile(path, []byte(data), 0o600))
+	err := NewYAMLProvider("yaml", path, DefaultWorkflowName).Start(context.Background())
+	require.ErrorContains(t, err, "multiple YAML documents")
 }
 
 func TestYAMLProviderValidatesRequiredFields(t *testing.T) {
@@ -104,6 +153,15 @@ func TestYAMLProviderValidatesRequiredFields(t *testing.T) {
       - field: type
         op: nope
         value: AAA
+    actions:
+      - executor: log
+`},
+		{name: "unsupported condition field", data: `rules:
+  - id: r1
+    conditions:
+      - field: payload.status
+        op: eq
+        value: ready
     actions:
       - executor: log
 `},

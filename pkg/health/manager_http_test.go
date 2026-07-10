@@ -20,17 +20,34 @@ func (c staticChecker) Check(ctx context.Context) *CheckResult {
 }
 
 type recordingReporter struct {
-	reports chan *Report
+	called bool
 }
 
-func (r recordingReporter) ReportHealth(ctx context.Context, report *Report) {
-	r.reports <- report
+func (r *recordingReporter) ReportHealth(ctx context.Context, report *Report) {
+	r.called = true
+	report.Metadata = map[string]interface{}{
+		"reporter": map[string]interface{}{"state": "original"},
+	}
+	report.AddResult(CheckResult{
+		Name:      "reporter.check",
+		Status:    StatusUp,
+		Level:     LevelInfo,
+		Category:  CategoryDependency,
+		Timestamp: time.Now(),
+	})
+}
+
+type panicHealthReporter struct{}
+
+func (panicHealthReporter) ReportHealth(context.Context, *Report) {
+	panic("reporter failed")
 }
 
 type healthTestService struct {
-	name    string
-	running bool
-	metrics map[string]interface{}
+	name     string
+	running  bool
+	metrics  map[string]interface{}
+	checkers []Checker
 }
 
 func (s healthTestService) IsRunning(ctx context.Context) bool {
@@ -45,9 +62,13 @@ func (s healthTestService) GetMetrics(ctx context.Context) map[string]interface{
 	return s.metrics
 }
 
+func (s healthTestService) RegisterHealthChecks() []Checker {
+	return s.checkers
+}
+
 func TestHealthManagerRefreshCachesAndReports(t *testing.T) {
 	manager := NewHealthManager(time.Hour, "test-version")
-	reporter := recordingReporter{reports: make(chan *Report, 1)}
+	reporter := &recordingReporter{}
 	manager.RegisterReporter(reporter)
 	manager.RegisterChecker(staticChecker{result: &CheckResult{
 		Name:      "custom.warning",
@@ -60,11 +81,21 @@ func TestHealthManagerRefreshCachesAndReports(t *testing.T) {
 		name:    "worker",
 		running: true,
 		metrics: map[string]interface{}{"queue_depth": 2},
+		checkers: []Checker{staticChecker{result: &CheckResult{
+			Name:      "dependency",
+			Status:    StatusUp,
+			Level:     LevelCritical,
+			Category:  CategoryDependency,
+			Timestamp: time.Now(),
+		}}},
 	})
 
 	report := manager.RefreshReport(context.Background())
 	if report.Version != "test-version" {
 		t.Fatalf("version = %q, want test-version", report.Version)
+	}
+	if report.Uptime <= 0 {
+		t.Fatalf("uptime = %v, want positive duration", report.Uptime)
 	}
 	if report.Status != StatusDegraded {
 		t.Fatalf("status = %s, want DEGRADED", report.Status)
@@ -72,19 +103,47 @@ func TestHealthManagerRefreshCachesAndReports(t *testing.T) {
 	if len(report.CheckResults) < 5 {
 		t.Fatalf("check results len = %d, want system, service, and custom checks", len(report.CheckResults))
 	}
-
-	select {
-	case got := <-reporter.reports:
-		if got != report {
-			t.Fatalf("reported pointer differs from refreshed report")
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("reporter was not notified")
+	if !hasCheckResult(report.CheckResults, "service.worker.dependency", StatusUp) {
+		t.Fatalf("service custom health check missing: %+v", report.CheckResults)
 	}
 
+	if !reporter.called {
+		t.Fatalf("reporter was not called")
+	}
+	if !hasCheckResult(report.CheckResults, "reporter.check", StatusUp) {
+		t.Fatalf("reporter result missing: %+v", report.CheckResults)
+	}
+
+	report.Metadata["reporter"].(map[string]interface{})["state"] = "mutated"
 	cached := manager.GetHealthReport(context.Background())
-	if cached != report {
-		t.Fatalf("cached report pointer differs from refreshed report")
+	if cached == report {
+		t.Fatalf("cached report must be returned as an independent snapshot")
+	}
+	if state := cached.Metadata["reporter"].(map[string]interface{})["state"]; state != "original" {
+		t.Fatalf("cached nested metadata state = %v, want original", state)
+	}
+}
+
+func TestHealthManagerIgnoresNilRegistrations(t *testing.T) {
+	manager := NewHealthManager(time.Hour, "test")
+	manager.RegisterChecker(nil)
+	manager.RegisterReporter(nil)
+	manager.RegisterService(nil)
+
+	report := manager.RefreshReport(context.Background())
+	if len(report.CheckResults) != 2 {
+		t.Fatalf("check results len = %d, want only two system checks", len(report.CheckResults))
+	}
+}
+
+func TestHealthManagerContainsReporterPanic(t *testing.T) {
+	manager := NewHealthManager(time.Hour, "test")
+	manager.RegisterReporter(panicHealthReporter{})
+
+	report := manager.RefreshReport(context.Background())
+
+	if !hasCheckResult(report.CheckResults, "reporter.0", StatusUnknown) {
+		t.Fatalf("reporter panic result missing: %+v", report.CheckResults)
 	}
 }
 
@@ -102,8 +161,8 @@ func TestHealthManagerServiceAndStatusBranches(t *testing.T) {
 	if !foundServiceDown {
 		t.Fatalf("service.down status was not reported as DOWN: %+v", report.CheckResults)
 	}
-	if report.Status != StatusDegraded {
-		t.Fatalf("overall status = %s, want DEGRADED", report.Status)
+	if report.Status != StatusDown {
+		t.Fatalf("overall status = %s, want DOWN", report.Status)
 	}
 
 	if got := manager.determineOverallStatus([]CheckResult{}); got != StatusUnknown {
@@ -114,29 +173,14 @@ func TestHealthManagerServiceAndStatusBranches(t *testing.T) {
 	}
 }
 
-func TestHealthManagerSystemCheckThresholdBranches(t *testing.T) {
-	original := DefaultThresholds
-	defer func() { DefaultThresholds = original }()
-
+func TestHealthManagerSystemChecksUseRuntimeMetrics(t *testing.T) {
 	manager := NewHealthManager(time.Hour, "test")
-
-	DefaultThresholds.MemoryCritical = 0.5
-	memory := manager.checkMemory(context.Background())
-	if memory.Status != StatusDegraded || memory.Level != LevelCritical {
-		t.Fatalf("memory status/level = %s/%s, want DEGRADED/CRITICAL", memory.Status, memory.Level)
+	results := RunChecksParallel(context.Background(), manager.systemChecks())
+	if len(results) != 2 {
+		t.Fatalf("system checks len = %d, want 2", len(results))
 	}
-
-	DefaultThresholds.CPUCritical = 0.2
-	cpu := manager.checkCPU(context.Background())
-	if cpu.Status != StatusDegraded || cpu.Level != LevelCritical {
-		t.Fatalf("cpu status/level = %s/%s, want DEGRADED/CRITICAL", cpu.Status, cpu.Level)
-	}
-
-	DefaultThresholds.DiskCritical = 0.8
-	DefaultThresholds.DiskWarning = 0.6
-	disk := manager.checkDiskSpace(context.Background())
-	if disk.Status != StatusDegraded || disk.Level != LevelWarning {
-		t.Fatalf("disk status/level = %s/%s, want DEGRADED/WARNING", disk.Status, disk.Level)
+	if !hasCheckResultPointers(results, "memory-usage") || !hasCheckResultPointers(results, "goroutine-count") {
+		t.Fatalf("system checks = %+v, want runtime memory and goroutine checks", results)
 	}
 }
 
@@ -216,7 +260,7 @@ func TestHealthHandlerEndpoints(t *testing.T) {
 	}
 }
 
-func TestHealthHandlerUnhealthyReadinessAndLiveness(t *testing.T) {
+func TestHealthHandlerUnhealthyReadinessDoesNotFailLiveness(t *testing.T) {
 	manager := NewHealthManager(time.Hour, "test")
 	manager.SetShuttingDown()
 	if !manager.IsShuttingDown() {
@@ -235,8 +279,8 @@ func TestHealthHandlerUnhealthyReadinessAndLiveness(t *testing.T) {
 	manager.lastReport = &Report{Status: StatusDown}
 	live := httptest.NewRecorder()
 	handler.HandleLivenessCheck(live, httptest.NewRequest(http.MethodGet, "/health/liveness", nil))
-	if live.Code != http.StatusServiceUnavailable {
-		t.Fatalf("down liveness status = %d, want 503", live.Code)
+	if live.Code != http.StatusOK || !strings.Contains(live.Body.String(), `"UP"`) {
+		t.Fatalf("down-dependency liveness response = %d/%s, want 200 UP", live.Code, live.Body.String())
 	}
 
 	unknownReady := httptest.NewRecorder()
@@ -245,6 +289,36 @@ func TestHealthHandlerUnhealthyReadinessAndLiveness(t *testing.T) {
 	if unknownReady.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unknown readiness status = %d, want 503", unknownReady.Code)
 	}
+}
+
+func TestHealthHandlerReadinessFailsForCriticalService(t *testing.T) {
+	manager := NewHealthManager(0, "test")
+	manager.RegisterService(healthTestService{name: "critical", running: false})
+	handler := NewHealthHandler(manager)
+
+	ready := httptest.NewRecorder()
+	handler.HandleReadinessCheck(ready, httptest.NewRequest(http.MethodGet, "/health/readiness", nil))
+	if ready.Code != http.StatusServiceUnavailable {
+		t.Fatalf("critical service readiness status = %d, want 503", ready.Code)
+	}
+}
+
+func hasCheckResult(results []CheckResult, name string, status Status) bool {
+	for _, result := range results {
+		if result.Name == name && result.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCheckResultPointers(results []*CheckResult, name string) bool {
+	for _, result := range results {
+		if result != nil && result.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestHealthHandlerRegistersRoutes(t *testing.T) {

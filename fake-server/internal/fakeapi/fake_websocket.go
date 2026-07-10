@@ -33,6 +33,7 @@ type FakeWebSocketServer struct {
 	receivedMsgs    []WebSocketMessage
 	messageHandlers []func(msg WebSocketMessage)
 	msgCounter      int
+	listen          listenFunc
 }
 
 // NewFakeWebSocketServer creates a new fake WebSocket server
@@ -65,10 +66,14 @@ func (s *FakeWebSocketServer) Start() error {
 
 	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.RLock()
+		clientCount := len(s.clients)
+		messageCount := len(s.receivedMsgs)
+		s.mu.RUnlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":        "ok",
-			"clients":       len(s.clients),
-			"message_count": len(s.receivedMsgs),
+			"clients":       clientCount,
+			"message_count": messageCount,
 		})
 	})
 
@@ -80,12 +85,10 @@ func (s *FakeWebSocketServer) Start() error {
 	}
 
 	log.Printf("Starting Fake WebSocket server on port %d", s.port)
-	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Fake WebSocket server error: %v", err)
-		}
-	}()
-
+	if err := startHTTPServer(s.server, "Fake WebSocket", s.listen); err != nil {
+		s.server = nil
+		return err
+	}
 	return nil
 }
 
@@ -93,14 +96,17 @@ func (s *FakeWebSocketServer) Start() error {
 func (s *FakeWebSocketServer) Stop() error {
 	s.mu.Lock()
 	for conn := range s.clients {
-		conn.Close()
+		_ = conn.Close()
 	}
+	s.clients = make(map[*websocket.Conn]bool)
 	s.mu.Unlock()
 
-	if s.server != nil {
+	server := s.server
+	s.server = nil
+	if server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return s.server.Shutdown(ctx)
+		return server.Shutdown(ctx)
 	}
 	return nil
 }
@@ -164,7 +170,7 @@ func (s *FakeWebSocketServer) readMessages(conn *websocket.Conn) {
 		s.receivedMsgs = append(s.receivedMsgs, msg)
 		s.mu.Unlock()
 
-		log.Printf("📥 Fake WebSocket received: type=%s, content=%s", msg.Type, msg.Content)
+		log.Printf("Fake WebSocket received: type=%s, content=%s", msg.Type, msg.Content)
 
 		// Call registered handlers
 		s.mu.RLock()
@@ -191,27 +197,26 @@ func (s *FakeWebSocketServer) handleSendMessage(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Generate ID if not provided
+	s.mu.Lock()
 	if msg.ID == "" {
-		s.mu.Lock()
 		s.msgCounter++
 		msg.ID = fmt.Sprintf("msg-%d", s.msgCounter)
-		s.mu.Unlock()
 	}
-
-	// Set timestamp
 	msg.Timestamp = time.Now()
+	s.receivedMsgs = append(s.receivedMsgs, msg)
+	clientCount := len(s.clients)
+	s.mu.Unlock()
 
 	// Broadcast to all clients
 	s.Broadcast(msg)
 
-	log.Printf("📤 Fake WebSocket broadcast: type=%s, content=%s", msg.Type, msg.Content)
+	log.Printf("Fake WebSocket broadcast: type=%s, content=%s", msg.Type, msg.Content)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": msg,
-		"clients": len(s.clients),
+		"clients": clientCount,
 	})
 }
 
@@ -265,7 +270,7 @@ func (s *FakeWebSocketServer) SendTestEvent(eventType, content string) {
 	}
 
 	s.Broadcast(msg)
-	log.Printf("📤 Sent test event: type=%s, content=%s", eventType, content)
+	log.Printf("Sent test event: type=%s, content=%s", eventType, content)
 }
 
 // OnMessage registers a handler for incoming messages

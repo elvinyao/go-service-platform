@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"project/internal/manager"
-	"project/internal/model"
-	"project/internal/service"
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/model"
+	"github.com/elvinyao/go-service-platform/internal/service"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 type Executor struct {
@@ -24,7 +24,7 @@ func (e *Executor) Type() string {
 }
 
 func (e *Executor) Execute(ctx context.Context, msg ruleengine.Message, action ruleengine.Action) error {
-	svc, ok := e.serviceManager.GetServiceByName(ctx, "BadgeDBService")
+	svc, ok := e.serviceManager.GetServiceByName(ctx, service.BadgeDBServiceName)
 	if !ok {
 		return fmt.Errorf("BadgeDBService not found")
 	}

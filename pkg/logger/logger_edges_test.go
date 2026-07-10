@@ -106,7 +106,7 @@ func TestResolveOutputAndLoggerHelpers(t *testing.T) {
 	if !shouldSkipFrame("runtime/proc.go", "runtime.goexit") {
 		t.Fatalf("runtime frame should be skipped")
 	}
-	if !shouldSkipFrame("/repo/pkg/logger/logger.go", "project/pkg/logger.Info") {
+	if !shouldSkipFrame("/repo/pkg/logger/logger.go", "github.com/elvinyao/go-service-platform/pkg/logger.Info") {
 		t.Fatalf("logger implementation frame should be skipped")
 	}
 	if got := relativizePath(""); got != "." {

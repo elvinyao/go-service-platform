@@ -1,16 +1,33 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"project/pkg/ruleengine"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
+
+type executorRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f executorRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func executorHTTPResponse(request *http.Request, status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    request,
+	}
+}
 
 type recordingExecutor struct {
 	executed bool
@@ -59,6 +76,26 @@ func TestRegistryRejectsInvalidExecutors(t *testing.T) {
 	}
 	if err := registry.Register(&emptyTypeExecutor{}); err == nil {
 		t.Fatalf("expected empty executor type error")
+	}
+	var typedNil *recordingExecutor
+	if err := registry.Register(typedNil); err == nil {
+		t.Fatalf("expected typed nil executor error")
+	}
+}
+
+func TestRegistryRejectsDuplicateWithoutReplacingFirst(t *testing.T) {
+	registry := NewRegistry()
+	first := &recordingExecutor{}
+	second := &recordingExecutor{}
+	if err := registry.Register(first); err != nil {
+		t.Fatalf("register first executor: %v", err)
+	}
+	if err := registry.Register(second); err == nil {
+		t.Fatalf("expected duplicate executor error")
+	}
+	got, exists := registry.Get("record")
+	if !exists || got != first {
+		t.Fatalf("registered executor = %v/%v, want first %p", got, exists, first)
 	}
 }
 
@@ -120,29 +157,50 @@ func TestLogExecutorReturnsTemplateError(t *testing.T) {
 	}
 }
 
+func TestLogExecutorPreservesContextFields(t *testing.T) {
+	var output bytes.Buffer
+	config := logger.DefaultConfig()
+	config.CallerInfo = false
+	logger.Configure(config)
+	logger.SetOutput(&output)
+	defer logger.Init()
+
+	ctx := appctx.WithRequestID(context.Background(), "request-123")
+	err := NewLogExecutor().Execute(ctx, ruleengine.Message{ID: "m1", Type: "AAA"}, ruleengine.Action{
+		ID:       "log",
+		Executor: "log",
+		Params:   map[string]interface{}{"template": "context-aware"},
+	})
+	if err != nil {
+		t.Fatalf("execute log action: %v", err)
+	}
+	if !strings.Contains(output.String(), `"request_id":"request-123"`) {
+		t.Fatalf("log output missing request ID: %s", output.String())
+	}
+}
+
 func TestHTTPExecutorPostsRenderedBody(t *testing.T) {
 	var gotBody string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("method = %s, want POST", r.Method)
+	client := &http.Client{Transport: executorRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", request.Method)
 		}
-		body, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
 		}
 		gotBody = string(body)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer server.Close()
+		return executorHTTPResponse(request, http.StatusNoContent, ""), nil
+	})}
 
-	exe := NewHTTPExecutor()
+	exe := NewHTTPExecutorWithClient(client)
 	err := exe.Execute(context.Background(), ruleengine.Message{
 		ID: "m1", Type: "AAA", Content: "hello", Timestamp: time.Now(),
 	}, ruleengine.Action{
 		ID:       "post",
 		Executor: "http",
 		Params: map[string]interface{}{
-			"url":           server.URL,
+			"url":           "https://service.example/events",
 			"body_template": `{"type":"{{.Type}}","content":"{{.Content}}"}`,
 		},
 	})
@@ -160,17 +218,16 @@ func TestHTTPExecutorUsesDefaultPostMethodAndHeaders(t *testing.T) {
 	}
 
 	var gotMethod, gotContentType, gotCustomHeader string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		gotContentType = r.Header.Get("Content-Type")
-		gotCustomHeader = r.Header.Get("X-Test")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+	client := &http.Client{Transport: executorRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		gotMethod = request.Method
+		gotContentType = request.Header.Get("Content-Type")
+		gotCustomHeader = request.Header.Get("X-Test")
+		return executorHTTPResponse(request, http.StatusOK, ""), nil
+	})}
 
-	err := NewHTTPExecutor().Execute(context.Background(), ruleengine.Message{}, ruleengine.Action{
+	err := NewHTTPExecutorWithClient(client).Execute(nil, ruleengine.Message{}, ruleengine.Action{
 		Params: map[string]interface{}{
-			"url": server.URL,
+			"url": "https://service.example/events",
 			"headers": map[string]interface{}{
 				"X-Test": "yes",
 			},
@@ -191,13 +248,12 @@ func TestHTTPExecutorUsesDefaultPostMethodAndHeaders(t *testing.T) {
 }
 
 func TestHTTPExecutorReturnsErrorForNon2xx(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "nope", http.StatusBadGateway)
-	}))
-	defer server.Close()
+	client := &http.Client{Transport: executorRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return executorHTTPResponse(request, http.StatusBadGateway, "nope"), nil
+	})}
 
-	err := NewHTTPExecutor().Execute(context.Background(), ruleengine.Message{}, ruleengine.Action{
-		Params: map[string]interface{}{"url": server.URL},
+	err := NewHTTPExecutorWithClient(client).Execute(context.Background(), ruleengine.Message{}, ruleengine.Action{
+		Params: map[string]interface{}{"url": "https://service.example/events"},
 	})
 	if err == nil {
 		t.Fatalf("expected non-2xx error")
@@ -223,15 +279,14 @@ func TestHTTPExecutorReturnsTemplateError(t *testing.T) {
 }
 
 func TestHTTPExecutorReturnsTimeoutError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(50 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+	client := &http.Client{Transport: executorRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
 
-	err := NewHTTPExecutor().Execute(context.Background(), ruleengine.Message{}, ruleengine.Action{
+	err := NewHTTPExecutorWithClient(client).Execute(context.Background(), ruleengine.Message{}, ruleengine.Action{
 		Params: map[string]interface{}{
-			"url":        server.URL,
+			"url":        "https://service.example/events",
 			"timeout_ms": 1,
 		},
 	})
@@ -240,6 +295,15 @@ func TestHTTPExecutorReturnsTimeoutError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "execute request") {
 		t.Fatalf("error = %q, want execute request", err.Error())
+	}
+}
+
+func TestHTTPExecutorReturnsRequestCreationError(t *testing.T) {
+	err := NewHTTPExecutor().Execute(context.Background(), ruleengine.Message{}, ruleengine.Action{
+		Params: map[string]interface{}{"url": "://invalid"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "create request") {
+		t.Fatalf("request creation error = %v", err)
 	}
 }
 

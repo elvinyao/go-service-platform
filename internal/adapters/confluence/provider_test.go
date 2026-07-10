@@ -1,19 +1,27 @@
 package confluence
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
-	internalconfig "project/internal/config"
-	"project/internal/dataaccess"
-	"project/internal/manager"
-	"project/internal/service"
-	"project/pkg/ruleengine"
+	internalconfig "github.com/elvinyao/go-service-platform/internal/config"
+	"github.com/elvinyao/go-service-platform/internal/dataaccess"
+	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/service"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
+
+type confluenceRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f confluenceRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestProviderSnapshotMapsSettingsToRules(t *testing.T) {
 	ctx := context.Background()
@@ -102,7 +110,7 @@ func TestProviderNameAndStartUseCurrentSnapshot(t *testing.T) {
 	}
 }
 
-func TestProviderSnapshotInvalidRegexDoesNotMatchMessage(t *testing.T) {
+func TestProviderSnapshotInvalidRegexUsesLastGood(t *testing.T) {
 	ctx := context.Background()
 	sm, cleanup := newConfluenceServiceManager(t, []service.SettingRule{
 		{
@@ -117,10 +125,9 @@ func TestProviderSnapshotInvalidRegexDoesNotMatchMessage(t *testing.T) {
 
 	provider := NewProvider("confluence", ruleengine.DefaultWorkflowName, sm)
 	snapshot := provider.Snapshot(ctx)
-	matches := ruleengine.MatchRules(snapshot.Rules, ruleengine.Message{Type: "AAA", Content: "anything"})
 
-	if len(matches) != 0 {
-		t.Fatalf("matches len = %d, want 0 for invalid regex", len(matches))
+	if len(snapshot.Rules) != 0 || !strings.Contains(snapshot.LastError, "regex is invalid") {
+		t.Fatalf("invalid snapshot = %+v, want empty last-good with validation error", snapshot)
 	}
 }
 
@@ -175,30 +182,60 @@ func TestProviderSnapshotReturnsLastErrorWhenServiceMissing(t *testing.T) {
 	}
 }
 
+func TestProviderLastGoodSnapshotIsDeeplyIsolated(t *testing.T) {
+	provider := NewProvider("confluence", ruleengine.DefaultWorkflowName, manager.NewServiceManager("test"))
+	provider.lastGood = ruleengine.RuleSet{Rules: []ruleengine.Rule{{
+		ID: "r1",
+		Actions: []ruleengine.Action{{
+			ID:       "a1",
+			Executor: "mattermost",
+			Params: map[string]interface{}{
+				"headers": map[string]interface{}{"X-Test": "original"},
+			},
+		}},
+	}}}
+
+	first := provider.Snapshot(context.Background())
+	first.Rules[0].Actions[0].Params["headers"].(map[string]interface{})["X-Test"] = "changed"
+	second := provider.Snapshot(context.Background())
+	if got := second.Rules[0].Actions[0].Params["headers"].(map[string]interface{})["X-Test"]; got != "original" {
+		t.Fatalf("last-good header = %v, want original", got)
+	}
+}
+
 func newConfluenceServiceManager(t *testing.T, rules []service.SettingRule) (*manager.ServiceManager, func()) {
 	t.Helper()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/rest/api/content/settings-page-1" {
-			http.NotFound(w, r)
-			return
-		}
-
-		body, err := json.Marshal(map[string]interface{}{"rules": rules})
-		if err != nil {
-			t.Fatalf("marshal rules: %v", err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":    "settings-page-1",
-			"title": "Workflow Settings",
-			"body": map[string]interface{}{
-				"storage": map[string]interface{}{
-					"value": string(body),
-				},
+	settingsBody, err := json.Marshal(map[string]interface{}{"rules": rules})
+	if err != nil {
+		t.Fatalf("marshal rules: %v", err)
+	}
+	responseBody, err := json.Marshal(map[string]interface{}{
+		"id":    "settings-page-1",
+		"title": "Workflow Settings",
+		"body": map[string]interface{}{
+			"storage": map[string]interface{}{
+				"value": string(settingsBody),
 			},
-		})
-	}))
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	client := &http.Client{Transport: confluenceRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		body := responseBody
+		if request.URL.Path != "/rest/api/content/settings-page-1" {
+			status = http.StatusNotFound
+			body = []byte("not found")
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    request,
+		}, nil
+	})}
 
 	ctx := context.Background()
 	sm := manager.NewServiceManager("test")
@@ -209,19 +246,18 @@ func newConfluenceServiceManager(t *testing.T, rules []service.SettingRule) (*ma
 		internalconfig.ConfluenceSettingsConfig{
 			PageID:          "settings-page-1",
 			RefreshInterval: time.Hour,
-			APIEndpoint:     server.URL,
+			APIEndpoint:     "http://confluence.test",
 			SpaceKey:        "TEST",
 		},
 		"test",
+		client,
 	)
 	sm.RegisterService(svc)
 	if err := svc.Start(ctx); err != nil {
-		server.Close()
 		t.Fatalf("start settings service: %v", err)
 	}
 
 	return sm, func() {
 		_ = svc.Stop(context.Background())
-		server.Close()
 	}
 }

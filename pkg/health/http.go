@@ -3,9 +3,9 @@ package health
 import (
 	"context"
 	"encoding/json"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
 	"net/http"
-	appctx "project/pkg/context"
-	"project/pkg/logger"
 	"time"
 )
 
@@ -32,12 +32,10 @@ func (h *HealthHandler) HandleSystemHealth(w http.ResponseWriter, r *http.Reques
 	// Set response status code based on health status
 	statusCode := http.StatusOK
 	switch report.Status {
-	case StatusDegraded:
-		statusCode = http.StatusServiceUnavailable
 	case StatusDown:
 		statusCode = http.StatusServiceUnavailable
 	case StatusUnknown:
-		statusCode = http.StatusInternalServerError
+		statusCode = http.StatusServiceUnavailable
 	}
 
 	// Set content type
@@ -134,7 +132,7 @@ func (h *HealthHandler) HandleReadinessCheck(w http.ResponseWriter, r *http.Requ
 	// Get system health
 	report := h.manager.GetHealthReport(ctx)
 
-	// For readiness, we only care if the system is UP or DEGRADED
+	// Warning-level degradation remains ready; critical failures produce DOWN.
 	if report.Status == StatusDown || report.Status == StatusUnknown {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -149,29 +147,19 @@ func (h *HealthHandler) HandleReadinessCheck(w http.ResponseWriter, r *http.Requ
 
 // HandleLivenessCheck handles liveness check requests
 func (h *HealthHandler) HandleLivenessCheck(w http.ResponseWriter, r *http.Request) {
-	ctx := appctx.FromRequest(r)
-	ctx = appctx.WithOperationName(ctx, "liveness_check")
-
-	// Get system health
-	report := h.manager.GetHealthReport(ctx)
-
-	// For liveness, we only care if the system is completely DOWN
-	if report.Status == StatusDown {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"status": "DOWN"}`))
-		return
-	}
-
+	// Reaching this handler proves the process and admin server are alive.
+	// Dependency health belongs to readiness and must not trigger restart loops.
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status": "UP"}`))
 }
 
 // RegisterHTTPHandlers registers all health check handlers with the provided mux
 func (h *HealthHandler) RegisterHTTPHandlers(mux *http.ServeMux) {
-	mux.HandleFunc("/health", h.HandleSystemHealth)
-	mux.HandleFunc("/health/service", h.HandleServiceHealth)
-	mux.HandleFunc("/health/readiness", h.HandleReadinessCheck)
-	mux.HandleFunc("/health/liveness", h.HandleLivenessCheck)
+	mux.HandleFunc("GET /health", h.HandleSystemHealth)
+	mux.HandleFunc("GET /health/service", h.HandleServiceHealth)
+	mux.HandleFunc("GET /health/readiness", h.HandleReadinessCheck)
+	mux.HandleFunc("GET /health/liveness", h.HandleLivenessCheck)
 }
 
 // getServiceByName returns a service by name from the health manager

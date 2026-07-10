@@ -1,5 +1,7 @@
 # Go Service Framework Implementation Plan
 
+> Historical implementation record. Commands, import paths, ports, and proposed files in this plan describe the repository during migration and are not the current operating guide. Use `README.md` and `docs/development.md` for the implemented system.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Rebuild the project as a reusable, configurable, rule-driven Go service framework with a runnable reference application.
@@ -1586,7 +1588,7 @@ If `config/config.yaml` is no longer loaded, replace its content with:
 Run:
 
 ```bash
-rg -n "WorkflowA|WorkflowC|logrus|Go 1\\.22|其他|Other necessary imports|In actual implementation|In a real implementation|For now|simulate" README.md docs config internal pkg
+rg -n "WorkflowA|WorkflowC|logrus|Go 1\\.22|Other necessary imports|In actual implementation|In a real implementation|For now|simulate" README.md docs config internal pkg
 ```
 
 Expected: no stale README/config references. Remaining code comments must be rewritten in English with concrete descriptions or removed.
@@ -1710,7 +1712,7 @@ Expected: both endpoints return JSON.
 Run:
 
 ```bash
-rg -n "WorkflowA|WorkflowC|Go 1\\.22|其他|Other necessary imports|T[O]DO|T[B]D|F[I]XME" .
+rg -n "WorkflowA|WorkflowC|Go 1\\.22|Other necessary imports|T[O]DO|T[B]D|F[I]XME" .
 ```
 
 Expected: no stale references in active source, config, or docs. Historical spec and plan files may reference old workflow names as migration context.

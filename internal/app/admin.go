@@ -3,15 +3,14 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 
-	"project/internal/manager"
-	workflowimpl "project/internal/workflow"
-	appctx "project/pkg/context"
-	"project/pkg/health"
-	"project/pkg/logger"
-	"project/pkg/ruleengine"
+	"github.com/elvinyao/go-service-platform/internal/manager"
+	workflowimpl "github.com/elvinyao/go-service-platform/internal/workflow"
+	appctx "github.com/elvinyao/go-service-platform/pkg/context"
+	"github.com/elvinyao/go-service-platform/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/logger"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
 func newAdminMux(serviceManager *manager.ServiceManager, workflowManager *manager.WorkflowManager, healthManager *health.HealthManager) *http.ServeMux {
@@ -20,13 +19,13 @@ func newAdminMux(serviceManager *manager.ServiceManager, workflowManager *manage
 	healthHandler := health.NewHealthHandler(healthManager)
 	healthHandler.RegisterHTTPHandlers(mux)
 
-	mux.HandleFunc("/services", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /services", func(w http.ResponseWriter, r *http.Request) {
 		servicesList(w, r, serviceManager)
 	})
-	mux.HandleFunc("/workflows", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /workflows", func(w http.ResponseWriter, r *http.Request) {
 		workflowsList(w, r, workflowManager)
 	})
-	mux.HandleFunc("/rule-engine", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /rule-engine", func(w http.ResponseWriter, r *http.Request) {
 		ruleEngineInfo(w, r, workflowManager)
 	})
 
@@ -52,7 +51,7 @@ func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manage
 		info := ServiceInfo{
 			Name:    svc.GetName(),
 			Running: svc.IsRunning(ctx),
-			Type:    fmt.Sprintf("%T", svc),
+			Type:    svc.GetType(),
 		}
 
 		if metricProvider, ok := svc.(interface {
@@ -61,11 +60,7 @@ func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manage
 			info.Metrics = metricProvider.GetMetrics(ctx)
 		}
 
-		if workflowProvider, ok := svc.(interface {
-			GetWorkflowName() string
-		}); ok {
-			info.Workflow = workflowProvider.GetWorkflowName()
-		}
+		info.Workflow = svc.GetWorkflow()
 
 		serviceInfos = append(serviceInfos, info)
 	}
