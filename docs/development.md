@@ -1325,6 +1325,9 @@ Treat race failures as real bugs. Common causes:
 
 ## Where to Go Next
 
+- Guided first session: `docs/getting-started.md`
+- Copyable framework recipes: `docs/cookbook.md`
+- Runnable examples and scenario rule files: `examples/README.md`
 - Configuration details: `docs/configuration.md`
 - Rule engine concepts: `docs/rule-engine.md`
 - Executor SDK: `docs/executors.md`

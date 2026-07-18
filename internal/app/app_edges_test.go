@@ -196,6 +196,23 @@ func TestSetupMessageListenersReturnsMissingAndTypeMismatchErrors(t *testing.T) 
 	}
 }
 
+func TestMonitorServicesReturnsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		monitorServices(ctx, manager.NewServiceManager("test"))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("monitorServices did not return after context cancellation")
+	}
+}
+
 func TestAppStopReturnsServiceShutdownError(t *testing.T) {
 	sm := manager.NewServiceManager("test")
 	sm.RegisterService(appFailingStopService{appTestService{name: "failing"}})

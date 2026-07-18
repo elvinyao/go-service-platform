@@ -173,11 +173,13 @@ Liveness reports only whether the process and admin server can respond; dependen
 
 ```bash
 go run ./examples/basic-rule-pipeline
+go run ./examples/custom-executor
+WORKFLOW_RULES=examples/rules/incident-routing.yaml go run ./examples/http-event-gateway
 go run ./examples/websocket-to-log
 go run ./examples/websocket-to-mattermost
 ```
 
-The WebSocket examples require `make fake-server` in another terminal. See [Runnable Examples](examples/README.md) for inputs and environment variables.
+The HTTP gateway and custom executor need no external services. The WebSocket examples require `make fake-server` in another terminal. See [Runnable Examples](examples/README.md) for complete inputs, environment variables, and four reusable rule sets.
 
 ## Development
 
@@ -189,7 +191,7 @@ make coverage
 
 `make coverage` enforces at least 90% statement coverage for every package that contains tests in both Go modules.
 
-The full developer workflow, debugger setup, architecture tour, troubleshooting steps, and six realistic use cases are in the [Development Guidebook](docs/development.md).
+New users should begin with [Getting Started](docs/getting-started.md), then use the [Framework Cookbook](docs/cookbook.md) for focused extension recipes. The full developer workflow, debugger setup, architecture tour, troubleshooting steps, and six realistic use cases are in the [Development Guidebook](docs/development.md).
 
 ## Project Layout
 
@@ -212,6 +214,9 @@ pkg/runtime/                Public runtime helpers
 
 ## Further Reading
 
+- [Documentation Map](docs/README.md)
+- [Getting Started](docs/getting-started.md)
+- [Framework Cookbook](docs/cookbook.md)
 - [Configuration](docs/configuration.md)
 - [Rule Engine](docs/rule-engine.md)
 - [Executors](docs/executors.md)
