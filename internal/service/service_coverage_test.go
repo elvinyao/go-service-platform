@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -418,8 +419,12 @@ func TestWebSocketServiceHealthCheckerBranches(t *testing.T) {
 	defer svc.Stop(context.Background())
 
 	noConnections := checker.Check(ctx)
-	if noConnections.Status != health.StatusDegraded {
-		t.Fatalf("no-connection status = %s, want DEGRADED", noConnections.Status)
+	if noConnections.Status != health.StatusDown || noConnections.Level != health.LevelCritical {
+		t.Fatalf(
+			"no-connection result = status:%s level:%s, want DOWN/CRITICAL",
+			noConnections.Status,
+			noConnections.Level,
+		)
 	}
 
 	svc.mu.Lock()
@@ -437,6 +442,38 @@ func TestWebSocketServiceHealthCheckerBranches(t *testing.T) {
 	connected := checker.Check(ctx)
 	if connected.Status != health.StatusUp {
 		t.Fatalf("connected status = %s, want UP", connected.Status)
+	}
+}
+
+func TestDisconnectedWebSocketFailsReadinessButNotLiveness(t *testing.T) {
+	svc := NewWebSocketService(WebSocketInputServiceName, "WorkflowEngine", internalconfig.WebSocketConfig{
+		ServerURL:         "ws://127.0.0.1:1",
+		Path:              "/ws",
+		ReconnectInterval: time.Millisecond,
+	}, "test")
+	svc.setRunning(true)
+	defer svc.setRunning(false)
+
+	manager := health.NewHealthManager(0, "test")
+	manager.RegisterService(svc)
+	handler := health.NewHealthHandler(manager)
+
+	readiness := httptest.NewRecorder()
+	handler.HandleReadinessCheck(
+		readiness,
+		httptest.NewRequest(http.MethodGet, "/health/readiness", nil),
+	)
+	if readiness.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness status = %d, want 503", readiness.Code)
+	}
+
+	liveness := httptest.NewRecorder()
+	handler.HandleLivenessCheck(
+		liveness,
+		httptest.NewRequest(http.MethodGet, "/health/liveness", nil),
+	)
+	if liveness.Code != http.StatusOK {
+		t.Fatalf("liveness status = %d, want 200", liveness.Code)
 	}
 }
 

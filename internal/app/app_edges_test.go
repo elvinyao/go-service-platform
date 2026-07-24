@@ -61,6 +61,14 @@ func (s appFailingStopService) Stop(ctx context.Context) error {
 	return fmt.Errorf("stop failed")
 }
 
+type appFailingStopWorkflow struct {
+	appTestWorkflow
+}
+
+func (w appFailingStopWorkflow) Stop(context.Context) error {
+	return fmt.Errorf("stop failed")
+}
+
 type failingResponseWriter struct {
 	header http.Header
 	code   int
@@ -227,6 +235,24 @@ func TestAppStopReturnsServiceShutdownError(t *testing.T) {
 	}
 }
 
+func TestAppStopReturnsWorkflowShutdownError(t *testing.T) {
+	wm := manager.NewWorkflowManager()
+	if err := wm.RegisterWorkflow(appFailingStopWorkflow{
+		appTestWorkflow{name: "failing"},
+	}); err != nil {
+		t.Fatalf("register workflow: %v", err)
+	}
+	application := &App{workflowManager: wm, started: true}
+
+	err := application.Stop(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "stop workflows") {
+		t.Fatalf("stop error = %v, want workflow shutdown error", err)
+	}
+	if !application.started {
+		t.Fatalf("failed stop cleared lifecycle state")
+	}
+}
+
 func TestAppStartCleansUpWhenWorkflowConfigIsInvalid(t *testing.T) {
 	wsServer, _ := newTestWebSocketServer(t)
 	defer wsServer.Close()
@@ -296,20 +322,39 @@ workflows:
 	if err := application.Start(ctx); err != nil {
 		t.Fatalf("start app with websocket disabled: %v", err)
 	}
-	defer func() {
+	stopApp := func() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stopCancel()
 		if err := application.Stop(stopCtx); err != nil {
 			t.Fatalf("stop app: %v", err)
 		}
-	}()
+	}
 
 	resp, err := http.Get("http://" + application.adminServer.Addr() + "/services")
 	if err != nil {
 		t.Fatalf("get services: %v", err)
 	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("services status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	stopApp()
+	if application.started {
+		t.Fatalf("stopped application still reports started")
+	}
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("restart app after clean stop: %v", err)
+	}
+	defer stopApp()
+
+	resp, err = http.Get("http://" + application.adminServer.Addr() + "/health/readiness")
+	if err != nil {
+		t.Fatalf("get readiness after restart: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("services status = %d, want 200", resp.StatusCode)
+		t.Fatalf("readiness status after restart = %d, want 200", resp.StatusCode)
 	}
 }

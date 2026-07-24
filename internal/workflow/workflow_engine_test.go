@@ -461,6 +461,33 @@ func TestNewWorkflowEngineRejectsUnknownProviderAndDisabledExecutor(t *testing.T
 		}
 	})
 
+	t.Run("unknown rule workflow", func(t *testing.T) {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "rule-engine.yaml")
+		rulesPath := filepath.Join(dir, "workflow-rules.yaml")
+		writeFile(t, configPath, `workflows:
+  - name: WorkflowEngine
+    providers: [yaml]
+    mode: single
+`)
+		writeFile(t, rulesPath, `rules:
+  - id: typo
+    workflow: WorkfloEngine
+    actions:
+      - executor: log
+`)
+
+		_, err := NewWorkflowEngine(
+			context.Background(),
+			manager.NewServiceManager("test"),
+			configPath,
+			rulesPath,
+		)
+		if err == nil || !strings.Contains(err.Error(), "has no configured policy") {
+			t.Fatalf("workflow error = %v", err)
+		}
+	})
+
 	t.Run("confluence requires mattermost executor", func(t *testing.T) {
 		dir := t.TempDir()
 		configPath := filepath.Join(dir, "rule-engine.yaml")

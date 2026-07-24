@@ -19,7 +19,7 @@ type ComposerSnapshot struct {
 
 func NewComposer(config EngineConfig, providers map[string]RuleProvider) *Composer {
 	return &Composer{
-		config:    config,
+		config:    CloneEngineConfig(config),
 		providers: providers,
 	}
 }
@@ -37,7 +37,7 @@ func (c *Composer) Snapshot(ctx context.Context) ComposerSnapshot {
 	}
 
 	return ComposerSnapshot{
-		Config:    cloneEngineConfig(c.config),
+		Config:    CloneEngineConfig(c.config),
 		Providers: providers,
 	}
 }
@@ -63,7 +63,7 @@ func (c *Composer) BuildExecutionPlan(ctx context.Context, workflow string, msg 
 			return ExecutionPlan{}, fmt.Errorf("rule provider %s not found", name)
 		}
 		rs := CloneRuleSet(provider.Snapshot(ctx))
-		if err := ValidateRuleSet(rs); err != nil {
+		if err := ValidateProviderRuleSet(c.config, name, rs); err != nil {
 			return ExecutionPlan{}, fmt.Errorf("rule provider %s published invalid rules: %w", name, err)
 		}
 		workflowRules := filterRulesByWorkflow(rs.Rules, workflow)
@@ -203,7 +203,8 @@ func actionDedupKey(action Action) string {
 	return action.Executor + "|" + params
 }
 
-func cloneEngineConfig(cfg EngineConfig) EngineConfig {
+// CloneEngineConfig returns a copy whose workflow slices can be mutated safely.
+func CloneEngineConfig(cfg EngineConfig) EngineConfig {
 	out := cfg
 	out.Workflows = append([]WorkflowPolicy(nil), cfg.Workflows...)
 	for i := range out.Workflows {

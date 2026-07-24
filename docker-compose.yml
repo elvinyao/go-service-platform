@@ -7,6 +7,12 @@ services:
       - "127.0.0.1:8091:8091"
       - "127.0.0.1:8092:8092"
       - "127.0.0.1:8093:8093"
+    healthcheck:
+      test: ["CMD", "/fake-server", "-healthcheck", "-ws-port", "8093"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 1s
 
   service-workflow:
     build:
@@ -22,4 +28,5 @@ services:
     ports:
       - "127.0.0.1:${ADMIN_PORT:-18080}:8080"
     depends_on:
-      - fake-server
+      fake-server:
+        condition: service_healthy

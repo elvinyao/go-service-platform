@@ -58,7 +58,7 @@ Run the equivalent full demo with Docker:
 docker compose up --build
 ```
 
-Compose publishes the admin API at `http://localhost:18080` on the host loopback interface. Use `ADMIN_PORT=8080 docker compose up --build` to choose another host port.
+Compose waits for the fake API health check before starting the reference runtime. It publishes the admin API at `http://localhost:18080` on the host loopback interface. Use `ADMIN_PORT=8080 docker compose up --build` to choose another host port.
 
 ## Processing Model
 
@@ -93,6 +93,7 @@ if err != nil {
 if err := engine.Start(ctx); err != nil {
     return err
 }
+defer engine.Stop(context.Background())
 
 plan, err := engine.Process(ctx, ruleengine.DefaultWorkflowName, message)
 ```
@@ -110,7 +111,7 @@ Configuration is split by responsibility:
 
 Select files with `RUNTIME_CONFIG`, `RULE_ENGINE_CONFIG`, and `WORKFLOW_RULES`. Operational values such as `ADMIN_ADDR`, integration URLs, and logging options can be overridden through environment variables.
 
-Configuration loading is strict. Unknown YAML fields, multiple YAML documents, invalid durations or URLs, duplicate names, invalid composition modes, missing explicitly selected files, unavailable providers, and rules that reference unregistered executors fail startup with a descriptive error.
+Configuration loading is strict. Unknown YAML fields, multiple YAML documents, invalid durations or URLs, duplicate names, invalid composition modes, missing explicitly selected files, unavailable providers, unknown or unreachable rule workflows, and rules that reference unregistered executors fail startup with a descriptive error.
 
 See [Configuration](docs/configuration.md) for every field and override.
 
@@ -143,7 +144,7 @@ Rules support `eq`, `contains`, and `regex` conditions. Built-in executors are `
 
 - `pkg/ruleengine`: messages, rules, matching, composition, static and YAML providers
 - `pkg/executor`: executor API, registry, templates, and built-in `log` and `http` executors
-- `pkg/pipeline`: provider startup, configuration preflight, plan execution, and snapshots
+- `pkg/pipeline`: lifecycle rollback, configuration preflight, plan execution, and snapshots
 - `pkg/config`: strict runtime configuration loading and validation
 - `pkg/runtime`: fail-fast admin HTTP server lifecycle
 - `pkg/health`: health checks and HTTP handlers
@@ -165,7 +166,7 @@ The reference runtime exposes:
 - `GET /workflows`
 - `GET /rule-engine`
 
-Critical service failures make health and readiness return HTTP 503. Warning-level degradation remains ready. The current runtime does not expose `/metrics`; defining and implementing a stable metrics contract is future work.
+Critical service failures make health and readiness return HTTP 503. In particular, an enabled WebSocket input with no active connection is not ready even while its reconnect loop is running. Warning-level degradation remains ready. The current runtime does not expose `/metrics`; defining and implementing a stable metrics contract is future work.
 
 Liveness reports only whether the process and admin server can respond; dependency failures do not turn liveness into 503 and therefore do not create orchestrator restart loops. The repository profiles bind the unauthenticated admin API to `127.0.0.1` by default. Containers opt in to an all-interface listener explicitly.
 

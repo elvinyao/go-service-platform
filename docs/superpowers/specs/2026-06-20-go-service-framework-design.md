@@ -79,6 +79,9 @@ internal/
 
 examples/
   basic-rule-pipeline/
+  custom-executor/
+  http-event-gateway/
+  rules/
   websocket-to-log/
   websocket-to-mattermost/
 
@@ -164,7 +167,11 @@ This keeps the SDK usable without pulling business-specific dependencies into th
 - validates that configured provider names are registered
 - starts providers before processing messages
 - validates every provider snapshot at startup and composition time
+- validates explicit rule workflows against provider/workflow wiring
 - rejects enabled rules that reference unregistered executors
+- starts optional lifecycle-aware executors after provider preflight
+- rolls back providers and executors in reverse startup order
+- stops cleanly and waits for in-flight processing
 - builds execution plans through `pkg/ruleengine`
 - executes all selected actions and aggregates action failures
 - exposes immutable configuration, provider, and executor snapshots
@@ -255,7 +262,7 @@ The README should teach users to add rules, providers, and executors, not to add
 
 ### Docker Compose
 
-`docker compose up` starts an equivalent local environment. It uses the same default behavior as `make dev`, publishes development ports on host loopback, and uses environment overrides only where container networking requires them.
+`docker compose up` starts an equivalent local environment. It uses the same default behavior as `make dev`, waits for the fake server health check before starting the runtime, publishes development ports on host loopback, and uses environment overrides only where container networking requires them.
 
 ### Verification Flow
 
@@ -289,11 +296,16 @@ Primary docs:
 
 ```text
 README.md
+docs/README.md
+docs/getting-started.md
+docs/cookbook.md
 docs/configuration.md
 docs/rule-engine.md
 docs/executors.md
+docs/concurrency.md
 docs/adapters.md
 docs/development.md
+examples/README.md
 ```
 
 README should focus on:

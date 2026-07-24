@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"fake-server/internal/fakeapi"
 )
@@ -23,6 +25,8 @@ var newFakeAPIManagerWithPorts = func(confluencePort, mmHTTPPort, mmWSPort, wsPo
 	return fakeapi.NewFakeAPIManagerWithPorts(confluencePort, mmHTTPPort, mmWSPort, wsPort)
 }
 
+var fakeServerHealthCheck = checkFakeServerHealth
+
 func run(args []string, sigChan <-chan os.Signal, flagOutput io.Writer) error {
 	flags := flag.NewFlagSet("fake-server", flag.ContinueOnError)
 	if flagOutput != nil {
@@ -32,8 +36,12 @@ func run(args []string, sigChan <-chan os.Signal, flagOutput io.Writer) error {
 	mmHTTPPort := flags.Int("mm-http-port", fakeapi.DefaultMattermostHTTPPort, "Mattermost HTTP API port")
 	mmWSPort := flags.Int("mm-ws-port", fakeapi.DefaultMattermostWSPort, "Mattermost WebSocket port")
 	wsPort := flags.Int("ws-port", fakeapi.DefaultWebSocketPort, "WebSocket server port")
+	healthcheck := flags.Bool("healthcheck", false, "Check whether the fake WebSocket server is ready")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if *healthcheck {
+		return fakeServerHealthCheck(*wsPort)
 	}
 
 	log.Println("Fake API Server Runner for Development")
@@ -61,6 +69,19 @@ func run(args []string, sigChan <-chan os.Signal, flagOutput io.Writer) error {
 		return fmt.Errorf("failed to stop fake API servers: %w", err)
 	}
 	log.Println("Goodbye")
+	return nil
+}
+
+func checkFakeServerHealth(port int) error {
+	client := &http.Client{Timeout: 2 * time.Second}
+	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+	if err != nil {
+		return fmt.Errorf("check fake server health: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("check fake server health: status %d", response.StatusCode)
+	}
 	return nil
 }
 

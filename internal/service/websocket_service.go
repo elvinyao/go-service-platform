@@ -121,6 +121,13 @@ func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan stru
 		}
 
 		s.mu.Lock()
+		select {
+		case <-stopChan:
+			s.mu.Unlock()
+			conn.Close()
+			return
+		default:
+		}
 		s.conn = conn
 		s.connections = 1
 		s.mu.Unlock()
@@ -340,7 +347,7 @@ type websocketConnectionChecker struct {
 // Check implements the Checker interface
 func (c *websocketConnectionChecker) Check(ctx context.Context) *health.CheckResult {
 	result := health.NewCheckResult("websocket-connections", health.CategoryConnectivity)
-	result.Level = health.LevelWarning
+	result.Level = health.LevelCritical
 
 	// Check if service is running
 	if !c.service.IsRunning(ctx) {
@@ -359,7 +366,7 @@ func (c *websocketConnectionChecker) Check(ctx context.Context) *health.CheckRes
 
 	// Check connection count
 	if connections == 0 {
-		result.SetStatus(health.StatusDegraded, "No active WebSocket connections")
+		result.SetStatus(health.StatusDown, "No active WebSocket connections")
 	} else {
 		result.SetStatus(health.StatusUp, fmt.Sprintf("Active WebSocket connections: %d", connections))
 	}

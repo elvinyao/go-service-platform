@@ -156,6 +156,8 @@ curl -s http://localhost:18080/health
 curl -s http://localhost:18080/rule-engine
 ```
 
+The fake server image includes its own health-check mode. Compose waits for that check to pass before it starts `service-workflow`, matching the dependency gate used by `make dev`.
+
 Compose publishes the admin and fake API ports on the host loopback interface. The admin API uses host port `18080` by default to avoid local `8080` conflicts. Override it with:
 
 ```bash
@@ -1124,7 +1126,7 @@ curl -s http://localhost:18080/health/liveness
 curl -s http://localhost:18080/services
 ```
 
-`/health` includes real memory and goroutine checks, a critical running check for every registered service, and each service's custom checks. Critical failures return HTTP 503 and make readiness `NOT_READY`; warning-level degradation returns HTTP 200 and remains ready. During shutdown, readiness immediately returns `NOT_READY`. Liveness remains `UP` while the process can serve the endpoint, independent of external dependency failures.
+`/health` includes real memory and goroutine checks, a critical running check for every registered service, and each service's custom checks. Critical failures return HTTP 503 and make readiness `NOT_READY`; warning-level degradation returns HTTP 200 and remains ready. An enabled WebSocket input with zero active connections is a critical failure while its reconnect loop continues in the background. During shutdown, readiness immediately returns `NOT_READY`. Liveness remains `UP` while the process can serve the endpoint, independent of external dependency failures.
 
 Read:
 

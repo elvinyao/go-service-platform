@@ -33,6 +33,20 @@ func TestAppRejectsDuplicateStartBeforeChangingResources(t *testing.T) {
 	}
 }
 
+func TestAppRejectsInvalidRuntimeConfigBeforeWiring(t *testing.T) {
+	cfg := config.DefaultRuntimeConfig()
+	cfg.Admin.Address = ""
+	application := New("test", cfg, "", "")
+
+	err := application.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "invalid runtime config") {
+		t.Fatalf("start error = %v, want invalid runtime config", err)
+	}
+	if application.container != nil || application.serviceManager != nil || application.adminServer != nil {
+		t.Fatalf("invalid config changed application resources")
+	}
+}
+
 func TestAppSuccessfulStopClearsLifecycleState(t *testing.T) {
 	application := &App{started: true}
 

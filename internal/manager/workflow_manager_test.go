@@ -2,7 +2,9 @@ package manager
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/elvinyao/go-service-platform/internal/interfaces"
@@ -15,6 +17,9 @@ type testWorkflow struct {
 	calls      int
 	lastMsg    model.Message
 	registered bool
+	stopErr    error
+	stopCalls  int
+	stopEvents *[]string
 }
 
 func (w *testWorkflow) GetName() string {
@@ -25,6 +30,14 @@ func (w *testWorkflow) ProcessMessage(ctx context.Context, msg model.Message) er
 	w.calls++
 	w.lastMsg = msg
 	return w.err
+}
+
+func (w *testWorkflow) Stop(context.Context) error {
+	w.stopCalls++
+	if w.stopEvents != nil {
+		*w.stopEvents = append(*w.stopEvents, w.name)
+	}
+	return w.stopErr
 }
 
 func TestWorkflowManagerDispatchMessageReturnsErrorWhenNoWorkflowsRegistered(t *testing.T) {
@@ -145,6 +158,26 @@ func TestNewWorkflowManagerWithDIReturnsFactoryError(t *testing.T) {
 	}
 }
 
+func TestNewWorkflowManagerWithDIRollsBackCreatedWorkflows(t *testing.T) {
+	first := &testWorkflow{name: "first"}
+	_, err := NewWorkflowManagerWithDI(
+		context.Background(),
+		NewServiceManager("test"),
+		func(*ServiceManager) (interfaces.Workflow, error) {
+			return first, nil
+		},
+		func(*ServiceManager) (interfaces.Workflow, error) {
+			return nil, fmt.Errorf("second factory failed")
+		},
+	)
+	if err == nil {
+		t.Fatalf("expected factory error")
+	}
+	if first.stopCalls != 1 {
+		t.Fatalf("first workflow stop calls = %d, want 1", first.stopCalls)
+	}
+}
+
 func TestNewWorkflowManagerWithDIRejectsNilFactoriesAndWorkflows(t *testing.T) {
 	sm := NewServiceManager("test")
 	if _, err := NewWorkflowManagerWithDI(context.Background(), sm, nil); err == nil {
@@ -183,5 +216,28 @@ func TestWorkflowManagerLookupAndListMethods(t *testing.T) {
 	all := wm.GetAllWorkflows(context.Background())
 	if len(all) != 2 || all["first"] != first || all["second"] != second {
 		t.Fatalf("all workflows = %+v", all)
+	}
+}
+
+func TestWorkflowManagerStopAllUsesReverseOrderAndAggregatesErrors(t *testing.T) {
+	wm := NewWorkflowManager()
+	var events []string
+	stopErr := fmt.Errorf("stop failed")
+	for _, workflow := range []*testWorkflow{
+		{name: "alpha", stopEvents: &events},
+		{name: "charlie", stopErr: stopErr, stopEvents: &events},
+		{name: "bravo", stopEvents: &events},
+	} {
+		if err := wm.RegisterWorkflow(workflow); err != nil {
+			t.Fatalf("register %s: %v", workflow.name, err)
+		}
+	}
+
+	err := wm.StopAll(nil)
+	if !stderrors.Is(err, stopErr) {
+		t.Fatalf("stop error = %v, want wrapped %v", err, stopErr)
+	}
+	if got := strings.Join(events, ","); got != "charlie,bravo,alpha" {
+		t.Fatalf("stop order = %s, want charlie,bravo,alpha", got)
 	}
 }

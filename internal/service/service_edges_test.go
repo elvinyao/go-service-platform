@@ -231,6 +231,54 @@ func TestMattermostWebSocketLifecycle(t *testing.T) {
 	}
 }
 
+func TestMattermostWebSocketReconnectsAfterDisconnect(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	connections := make(chan int, 2)
+	var connectionCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer connection.Close()
+
+		count := int(connectionCount.Add(1))
+		connections <- count
+		if count == 1 {
+			return
+		}
+		for {
+			if _, _, err := connection.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", internalconfig.MattermostConfig{
+		ServerURL:    server.URL,
+		WebsocketURL: httpToWS(server.URL),
+		APIToken:     "token",
+	}, "test")
+	svc.wsRetry = 10 * time.Millisecond
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer svc.Stop(context.Background())
+
+	for want := 1; want <= 2; want++ {
+		select {
+		case got := <-connections:
+			if got != want {
+				t.Fatalf("connection number = %d, want %d", got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for connection %d", want)
+		}
+	}
+}
+
 func TestMattermostConnectionCheckerUsesWarningLevel(t *testing.T) {
 	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", internalconfig.MattermostConfig{
 		ServerURL:    "http://mattermost.test",

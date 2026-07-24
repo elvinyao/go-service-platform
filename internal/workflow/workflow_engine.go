@@ -150,6 +150,11 @@ func (w *WorkflowEngine) AdminSnapshot(ctx context.Context) EngineAdminSnapshot 
 	}
 }
 
+// Stop releases lifecycle-aware rule providers and executors.
+func (w *WorkflowEngine) Stop(ctx context.Context) error {
+	return w.engine.Stop(ctx)
+}
+
 func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg model.Message) error {
 	ctx = appctx.WithServiceName(ctx, w.name)
 	ctx = appctx.WithOperationName(ctx, "process_message")

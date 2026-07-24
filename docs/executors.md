@@ -13,6 +13,20 @@ type Executor interface {
 
 Executor types must be non-empty and unique. Both `executor.Registry.Register` and `pipeline.New` reject nil, typed-nil, empty, and duplicate registrations without replacing an existing executor. `pipeline.Engine.Start` rejects enabled provider rules that reference an unregistered type, so wiring mistakes fail before messages are accepted.
 
+An executor that owns a client, connection, or worker can additionally implement:
+
+```go
+type Starter interface {
+    Start(context.Context) error
+}
+
+type Stopper interface {
+    Stop(context.Context) error
+}
+```
+
+These lifecycle interfaces are optional and live in `pkg/pipeline`. Lifecycle-aware executors start after provider preflight. On failure, the engine stops started executors and providers in reverse order. Normal `Engine.Stop` uses the same reverse order and waits for in-flight processing first.
+
 ## Registration
 
 ```go

@@ -46,6 +46,42 @@ func ValidateRuleSet(ruleSet RuleSet) error {
 	return nil
 }
 
+// ValidateProviderRuleSet validates a provider snapshot against engine wiring.
+func ValidateProviderRuleSet(config EngineConfig, providerName string, ruleSet RuleSet) error {
+	if err := ValidateRuleSet(ruleSet); err != nil {
+		return err
+	}
+
+	for ruleIndex, rule := range ruleSet.Rules {
+		if rule.Workflow == "" {
+			continue
+		}
+
+		policy, exists := config.LookupPolicyForWorkflow(rule.Workflow)
+		if !exists {
+			return fmt.Errorf("rules[%d].workflow %q has no configured policy", ruleIndex, rule.Workflow)
+		}
+		if !containsName(policy.Providers, providerName) {
+			return fmt.Errorf(
+				"rules[%d].workflow %q does not configure provider %q",
+				ruleIndex,
+				rule.Workflow,
+				providerName,
+			)
+		}
+	}
+	return nil
+}
+
+func containsName(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func validConditionField(field string) bool {
 	switch field {
 	case "id", "type", "content", "user_id", "timestamp":

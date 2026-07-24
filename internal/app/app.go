@@ -172,6 +172,11 @@ func (a *App) stop(ctx context.Context) error {
 			stopErrors = append(stopErrors, err)
 		}
 	}
+	if a.workflowManager != nil {
+		if err := a.workflowManager.StopAll(ctx); err != nil {
+			stopErrors = append(stopErrors, fmt.Errorf("stop workflows: %w", err))
+		}
+	}
 	return stderrors.Join(stopErrors...)
 }
 

@@ -80,6 +80,27 @@ func TestStaticProviderSnapshotsDeepCloneRuleValues(t *testing.T) {
 	}
 }
 
+func TestComposerClonesCallerOwnedConfig(t *testing.T) {
+	config := DefaultEngineConfig()
+	provider := NewStaticProvider("yaml", RuleSet{})
+	composer := NewComposer(config, map[string]RuleProvider{"yaml": provider})
+
+	config.Workflows[0].Name = "mutated"
+	config.Workflows[0].Providers[0] = "mutated"
+	config.Workflows[0].PipelineOrder[0] = "mutated"
+
+	snapshot := composer.Snapshot(context.Background())
+	workflow := snapshot.Config.Workflows[0]
+	if workflow.Name != DefaultWorkflowName ||
+		workflow.Providers[0] != "yaml" ||
+		workflow.PipelineOrder[0] != "yaml" {
+		t.Fatalf("composer config changed through caller mutation: %+v", workflow)
+	}
+	if _, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{}); err != nil {
+		t.Fatalf("build plan after caller mutation: %v", err)
+	}
+}
+
 func TestComposerBuildsPriorityOrderedDeduplicatedPlan(t *testing.T) {
 	now := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
 	provider := NewStaticProvider("static", RuleSet{

@@ -51,6 +51,63 @@ func TestValidateRuleSetRejectsInvalidRules(t *testing.T) {
 	}
 }
 
+func TestValidateProviderRuleSetChecksWorkflowWiring(t *testing.T) {
+	config := EngineConfig{
+		Workflows: []WorkflowPolicy{
+			{
+				Name:      "primary",
+				Providers: []string{"yaml"},
+				Mode:      CompositionSingle,
+				ActionMerge: ActionMergeConfig{
+					Dedup: true,
+					Order: ActionOrderPriority,
+				},
+			},
+			{
+				Name:      "secondary",
+				Providers: []string{"remote"},
+				Mode:      CompositionSingle,
+				ActionMerge: ActionMergeConfig{
+					Dedup: true,
+					Order: ActionOrderPriority,
+				},
+			},
+		},
+		ActionMerge: ActionMergeConfig{Dedup: true, Order: ActionOrderPriority},
+	}
+	ruleSet := func(workflow string) RuleSet {
+		return RuleSet{Rules: []Rule{{
+			ID:       "rule",
+			Workflow: workflow,
+			Actions:  []Action{{Executor: "log"}},
+		}}}
+	}
+
+	for _, workflow := range []string{"", "primary"} {
+		if err := ValidateProviderRuleSet(config, "yaml", ruleSet(workflow)); err != nil {
+			t.Fatalf("validate workflow %q: %v", workflow, err)
+		}
+	}
+
+	tests := []struct {
+		name     string
+		provider string
+		workflow string
+		want     string
+	}{
+		{name: "unknown workflow", provider: "yaml", workflow: "typo", want: "has no configured policy"},
+		{name: "unreachable provider", provider: "yaml", workflow: "secondary", want: "does not configure provider"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateProviderRuleSet(config, test.provider, ruleSet(test.workflow))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func validationRule(condition Condition) RuleSet {
 	return RuleSet{Rules: []Rule{{
 		ID:         "rule",

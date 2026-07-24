@@ -76,9 +76,9 @@ Public providers:
 
 The reference runtime also contains an optional Confluence-like provider under `internal/adapters/confluence`. It is a demonstration, not part of the public SDK.
 
-Provider names must be unique and must match the names in `EngineConfig`. `pipeline.Engine.Start` starts every provider and then verifies that every enabled rule references a registered executor.
+Provider names must be unique and must match the names in `EngineConfig`. `pipeline.Engine.Start` starts every provider and then verifies that every rule with an explicit workflow is reachable through that workflow policy and that every enabled rule references a registered executor.
 
-Use `ruleengine.ValidateRuleSet` in custom providers before publishing a snapshot. The pipeline validates snapshots at startup and again while composing each message, so dynamic providers cannot silently introduce duplicate rule IDs, unsupported fields or operators, invalid regular expressions, missing actions, or empty executor types.
+Use `ruleengine.ValidateRuleSet` in custom providers before publishing a snapshot. Applications that validate a snapshot together with engine wiring can use `ruleengine.ValidateProviderRuleSet`. The pipeline performs both checks at startup and again while composing each message, so dynamic providers cannot silently introduce unknown workflows, unreachable provider/workflow combinations, duplicate rule IDs, unsupported fields or operators, invalid regular expressions, missing actions, or empty executor types.
 
 ## Composition Policies
 
@@ -147,11 +147,14 @@ if err != nil {
 if err := engine.Start(ctx); err != nil {
     return err
 }
+defer engine.Stop(context.Background())
 
 plan, err := engine.Process(ctx, ruleengine.DefaultWorkflowName, message)
 ```
 
-Calling `Process` before `Start` returns an error. The engine continues executing later actions when one action fails, then returns the plan together with `*pipeline.ExecutionError`. Each failure includes the action ID, executor type, and original error:
+Calling `Process` before `Start` or after `Stop` returns an error. `Stop` waits for in-flight processing, then stops lifecycle-aware executors and providers in reverse startup order. A successful stop permits a later clean start.
+
+The engine continues executing later actions when one action fails, then returns the plan together with `*pipeline.ExecutionError`. Each failure includes the action ID, executor type, and original error:
 
 ```go
 plan, err := engine.Process(ctx, workflow, message)
@@ -170,6 +173,7 @@ Use `engine.Snapshot(ctx)` for an immutable admin/debug view of composition conf
 ```go
 type FeatureFlagProvider struct {
     rules ruleengine.RuleSet
+    stop  func(context.Context) error
 }
 
 func (p *FeatureFlagProvider) Name() string {
@@ -184,9 +188,16 @@ func (p *FeatureFlagProvider) Start(ctx context.Context) error {
 func (p *FeatureFlagProvider) Snapshot(context.Context) ruleengine.RuleSet {
     return ruleengine.CloneRuleSet(p.rules)
 }
+
+func (p *FeatureFlagProvider) Stop(ctx context.Context) error {
+    if p.stop == nil {
+        return nil
+    }
+    return p.stop(ctx)
+}
 ```
 
-Production providers should publish snapshots atomically, avoid network calls from `Snapshot`, use `ruleengine.CloneRuleSet` to isolate nested condition and action values, and return a startup error when no trustworthy initial snapshot can be loaded.
+`Stop(context.Context) error` is optional. When present, the pipeline invokes it during startup rollback and normal shutdown. Production providers should publish snapshots atomically, avoid network calls from `Snapshot`, use `ruleengine.CloneRuleSet` to isolate nested condition and action values, and return a startup error when no trustworthy initial snapshot can be loaded.
 
 ## YAML Loading Guarantees
 

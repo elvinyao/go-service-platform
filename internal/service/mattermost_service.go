@@ -19,7 +19,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const mattermostRequestTimeout = 10 * time.Second
+const (
+	mattermostRequestTimeout    = 10 * time.Second
+	mattermostReconnectInterval = 5 * time.Second
+)
 
 type mattermostPost struct {
 	ChannelID string `json:"channel_id"`
@@ -41,6 +44,7 @@ type MattermostService struct {
 	wsCancel   context.CancelFunc
 	wsDone     chan struct{}
 	generation uint64
+	wsRetry    time.Duration
 }
 
 // NewMattermostService creates a Mattermost-like demo service.
@@ -53,6 +57,7 @@ func NewMattermostService(name, workflow string, config config.MattermostConfig,
 		BaseService: NewBaseService(name, workflow, "mattermost", version),
 		config:      config,
 		baseClient:  baseClient,
+		wsRetry:     mattermostReconnectInterval,
 	}
 	s.AddHealthChecker(&mattermostConnectionChecker{service: s})
 	return s
@@ -96,10 +101,11 @@ func (s *MattermostService) Start(ctx context.Context) error {
 	s.wsDone = make(chan struct{})
 	done := s.wsDone
 	websocketURL := s.config.WebsocketURL
+	reconnectInterval := s.wsRetry
 	s.LockRunning(true)
 	s.mu.Unlock()
 
-	go s.connectWebSocket(wsCtx, generation, websocketURL, authToken, done)
+	go s.connectWebSocketLoop(wsCtx, generation, websocketURL, authToken, reconnectInterval, done)
 	return nil
 }
 
@@ -135,12 +141,44 @@ func loginMattermost(ctx context.Context, client *http.Client, serverURL, userna
 	return token, nil
 }
 
-func (s *MattermostService) connectWebSocket(ctx context.Context, generation uint64, websocketURL, authToken string, done chan<- struct{}) {
+func (s *MattermostService) connectWebSocketLoop(
+	ctx context.Context,
+	generation uint64,
+	websocketURL string,
+	authToken string,
+	reconnectInterval time.Duration,
+	done chan<- struct{},
+) {
 	defer close(done)
 	if websocketURL == "" {
 		return
 	}
 
+	for {
+		err := s.runWebSocketSession(ctx, generation, websocketURL, authToken)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			logger.WarnfWithContext(ctx, "Mattermost WebSocket unavailable: %v (HTTP API still available)", err)
+		}
+
+		timer := time.NewTimer(reconnectInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *MattermostService) runWebSocketSession(
+	ctx context.Context,
+	generation uint64,
+	websocketURL string,
+	authToken string,
+) error {
 	dialer := *websocket.DefaultDialer
 	dialer.HandshakeTimeout = 5 * time.Second
 	headers := http.Header{}
@@ -149,17 +187,14 @@ func (s *MattermostService) connectWebSocket(ctx context.Context, generation uin
 	}
 	connection, _, err := dialer.DialContext(ctx, mattermostWebSocketURL(websocketURL), headers)
 	if err != nil {
-		if ctx.Err() == nil {
-			logger.WarnfWithContext(ctx, "Failed to create Mattermost WebSocket client: %v (HTTP API still available)", err)
-		}
-		return
+		return fmt.Errorf("connect: %w", err)
 	}
 
 	s.mu.Lock()
 	if s.generation != generation || !s.IsRunning(ctx) {
 		s.mu.Unlock()
 		connection.Close()
-		return
+		return nil
 	}
 	s.wsClient = connection
 	s.mu.Unlock()
@@ -174,20 +209,22 @@ func (s *MattermostService) connectWebSocket(ctx context.Context, generation uin
 	}()
 
 	if authToken != "" {
-		_ = connection.WriteJSON(map[string]interface{}{
+		if err := connection.WriteJSON(map[string]interface{}{
 			"seq":    1,
 			"action": "authentication_challenge",
 			"data":   map[string]string{"token": authToken},
-		})
+		}); err != nil {
+			return fmt.Errorf("authenticate: %w", err)
+		}
 	}
 
 	for {
 		var event mattermostEvent
 		if err := connection.ReadJSON(&event); err != nil {
-			if ctx.Err() == nil {
-				logger.DebugfWithContext(ctx, "Mattermost WebSocket closed: %v", err)
+			if ctx.Err() != nil {
+				return nil
 			}
-			return
+			return fmt.Errorf("read event: %w", err)
 		}
 		logger.InfofWithContext(ctx, "Received Mattermost event: %s", event.Event)
 	}

@@ -3,7 +3,11 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -94,6 +98,65 @@ func TestRunReturnsStopError(t *testing.T) {
 	signals <- os.Interrupt
 	if err := run(nil, signals, &bytes.Buffer{}); err == nil {
 		t.Fatalf("expected stop error")
+	}
+}
+
+func TestRunHealthcheckDoesNotStartManager(t *testing.T) {
+	managerCreated := false
+	restoreFactory := replaceManagerFactory(func(confluencePort, mmHTTPPort, mmWSPort, wsPort int) fakeAPIManager {
+		managerCreated = true
+		return &testFakeAPIManager{}
+	})
+	defer restoreFactory()
+
+	previousHealthCheck := fakeServerHealthCheck
+	defer func() { fakeServerHealthCheck = previousHealthCheck }()
+	checkedPort := 0
+	fakeServerHealthCheck = func(port int) error {
+		checkedPort = port
+		return nil
+	}
+
+	if err := run([]string{"-healthcheck", "-ws-port", "19093"}, nil, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run healthcheck: %v", err)
+	}
+	if managerCreated {
+		t.Fatalf("healthcheck created the fake API manager")
+	}
+	if checkedPort != 19093 {
+		t.Fatalf("healthcheck port = %d, want 19093", checkedPort)
+	}
+
+	checkErr := fmt.Errorf("not ready")
+	fakeServerHealthCheck = func(int) error { return checkErr }
+	if err := run([]string{"-healthcheck"}, nil, &bytes.Buffer{}); err != checkErr {
+		t.Fatalf("healthcheck error = %v, want %v", err, checkErr)
+	}
+}
+
+func TestCheckFakeServerHealthValidatesHTTPStatus(t *testing.T) {
+	var status atomic.Int32
+	status.Store(http.StatusOK)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(int(status.Load()))
+	}))
+	defer server.Close()
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+
+	if err := checkFakeServerHealth(port); err != nil {
+		t.Fatalf("healthy server: %v", err)
+	}
+	status.Store(http.StatusServiceUnavailable)
+	if err := checkFakeServerHealth(port); err == nil {
+		t.Fatalf("unhealthy server error = nil")
+	}
+	server.Close()
+	if err := checkFakeServerHealth(port); err == nil {
+		t.Fatalf("closed server error = nil")
 	}
 }
 

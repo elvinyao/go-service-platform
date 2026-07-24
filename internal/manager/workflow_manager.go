@@ -2,14 +2,20 @@ package manager
 
 import (
 	"context"
+	stderrors "errors"
+	"fmt"
+	"sort"
+	"sync"
+	"time"
+
 	"github.com/elvinyao/go-service-platform/internal/interfaces"
 	"github.com/elvinyao/go-service-platform/internal/model"
 	appctx "github.com/elvinyao/go-service-platform/pkg/context"
 	"github.com/elvinyao/go-service-platform/pkg/errors"
 	"github.com/elvinyao/go-service-platform/pkg/logger"
-	"sort"
-	"sync"
 )
+
+const workflowCleanupTimeout = 10 * time.Second
 
 // WorkflowFactory defines the function type for creating workflows
 type WorkflowFactory func(serviceManager *ServiceManager) (interfaces.Workflow, error)
@@ -35,25 +41,59 @@ func NewWorkflowManagerWithDI(ctx context.Context, serviceManager *ServiceManage
 	// Register all workflows provided by factories
 	for _, factory := range factories {
 		if factory == nil {
-			return nil, errors.New(errors.TypeInvalidInput, "Cannot use nil workflow factory", nil)
+			initializationErr := errors.New(errors.TypeInvalidInput, "Cannot use nil workflow factory", nil)
+			return nil, withWorkflowInitializationCleanup(initializationErr, manager, nil)
 		}
 		workflow, err := factory(serviceManager)
 		if err != nil {
-			return nil, errors.Wrap(err, "Failed to create workflow", errors.TypeInternal)
+			initializationErr := errors.Wrap(err, "Failed to create workflow", errors.TypeInternal)
+			return nil, withWorkflowInitializationCleanup(initializationErr, manager, nil)
 		}
 		if isNilRegistration(workflow) {
-			return nil, errors.New(errors.TypeInvalidInput, "Workflow factory returned nil", nil)
+			initializationErr := errors.New(errors.TypeInvalidInput, "Workflow factory returned nil", nil)
+			return nil, withWorkflowInitializationCleanup(initializationErr, manager, nil)
 		}
 
 		if err := manager.RegisterWorkflow(workflow); err != nil {
-			return nil, errors.Wrap(err, "Failed to register workflow", errors.TypeInternal).
+			initializationErr := errors.Wrap(err, "Failed to register workflow", errors.TypeInternal).
 				WithField("workflow", workflow.GetName())
+			return nil, withWorkflowInitializationCleanup(initializationErr, manager, workflow)
 		}
 
 		logger.InfofWithContext(ctx, "Registered workflow: %s", workflow.GetName())
 	}
 
 	return manager, nil
+}
+
+func withWorkflowInitializationCleanup(
+	initializationErr error,
+	manager *WorkflowManager,
+	unregistered interfaces.Workflow,
+) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), workflowCleanupTimeout)
+	defer cancel()
+
+	var cleanupErrors []error
+	if !isNilRegistration(unregistered) {
+		if stopper, ok := unregistered.(interface {
+			Stop(context.Context) error
+		}); ok {
+			if err := stopper.Stop(cleanupCtx); err != nil {
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("stop unregistered workflow: %w", err))
+			}
+		}
+	}
+	if err := manager.StopAll(cleanupCtx); err != nil {
+		cleanupErrors = append(cleanupErrors, err)
+	}
+	if cleanupErr := stderrors.Join(cleanupErrors...); cleanupErr != nil {
+		return stderrors.Join(
+			initializationErr,
+			fmt.Errorf("clean up workflow initialization: %w", cleanupErr),
+		)
+	}
+	return initializationErr
 }
 
 func (wm *WorkflowManager) RegisterWorkflow(w interfaces.Workflow) error {
@@ -126,6 +166,37 @@ func (wm *WorkflowManager) DispatchMessage(ctx context.Context, msg model.Messag
 
 	// If we reach here, all workflows failed
 	return errors.Wrap(lastErr, "All workflows failed to process message", errors.TypeServiceUnavailable)
+}
+
+// StopAll stops lifecycle-aware workflows in reverse name order.
+func (wm *WorkflowManager) StopAll(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	wm.mu.RLock()
+	names := make([]string, 0, len(wm.workflows))
+	workflows := make(map[string]interfaces.Workflow, len(wm.workflows))
+	for name, workflow := range wm.workflows {
+		names = append(names, name)
+		workflows[name] = workflow
+	}
+	wm.mu.RUnlock()
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+
+	var stopErrors []error
+	for _, name := range names {
+		stopper, ok := workflows[name].(interface {
+			Stop(context.Context) error
+		})
+		if !ok {
+			continue
+		}
+		if err := stopper.Stop(ctx); err != nil {
+			stopErrors = append(stopErrors, fmt.Errorf("stop workflow %s: %w", name, err))
+		}
+	}
+	return stderrors.Join(stopErrors...)
 }
 
 // GetWorkflowByName retrieves a workflow by name with proper error handling
