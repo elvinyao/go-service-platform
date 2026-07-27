@@ -97,12 +97,12 @@ workflows:
 
 Modes:
 
-- `single`: match only against the first provider.
+- `single`: match one authoritative provider; exactly one provider is required.
 - `or`: collect matches from any provider.
 - `and`: return a plan only when every provider has at least one match.
 - `pipeline`: apply the same all-providers requirement using `pipeline_order`.
 
-For `pipeline`, `pipeline_order` must contain every configured provider exactly once. Unknown modes, duplicate providers, duplicate workflow names, and incomplete pipeline orders are configuration errors.
+For `single`, exactly one provider is required. For `pipeline`, `pipeline_order` must contain every configured provider exactly once. Unknown modes, duplicate providers, duplicate workflow names, and incomplete pipeline orders are configuration errors.
 
 ## Execution Plans
 

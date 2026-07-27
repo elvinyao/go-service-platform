@@ -437,6 +437,15 @@ func TestWebSocketServiceHealthCheckerBranches(t *testing.T) {
 	}
 
 	svc.mu.Lock()
+	svc.connections = 0
+	svc.mu.Unlock()
+	staleAndDisconnected := checker.Check(ctx)
+	if staleAndDisconnected.Status != health.StatusDown {
+		t.Fatalf("stale disconnected status = %s, want DOWN", staleAndDisconnected.Status)
+	}
+
+	svc.mu.Lock()
+	svc.connections = 1
 	svc.lastMessage = time.Now()
 	svc.mu.Unlock()
 	connected := checker.Check(ctx)
@@ -453,6 +462,9 @@ func TestDisconnectedWebSocketFailsReadinessButNotLiveness(t *testing.T) {
 	}, "test")
 	svc.setRunning(true)
 	defer svc.setRunning(false)
+	svc.mu.Lock()
+	svc.lastMessage = time.Now().Add(-31 * time.Minute)
+	svc.mu.Unlock()
 
 	manager := health.NewHealthManager(0, "test")
 	manager.RegisterService(svc)

@@ -369,15 +369,15 @@ func (c *websocketConnectionChecker) Check(ctx context.Context) *health.CheckRes
 		result.SetStatus(health.StatusDown, "No active WebSocket connections")
 	} else {
 		result.SetStatus(health.StatusUp, fmt.Sprintf("Active WebSocket connections: %d", connections))
-	}
 
-	// Check last message time
-	if !lastMessage.IsZero() {
-		messageAge := time.Since(lastMessage)
-		result.AddDetail("last_message_age_minutes", messageAge.Minutes())
+		// Message freshness is meaningful only while the input remains connected.
+		if !lastMessage.IsZero() {
+			messageAge := time.Since(lastMessage)
+			result.AddDetail("last_message_age_minutes", messageAge.Minutes())
 
-		if messageAge > 30*time.Minute {
-			result.SetStatus(health.StatusDegraded, fmt.Sprintf("No messages received in %v", messageAge))
+			if messageAge > 30*time.Minute {
+				result.SetStatus(health.StatusDegraded, fmt.Sprintf("No messages received in %v", messageAge))
+			}
 		}
 	}
 

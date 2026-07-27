@@ -69,6 +69,26 @@ func (w appFailingStopWorkflow) Stop(context.Context) error {
 	return fmt.Errorf("stop failed")
 }
 
+type appRecordingStopService struct {
+	appTestService
+	events *[]string
+}
+
+func (s appRecordingStopService) Stop(context.Context) error {
+	*s.events = append(*s.events, "service")
+	return nil
+}
+
+type appRecordingStopWorkflow struct {
+	appTestWorkflow
+	events *[]string
+}
+
+func (w appRecordingStopWorkflow) Stop(context.Context) error {
+	*w.events = append(*w.events, "workflow")
+	return nil
+}
+
 type failingResponseWriter struct {
 	header http.Header
 	code   int
@@ -250,6 +270,34 @@ func TestAppStopReturnsWorkflowShutdownError(t *testing.T) {
 	}
 	if !application.started {
 		t.Fatalf("failed stop cleared lifecycle state")
+	}
+}
+
+func TestAppStopDrainsWorkflowsBeforeServices(t *testing.T) {
+	var events []string
+	sm := manager.NewServiceManager("test")
+	sm.RegisterService(appRecordingStopService{
+		appTestService: appTestService{name: "service"},
+		events:         &events,
+	})
+	wm := manager.NewWorkflowManager()
+	if err := wm.RegisterWorkflow(appRecordingStopWorkflow{
+		appTestWorkflow: appTestWorkflow{name: "workflow"},
+		events:          &events,
+	}); err != nil {
+		t.Fatalf("register workflow: %v", err)
+	}
+	application := &App{
+		serviceManager:  sm,
+		workflowManager: wm,
+		started:         true,
+	}
+
+	if err := application.Stop(context.Background()); err != nil {
+		t.Fatalf("stop app: %v", err)
+	}
+	if got := strings.Join(events, ","); got != "workflow,service" {
+		t.Fatalf("stop order = %s, want workflow,service", got)
 	}
 }
 

@@ -97,6 +97,15 @@ func TestLoadEngineConfigRejectsUnknownFieldsAndInvalidPolicies(t *testing.T) {
 			want: "providers must contain at least one value",
 		},
 		{
+			name: "multiple providers in single mode",
+			data: `workflows:
+  - name: WorkflowEngine
+    providers: [yaml, remote]
+    mode: single
+`,
+			want: "providers must contain exactly one value",
+		},
+		{
 			name: "incomplete pipeline",
 			data: `workflows:
   - name: WorkflowEngine

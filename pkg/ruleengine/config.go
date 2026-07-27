@@ -150,6 +150,9 @@ func (c EngineConfig) Validate() error {
 		if err := validateUniqueNames(prefix+".providers", workflow.Providers); err != nil {
 			return err
 		}
+		if workflow.Mode == CompositionSingle && len(workflow.Providers) != 1 {
+			return fmt.Errorf("%s.providers must contain exactly one value for mode %q", prefix, CompositionSingle)
+		}
 		if err := validateActionMerge(prefix+".action_merge", workflow.ActionMerge); err != nil {
 			return err
 		}

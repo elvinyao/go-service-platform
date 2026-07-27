@@ -61,9 +61,9 @@ func ValidateProviderRuleSet(config EngineConfig, providerName string, ruleSet R
 		if !exists {
 			return fmt.Errorf("rules[%d].workflow %q has no configured policy", ruleIndex, rule.Workflow)
 		}
-		if !containsName(policy.Providers, providerName) {
+		if !workflowUsesProvider(policy, providerName) {
 			return fmt.Errorf(
-				"rules[%d].workflow %q does not configure provider %q",
+				"rules[%d].workflow %q cannot use provider %q",
 				ruleIndex,
 				rule.Workflow,
 				providerName,
@@ -71,6 +71,13 @@ func ValidateProviderRuleSet(config EngineConfig, providerName string, ruleSet R
 		}
 	}
 	return nil
+}
+
+func workflowUsesProvider(policy WorkflowPolicy, providerName string) bool {
+	if policy.Mode == CompositionSingle {
+		return len(policy.Providers) > 0 && policy.Providers[0] == providerName
+	}
+	return containsName(policy.Providers, providerName)
 }
 
 func containsName(values []string, target string) bool {

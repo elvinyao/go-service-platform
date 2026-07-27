@@ -524,6 +524,7 @@ func TestWorkflowEngineWrapsPipelineErrors(t *testing.T) {
 func TestRuntimeProviderFilteringHelpers(t *testing.T) {
 	cfg := ruleengine.DefaultEngineConfig()
 	cfg.Workflows[0].Providers = []string{"yaml", "confluence", "custom"}
+	cfg.Workflows[0].Mode = ruleengine.CompositionOr
 	cfg.Workflows[0].PipelineOrder = []string{"yaml", "confluence", "custom"}
 	runtimeCfg := runtimeconfig.DefaultRuntimeConfig()
 

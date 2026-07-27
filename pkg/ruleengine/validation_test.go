@@ -96,7 +96,7 @@ func TestValidateProviderRuleSetChecksWorkflowWiring(t *testing.T) {
 		want     string
 	}{
 		{name: "unknown workflow", provider: "yaml", workflow: "typo", want: "has no configured policy"},
-		{name: "unreachable provider", provider: "yaml", workflow: "secondary", want: "does not configure provider"},
+		{name: "unreachable provider", provider: "yaml", workflow: "secondary", want: "cannot use provider"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -105,6 +105,17 @@ func TestValidateProviderRuleSetChecksWorkflowWiring(t *testing.T) {
 				t.Fatalf("validate error = %v, want %q", err, test.want)
 			}
 		})
+	}
+
+	singleWithIgnoredProvider := CloneEngineConfig(config)
+	singleWithIgnoredProvider.Workflows[0].Providers = []string{"yaml", "remote"}
+	err := ValidateProviderRuleSet(
+		singleWithIgnoredProvider,
+		"remote",
+		ruleSet("primary"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "cannot use provider") {
+		t.Fatalf("single-mode reachability error = %v", err)
 	}
 }
 

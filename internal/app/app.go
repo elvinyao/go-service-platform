@@ -167,14 +167,14 @@ func (a *App) stop(ctx context.Context) error {
 			stopErrors = append(stopErrors, fmt.Errorf("stop admin server: %w", err))
 		}
 	}
-	if a.serviceManager != nil {
-		if err := shutdownServices(ctx, a.serviceManager); err != nil {
-			stopErrors = append(stopErrors, err)
-		}
-	}
 	if a.workflowManager != nil {
 		if err := a.workflowManager.StopAll(ctx); err != nil {
 			stopErrors = append(stopErrors, fmt.Errorf("stop workflows: %w", err))
+		}
+	}
+	if a.serviceManager != nil {
+		if err := shutdownServices(ctx, a.serviceManager); err != nil {
+			stopErrors = append(stopErrors, err)
 		}
 	}
 	return stderrors.Join(stopErrors...)

@@ -152,7 +152,7 @@ func TestComposerDedupsActionsWithoutIDByExecutorAndParams(t *testing.T) {
 	require.Len(t, plan.Actions, 1)
 }
 
-func TestComposerSingleUsesOnlyFirstProvider(t *testing.T) {
+func TestComposerSingleRejectsRulesFromIgnoredProvider(t *testing.T) {
 	cfg := EngineConfig{
 		Workflows: []WorkflowPolicy{
 			{
@@ -172,10 +172,8 @@ func TestComposerSingleUsesOnlyFirstProvider(t *testing.T) {
 		"second": NewStaticProvider("second", RuleSet{Rules: []Rule{testRule("second-rule", "second-action", 10, "log")}}),
 	})
 
-	plan, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA"})
-	require.NoError(t, err)
-	require.Len(t, plan.Actions, 1)
-	assert.Equal(t, "first-action", plan.Actions[0].ID)
+	_, err := composer.BuildExecutionPlan(context.Background(), DefaultWorkflowName, Message{Type: "AAA"})
+	require.ErrorContains(t, err, `cannot use provider "second"`)
 }
 
 func TestComposerOrCombinesAnyMatchingProvider(t *testing.T) {

@@ -264,7 +264,7 @@ Composition applies across providers, not across conditions or rules inside one 
 
 | Mode | Result |
 | --- | --- |
-| `single` | Use matches from the first configured provider only |
+| `single` | Use one authoritative provider; exactly one is required |
 | `or` | Combine matches from every provider that matched |
 | `and` | Produce actions only when every provider matched at least one rule |
 | `pipeline` | Require every provider to match and collect results in `pipeline_order` |

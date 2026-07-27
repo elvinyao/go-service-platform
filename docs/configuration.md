@@ -170,12 +170,12 @@ action_merge:
 
 The demo profile adds the `confluence` provider and uses `or` composition. Supported modes are:
 
-- `single`: use the first configured provider.
+- `single`: use one authoritative provider; exactly one provider is required.
 - `or`: accept matches from any configured provider.
 - `and`: require every configured provider to match.
 - `pipeline`: require every provider to match in `pipeline_order`.
 
-Provider names and workflow names must be unique. `pipeline_order` must contain every configured provider exactly once when mode is `pipeline`. A rule with an explicit `workflow` must name an existing policy, and its provider must be configured by that policy. The only action order currently supported is `priority`.
+Provider names and workflow names must be unique. A `single` workflow must configure exactly one provider. `pipeline_order` must contain every configured provider exactly once when mode is `pipeline`. A rule with an explicit `workflow` must name an existing policy, and its provider must be usable by that policy. The only action order currently supported is `priority`.
 
 Omitted workflow and provider fields receive documented defaults. Explicit empty `workflows: []` or `providers: []` values are configuration errors; they are never silently replaced with defaults.
 
