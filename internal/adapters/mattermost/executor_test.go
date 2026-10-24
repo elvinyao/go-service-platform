@@ -3,13 +3,11 @@ package mattermost
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
-	internalconfig "github.com/elvinyao/go-service-platform/internal/config"
 	"github.com/elvinyao/go-service-platform/internal/manager"
 	"github.com/elvinyao/go-service-platform/internal/service"
 	"github.com/elvinyao/go-service-platform/pkg/health"
@@ -64,7 +62,7 @@ func TestExecutorSendsRenderedMessageToConfiguredChannel(t *testing.T) {
 	client := recordingMattermostClient(t, posts)
 
 	sm := manager.NewServiceManager("test")
-	svc := service.NewMattermostService("MattermostService", "Global", internalconfig.MattermostConfig{
+	svc := service.NewMattermostService("MattermostService", "Global", service.MattermostConfig{
 		ServerURL: "http://mattermost.test",
 		APIToken:  "test-token",
 		Channel:   "default-channel",
@@ -105,7 +103,7 @@ func TestExecutorSendsDefaultMessageToConfiguredChannel(t *testing.T) {
 	client := recordingMattermostClient(t, posts)
 
 	sm := manager.NewServiceManager("test")
-	svc := service.NewMattermostService("MattermostService", "Global", internalconfig.MattermostConfig{
+	svc := service.NewMattermostService("MattermostService", "Global", service.MattermostConfig{
 		ServerURL: "http://mattermost.test",
 		APIToken:  "test-token",
 		Channel:   "default-channel",
@@ -159,7 +157,7 @@ func TestExecutorReturnsErrorWhenMattermostServiceHasWrongType(t *testing.T) {
 
 func TestExecutorReturnsTemplateError(t *testing.T) {
 	sm := manager.NewServiceManager("test")
-	svc := service.NewMattermostService("MattermostService", "Global", internalconfig.MattermostConfig{
+	svc := service.NewMattermostService("MattermostService", "Global", service.MattermostConfig{
 		ServerURL:    "http://127.0.0.1:1",
 		APIToken:     "test-token",
 		Channel:      "default-channel",
@@ -200,9 +198,4 @@ func (s *wrongMattermostService) IsRunning(ctx context.Context) bool {
 func (s *wrongMattermostService) GetMetrics(ctx context.Context) map[string]interface{} {
 	return map[string]interface{}{"running": true}
 }
-func (s *wrongMattermostService) Configure(ctx context.Context, cfg interface{}) error {
-	return fmt.Errorf("not configurable")
-}
 func (s *wrongMattermostService) RegisterHealthChecks() []health.Checker { return nil }
-func (s *wrongMattermostService) ReportHealth(ctx context.Context, report *health.Report) {
-}

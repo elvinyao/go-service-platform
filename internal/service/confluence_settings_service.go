@@ -4,19 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/elvinyao/go-service-platform/internal/config"
-	"github.com/elvinyao/go-service-platform/internal/dataaccess"
 	appctx "github.com/elvinyao/go-service-platform/pkg/context"
 	"github.com/elvinyao/go-service-platform/pkg/errors"
 	"github.com/elvinyao/go-service-platform/pkg/health"
 	"github.com/elvinyao/go-service-platform/pkg/logger"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
+
+// ConfluenceSettingsConfig holds configuration for the Confluence settings service
+type ConfluenceSettingsConfig struct {
+	PageID          string
+	RefreshInterval time.Duration
+	APIEndpoint     string
+}
 
 // SettingRule represents a rule for matching events
 type SettingRule struct {
@@ -46,9 +50,8 @@ type confluenceSettings struct {
 // ConfluenceSettingsService manages settings from Confluence with periodic refresh
 type ConfluenceSettingsService struct {
 	*BaseService
-	dataAccessor  dataaccess.DataAccessor
 	mu            sync.RWMutex
-	config        config.ConfluenceSettingsConfig
+	config        ConfluenceSettingsConfig
 	settings      []SettingRule
 	lastRefresh   time.Time
 	stopRefresh   chan struct{}
@@ -60,8 +63,7 @@ type ConfluenceSettingsService struct {
 // NewConfluenceSettingsService creates a new ConfluenceSettingsService
 func NewConfluenceSettingsService(
 	name, workflow string,
-	da dataaccess.DataAccessor,
-	cfg config.ConfluenceSettingsConfig,
+	cfg ConfluenceSettingsConfig,
 	version string,
 	clients ...*http.Client,
 ) *ConfluenceSettingsService {
@@ -70,13 +72,12 @@ func NewConfluenceSettingsService(
 		httpClient = clients[0]
 	}
 	s := &ConfluenceSettingsService{
-		BaseService:  NewBaseService(name, workflow, "confluence-settings", version),
-		dataAccessor: da,
-		config:       cfg,
-		settings:     make([]SettingRule, 0),
-		stopRefresh:  make(chan struct{}),
-		refreshDone:  make(chan struct{}),
-		httpClient:   httpClient,
+		BaseService: NewBaseService(name, workflow, "confluence-settings", version),
+		config:      cfg,
+		settings:    make([]SettingRule, 0),
+		stopRefresh: make(chan struct{}),
+		refreshDone: make(chan struct{}),
+		httpClient:  httpClient,
 	}
 
 	// Add custom health checker
@@ -211,7 +212,7 @@ func (s *ConfluenceSettingsService) refreshSettings(ctx context.Context) error {
 	s.settings = settings
 	s.lastRefresh = time.Now()
 	s.mu.Unlock()
-	s.cacheSettings(ctx, settings)
+	logger.InfofWithContext(ctx, "Refreshed %d settings rules", len(settings))
 	return nil
 }
 
@@ -228,16 +229,8 @@ func (s *ConfluenceSettingsService) refreshSettingsLocked(ctx context.Context) e
 	s.settings = settings
 	s.lastRefresh = time.Now()
 
-	s.cacheSettings(ctx, settings)
-	return nil
-}
-
-func (s *ConfluenceSettingsService) cacheSettings(ctx context.Context, settings []SettingRule) {
-	if err := s.dataAccessor.SetData("confluence_settings", settings); err != nil {
-		logger.WithContextError(ctx, err).Warn("Failed to cache settings")
-	}
-
 	logger.InfofWithContext(ctx, "Refreshed %d settings rules", len(settings))
+	return nil
 }
 
 // fetchSettingsFromConfluence fetches settings from the Confluence REST API
@@ -295,32 +288,6 @@ func (s *ConfluenceSettingsService) GetSettings(ctx context.Context) []SettingRu
 	return result
 }
 
-// MatchEvent checks if an event matches any setting rule and returns matching rules
-func (s *ConfluenceSettingsService) MatchEvent(ctx context.Context, eventType string, eventData interface{}) []SettingRule {
-	ctx = appctx.WithOperationName(ctx, "match_event")
-	logger.DebugfWithContext(ctx, "Matching event type: %s", eventType)
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var matchedRules []SettingRule
-
-	for _, rule := range s.settings {
-		if !rule.Enabled {
-			continue
-		}
-
-		if rule.EventType == eventType {
-			// Pattern matching is handled by the rule-engine Confluence adapter.
-			matchedRules = append(matchedRules, rule)
-			logger.DebugfWithContext(ctx, "Matched rule for event type %s: channel=%s", eventType, rule.ChannelID)
-		}
-	}
-
-	logger.InfofWithContext(ctx, "Found %d matching rules for event type %s", len(matchedRules), eventType)
-	return matchedRules
-}
-
 // GetLastRefreshTime returns the last refresh timestamp
 func (s *ConfluenceSettingsService) GetLastRefreshTime() time.Time {
 	s.mu.RLock()
@@ -351,40 +318,6 @@ func (s *ConfluenceSettingsService) GetMetrics(ctx context.Context) map[string]i
 	}
 
 	return metrics
-}
-
-// Configure replaces validated settings for the next restart.
-func (s *ConfluenceSettingsService) Configure(ctx context.Context, cfg interface{}) error {
-	ctx = appctx.WithOperationName(ctx, "configure_service")
-
-	confCfg, ok := cfg.(config.ConfluenceSettingsConfig)
-	if !ok {
-		return errors.New(errors.TypeInvalidInput, "Invalid configuration type", nil)
-	}
-	if err := validateConfluenceSettingsConfig(confCfg); err != nil {
-		return errors.Wrap(err, "Invalid Confluence settings configuration", errors.TypeInvalidInput)
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.config = confCfg
-	logger.InfofWithContext(ctx, "Service %s configured successfully", s.GetName())
-	return nil
-}
-
-func validateConfluenceSettingsConfig(cfg config.ConfluenceSettingsConfig) error {
-	if cfg.PageID == "" {
-		return fmt.Errorf("page ID is required")
-	}
-	if cfg.RefreshInterval <= 0 {
-		return fmt.Errorf("refresh interval must be greater than zero")
-	}
-	parsed, err := url.ParseRequestURI(cfg.APIEndpoint)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return fmt.Errorf("API endpoint must be an absolute http or https URL")
-	}
-	return nil
 }
 
 // settingsRefreshChecker checks if settings are being refreshed regularly

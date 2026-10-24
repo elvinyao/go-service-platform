@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/elvinyao/go-service-platform/internal/config"
-	"github.com/elvinyao/go-service-platform/internal/dataaccess"
 	"github.com/elvinyao/go-service-platform/internal/manager"
 	"github.com/elvinyao/go-service-platform/internal/service"
 	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
@@ -242,12 +240,10 @@ func newConfluenceServiceManager(t *testing.T, rules []service.SettingRule) (*ma
 	svc := service.NewConfluenceSettingsService(
 		"ConfluenceSettingsService",
 		"WorkflowEngine",
-		dataaccess.NewCacheDataAccessor(ctx),
-		internalconfig.ConfluenceSettingsConfig{
+		service.ConfluenceSettingsConfig{
 			PageID:          "settings-page-1",
 			RefreshInterval: time.Hour,
 			APIEndpoint:     "http://confluence.test",
-			SpaceKey:        "TEST",
 		},
 		"test",
 		client,

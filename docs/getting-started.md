@@ -255,10 +255,8 @@ For the reference runtime, continue with:
 
 1. `cmd/service-workflow/main.go`
 2. `internal/app/app.go`
-3. `internal/di/container.go`
-4. `internal/service/websocket_service.go`
-5. `internal/manager/workflow_manager.go`
-6. `internal/workflow/workflow_engine.go`
+3. `internal/service/websocket_service.go`
+4. `internal/workflow/workflow_engine.go`
 
 ## Debugging Checkpoints
 

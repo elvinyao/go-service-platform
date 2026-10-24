@@ -60,139 +60,6 @@ func (sm *ServiceManager) RegisterService(s service.Service) error {
 	return nil
 }
 
-// GetServiceHealth retrieves health information for a specific service
-func (sm *ServiceManager) GetServiceHealth(ctx context.Context, serviceName string) (health.Report, bool) {
-	ctx = appctx.WithOperationName(ctx, "get_service_health")
-
-	// Create service health report
-	report := health.Report{
-		ServiceName: serviceName,
-		StartTime:   sm.startTime,
-		Version:     sm.version,
-		RefreshedAt: time.Now(),
-	}
-
-	// Get service
-	sm.mu.RLock()
-	svc, exists := sm.services[serviceName]
-	sm.mu.RUnlock()
-
-	if !exists {
-		return report, false
-	}
-
-	// Add service health check results
-	result := health.CheckResult{
-		Name:        "service." + serviceName,
-		Status:      health.StatusUnknown,
-		Category:    health.CategoryDependency,
-		Level:       health.LevelCritical,
-		Timestamp:   time.Now(),
-		Description: "Service status",
-	}
-
-	if svc.IsRunning(ctx) {
-		result.Status = health.StatusUp
-		result.Description = "Service is running"
-	} else {
-		result.Status = health.StatusDown
-		result.Description = "Service is not running"
-	}
-
-	report.CheckResults = append(report.CheckResults, result)
-	report.Status = result.Status
-
-	return report, true
-}
-
-// GetAllServicesHealth retrieves health information for all services
-func (sm *ServiceManager) GetAllServicesHealth(ctx context.Context) map[string]health.Report {
-	ctx = appctx.WithOperationName(ctx, "get_all_services_health")
-
-	result := make(map[string]health.Report)
-
-	sm.mu.RLock()
-	serviceNames := make([]string, 0, len(sm.services))
-	for name := range sm.services {
-		serviceNames = append(serviceNames, name)
-	}
-	sm.mu.RUnlock()
-
-	for _, name := range serviceNames {
-		if report, exists := sm.GetServiceHealth(ctx, name); exists {
-			result[name] = report
-		}
-	}
-
-	return result
-}
-
-// GetSystemHealth retrieves overall system health status
-func (sm *ServiceManager) GetSystemHealth(ctx context.Context) health.Report {
-	ctx = appctx.WithOperationName(ctx, "get_system_health")
-
-	reports := sm.GetAllServicesHealth(ctx)
-
-	// Create system health report
-	report := health.Report{
-		ServiceName: "system",
-		Status:      health.StatusUp,
-		StartTime:   sm.startTime,
-		Version:     sm.version,
-		RefreshedAt: time.Now(),
-		Metadata:    make(map[string]interface{}),
-	}
-
-	// Process service health status
-	var upCount, degradedCount, downCount int
-
-	for serviceName, serviceReport := range reports {
-		// Add service status to report
-		result := health.CheckResult{
-			Name:        "service." + serviceName,
-			Status:      serviceReport.Status,
-			Category:    health.CategoryDependency,
-			Level:       health.LevelCritical,
-			Description: "Service " + serviceName,
-			Timestamp:   time.Now(),
-		}
-
-		report.CheckResults = append(report.CheckResults, result)
-
-		// Count service status
-		switch serviceReport.Status {
-		case health.StatusUp:
-			upCount++
-		case health.StatusDegraded:
-			degradedCount++
-		case health.StatusDown:
-			downCount++
-		}
-	}
-
-	// Add statistics to metadata
-	report.Metadata["service_count"] = len(reports)
-	report.Metadata["services_up"] = upCount
-	report.Metadata["services_degraded"] = degradedCount
-	report.Metadata["services_down"] = downCount
-
-	// Determine overall system status
-	if downCount > 0 {
-		report.Status = health.StatusDegraded
-		if downCount == len(reports) {
-			report.Status = health.StatusDown
-		}
-	} else if degradedCount > 0 {
-		report.Status = health.StatusDegraded
-	} else if upCount == len(reports) && upCount > 0 {
-		report.Status = health.StatusUp
-	} else {
-		report.Status = health.StatusUnknown
-	}
-
-	return report
-}
-
 func (sm *ServiceManager) StartAll(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "start_all_services")
 	logger.InfoWithContext(ctx, "Starting all services")
@@ -330,28 +197,6 @@ func (sm *ServiceManager) GetServiceByName(ctx context.Context, name string) (se
 	return svc, true
 }
 
-// GetServicesByWorkflowAndType gets services by workflow and type
-func (sm *ServiceManager) GetServicesByWorkflowAndType(ctx context.Context, workflow string, serviceType string) []service.Service {
-	ctx = appctx.WithOperationName(ctx, "get_services_by_workflow_and_type")
-
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	var result []service.Service
-
-	for _, s := range sm.services {
-		if s.GetWorkflow() == workflow && s.GetType() == serviceType {
-			result = append(result, s)
-		}
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].GetName() < result[j].GetName()
-	})
-
-	logger.DebugfWithContext(ctx, "Found %d services with workflow=%s and type=%s", len(result), workflow, serviceType)
-	return result
-}
-
 // MonitorServices continuously monitors services and restarts them if needed
 func (sm *ServiceManager) MonitorServices(ctx context.Context) {
 	ctx = appctx.WithOperationName(ctx, "monitor_services")
@@ -387,43 +232,18 @@ func (sm *ServiceManager) checkServices(ctx context.Context) {
 		serviceCtx := appctx.WithServiceName(ctx, serviceName)
 
 		sm.mu.RLock()
-		service, exists := sm.services[serviceName]
+		svc, exists := sm.services[serviceName]
 		sm.mu.RUnlock()
 
-		if !exists {
+		if !exists || svc.IsRunning(serviceCtx) {
 			continue
 		}
 
-		// First try to get health report
-		report, found := sm.GetServiceHealth(serviceCtx, serviceName)
-		if found {
-			if report.Status == health.StatusDown || report.Status == health.StatusDegraded {
-				logger.WarnfWithContext(serviceCtx, "Service %s is in %s state, attempting to restart...",
-					serviceName, report.Status)
-
-				if err := service.Restart(serviceCtx); err != nil {
-					logger.WithContextError(serviceCtx, err).Error("Failed to restart service")
-				} else {
-					logger.InfofWithContext(serviceCtx, "Successfully restarted service %s", serviceName)
-				}
-			}
-		} else if !service.IsRunning(serviceCtx) {
-			// Fallback to basic IsRunning check if no health report
-			logger.WarnfWithContext(serviceCtx, "Service %s is not running, attempting to restart...", serviceName)
-
-			if err := service.Restart(serviceCtx); err != nil {
-				logger.WithContextError(serviceCtx, err).Error("Failed to restart service")
-
-				// Log detailed error information using our custom error type
-				if appErr, ok := err.(*errors.AppError); ok {
-					logger.FromContext(serviceCtx).
-						WithField("error_type", appErr.Type).
-						WithField("error_fields", appErr.Fields).
-						Error("Detailed restart error")
-				}
-			} else {
-				logger.InfofWithContext(serviceCtx, "Successfully restarted service %s", serviceName)
-			}
+		logger.WarnfWithContext(serviceCtx, "Service %s is not running, attempting to restart...", serviceName)
+		if err := svc.Restart(serviceCtx); err != nil {
+			logger.WithContextError(serviceCtx, err).Error("Failed to restart service")
+		} else {
+			logger.InfofWithContext(serviceCtx, "Successfully restarted service %s", serviceName)
 		}
 	}
 }

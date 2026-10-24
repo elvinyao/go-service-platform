@@ -3,14 +3,12 @@ package service
 import (
 	"context"
 	"fmt"
-	"github.com/elvinyao/go-service-platform/internal/config"
-	"github.com/elvinyao/go-service-platform/internal/model"
 	appctx "github.com/elvinyao/go-service-platform/pkg/context"
 	"github.com/elvinyao/go-service-platform/pkg/errors"
 	"github.com/elvinyao/go-service-platform/pkg/health"
 	"github.com/elvinyao/go-service-platform/pkg/logger"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 	"net"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -18,19 +16,26 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// WebSocketConfig holds configuration for the WebSocket service connection
+type WebSocketConfig struct {
+	ServerURL         string
+	Path              string
+	ReconnectInterval time.Duration
+}
+
 type WebSocketService struct {
 	*BaseService
 	mu             sync.Mutex
-	messageHandler func(msg model.Message)
+	messageHandler func(msg ruleengine.Message)
 	connections    int
 	lastMessage    time.Time
-	config         config.WebSocketConfig
+	config         WebSocketConfig
 	conn           *websocket.Conn
 	stopChan       chan struct{}
 	done           chan struct{}
 }
 
-func NewWebSocketService(name, workflow string, cfg config.WebSocketConfig, version string) *WebSocketService {
+func NewWebSocketService(name, workflow string, cfg WebSocketConfig, version string) *WebSocketService {
 	s := &WebSocketService{
 		BaseService: NewBaseService(name, workflow, "websocket", version),
 		connections: 0,
@@ -76,7 +81,7 @@ func (s *WebSocketService) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan struct{}, done chan<- struct{}, cfg config.WebSocketConfig) {
+func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan struct{}, done chan<- struct{}, cfg WebSocketConfig) {
 	defer close(done)
 
 	// Create a context that cancels when stopChan is closed.
@@ -137,7 +142,7 @@ func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan stru
 		// Read loop
 		stopped := false
 		for {
-			var msg model.Message
+			var msg ruleengine.Message
 			err := conn.ReadJSON(&msg)
 			if err != nil {
 				select {
@@ -187,7 +192,7 @@ func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan stru
 	}
 }
 
-func webSocketEndpoint(cfg config.WebSocketConfig) string {
+func webSocketEndpoint(cfg WebSocketConfig) string {
 	return strings.TrimRight(cfg.ServerURL, "/") + cfg.Path
 }
 
@@ -250,13 +255,13 @@ func (s *WebSocketService) Restart(ctx context.Context) error {
 	return s.Start(ctx)
 }
 
-func (s *WebSocketService) OnMessage(handler func(msg model.Message)) {
+func (s *WebSocketService) OnMessage(handler func(msg ruleengine.Message)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messageHandler = handler
 }
 
-func (s *WebSocketService) ProcessIncomingMessage(ctx context.Context, message model.Message) error {
+func (s *WebSocketService) ProcessIncomingMessage(ctx context.Context, message ruleengine.Message) error {
 	ctx = appctx.WithOperationName(ctx, "process_message")
 
 	if !s.IsRunning(ctx) {
@@ -303,40 +308,6 @@ func (s *WebSocketService) GetMetrics(ctx context.Context) map[string]interface{
 	}
 
 	return metrics
-}
-
-func (s *WebSocketService) Configure(ctx context.Context, cfg interface{}) error {
-	ctx = appctx.WithOperationName(ctx, "configure_service")
-
-	logger.InfofWithContext(ctx, "Configuring service: %s", s.GetName())
-
-	newConfig, ok := cfg.(config.WebSocketConfig)
-	if !ok {
-		return errors.New(errors.TypeInvalidInput, "Invalid configuration type for WebSocketService", nil)
-	}
-	if err := validateWebSocketServiceConfig(newConfig); err != nil {
-		return errors.Wrap(err, "Invalid WebSocketService configuration", errors.TypeInvalidInput)
-	}
-
-	s.mu.Lock()
-	s.config = newConfig
-	s.mu.Unlock()
-	logger.InfofWithContext(ctx, "Service %s configured successfully", s.GetName())
-	return nil
-}
-
-func validateWebSocketServiceConfig(cfg config.WebSocketConfig) error {
-	parsed, err := url.ParseRequestURI(cfg.ServerURL)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "ws" && parsed.Scheme != "wss") {
-		return fmt.Errorf("server URL must be an absolute ws or wss URL")
-	}
-	if cfg.Path == "" || !strings.HasPrefix(cfg.Path, "/") {
-		return fmt.Errorf("path must start with /")
-	}
-	if cfg.ReconnectInterval <= 0 {
-		return fmt.Errorf("reconnect interval must be greater than zero")
-	}
-	return nil
 }
 
 // websocketConnectionChecker checks WebSocket connection status

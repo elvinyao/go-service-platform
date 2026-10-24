@@ -21,9 +21,7 @@ type Service interface {
 	GetType() string
 	IsRunning(ctx context.Context) bool
 	GetMetrics(ctx context.Context) map[string]interface{}
-	Configure(ctx context.Context, config interface{}) error
 
 	// Health check methods
 	RegisterHealthChecks() []health.Checker
-	ReportHealth(ctx context.Context, report *health.Report)
 }

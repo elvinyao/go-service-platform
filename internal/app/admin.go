@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 
@@ -10,10 +9,9 @@ import (
 	appctx "github.com/elvinyao/go-service-platform/pkg/context"
 	"github.com/elvinyao/go-service-platform/pkg/health"
 	"github.com/elvinyao/go-service-platform/pkg/logger"
-	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
-func newAdminMux(serviceManager *manager.ServiceManager, workflowManager *manager.WorkflowManager, healthManager *health.HealthManager) *http.ServeMux {
+func newAdminMux(serviceManager *manager.ServiceManager, workflowEngine *workflowimpl.WorkflowEngine, healthManager *health.HealthManager) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	healthHandler := health.NewHealthHandler(healthManager)
@@ -23,10 +21,10 @@ func newAdminMux(serviceManager *manager.ServiceManager, workflowManager *manage
 		servicesList(w, r, serviceManager)
 	})
 	mux.HandleFunc("GET /workflows", func(w http.ResponseWriter, r *http.Request) {
-		workflowsList(w, r, workflowManager)
+		workflowsList(w, r, workflowEngine)
 	})
 	mux.HandleFunc("GET /rule-engine", func(w http.ResponseWriter, r *http.Request) {
-		ruleEngineInfo(w, r, workflowManager)
+		ruleEngineInfo(w, r, workflowEngine)
 	})
 
 	return mux
@@ -49,19 +47,12 @@ func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manage
 
 	for _, svc := range services {
 		info := ServiceInfo{
-			Name:    svc.GetName(),
-			Running: svc.IsRunning(ctx),
-			Type:    svc.GetType(),
+			Name:     svc.GetName(),
+			Running:  svc.IsRunning(ctx),
+			Workflow: svc.GetWorkflow(),
+			Type:     svc.GetType(),
+			Metrics:  svc.GetMetrics(ctx),
 		}
-
-		if metricProvider, ok := svc.(interface {
-			GetMetrics(ctx context.Context) map[string]interface{}
-		}); ok {
-			info.Metrics = metricProvider.GetMetrics(ctx)
-		}
-
-		info.Workflow = svc.GetWorkflow()
-
 		serviceInfos = append(serviceInfos, info)
 	}
 
@@ -71,7 +62,7 @@ func servicesList(w http.ResponseWriter, r *http.Request, serviceManager *manage
 	}
 }
 
-func workflowsList(w http.ResponseWriter, r *http.Request, workflowManager *manager.WorkflowManager) {
+func workflowsList(w http.ResponseWriter, r *http.Request, workflowEngine *workflowimpl.WorkflowEngine) {
 	ctx := appctx.FromRequest(r)
 	logger.InfoWithContext(ctx, "Handling workflows list request")
 
@@ -79,11 +70,9 @@ func workflowsList(w http.ResponseWriter, r *http.Request, workflowManager *mana
 		Name string `json:"name"`
 	}
 
-	workflowNames := workflowManager.ListWorkflows(ctx)
-	workflowInfos := make([]WorkflowInfo, 0, len(workflowNames))
-
-	for _, name := range workflowNames {
-		workflowInfos = append(workflowInfos, WorkflowInfo{Name: name})
+	workflowInfos := make([]WorkflowInfo, 0, 1)
+	if workflowEngine != nil {
+		workflowInfos = append(workflowInfos, WorkflowInfo{Name: workflowEngine.GetName()})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -92,23 +81,16 @@ func workflowsList(w http.ResponseWriter, r *http.Request, workflowManager *mana
 	}
 }
 
-func ruleEngineInfo(w http.ResponseWriter, r *http.Request, workflowManager *manager.WorkflowManager) {
+func ruleEngineInfo(w http.ResponseWriter, r *http.Request, workflowEngine *workflowimpl.WorkflowEngine) {
 	ctx := appctx.FromRequest(r)
 	logger.InfoWithContext(ctx, "Handling rule engine info request")
 
-	wf, err := workflowManager.GetWorkflowByName(ctx, ruleengine.DefaultWorkflowName)
-	if err != nil {
+	if workflowEngine == nil {
 		http.Error(w, "rule engine workflow not found", http.StatusNotFound)
 		return
 	}
 
-	engine, ok := wf.(*workflowimpl.WorkflowEngine)
-	if !ok {
-		http.Error(w, "registered workflow is not WorkflowEngine", http.StatusInternalServerError)
-		return
-	}
-
-	snapshot := engine.AdminSnapshot(ctx)
+	snapshot := workflowEngine.AdminSnapshot(ctx)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(snapshot); err != nil {
 		logger.WithContextError(ctx, err).Error("Failed to encode rule engine info")

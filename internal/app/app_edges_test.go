@@ -12,25 +12,11 @@ import (
 	"time"
 
 	"github.com/elvinyao/go-service-platform/internal/manager"
-	"github.com/elvinyao/go-service-platform/internal/model"
 	"github.com/elvinyao/go-service-platform/internal/service"
 	workflowimpl "github.com/elvinyao/go-service-platform/internal/workflow"
 	"github.com/elvinyao/go-service-platform/pkg/config"
 	"github.com/elvinyao/go-service-platform/pkg/health"
-	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
-
-type appTestWorkflow struct {
-	name string
-}
-
-func (w appTestWorkflow) GetName() string {
-	return w.name
-}
-
-func (w appTestWorkflow) ProcessMessage(ctx context.Context, msg model.Message) error {
-	return nil
-}
 
 type appTestService struct {
 	name string
@@ -46,12 +32,7 @@ func (s appTestService) IsRunning(ctx context.Context) bool { return true }
 func (s appTestService) GetMetrics(ctx context.Context) map[string]interface{} {
 	return map[string]interface{}{"running": true}
 }
-func (s appTestService) Configure(ctx context.Context, cfg interface{}) error {
-	return fmt.Errorf("not configurable")
-}
 func (s appTestService) RegisterHealthChecks() []health.Checker { return nil }
-func (s appTestService) ReportHealth(ctx context.Context, report *health.Report) {
-}
 
 type appFailingStopService struct {
 	appTestService
@@ -59,34 +40,6 @@ type appFailingStopService struct {
 
 func (s appFailingStopService) Stop(ctx context.Context) error {
 	return fmt.Errorf("stop failed")
-}
-
-type appFailingStopWorkflow struct {
-	appTestWorkflow
-}
-
-func (w appFailingStopWorkflow) Stop(context.Context) error {
-	return fmt.Errorf("stop failed")
-}
-
-type appRecordingStopService struct {
-	appTestService
-	events *[]string
-}
-
-func (s appRecordingStopService) Stop(context.Context) error {
-	*s.events = append(*s.events, "service")
-	return nil
-}
-
-type appRecordingStopWorkflow struct {
-	appTestWorkflow
-	events *[]string
-}
-
-func (w appRecordingStopWorkflow) Stop(context.Context) error {
-	*w.events = append(*w.events, "workflow")
-	return nil
 }
 
 type failingResponseWriter struct {
@@ -109,22 +62,11 @@ func (w *failingResponseWriter) WriteHeader(code int) {
 	w.code = code
 }
 
-func TestRuleEngineInfoReturnsErrorsForMissingOrWrongWorkflow(t *testing.T) {
-	wm := manager.NewWorkflowManager()
-
+func TestRuleEngineInfoReturnsErrorsForMissingWorkflow(t *testing.T) {
 	missing := httptest.NewRecorder()
-	ruleEngineInfo(missing, httptest.NewRequest(http.MethodGet, "/rule-engine", nil), wm)
+	ruleEngineInfo(missing, httptest.NewRequest(http.MethodGet, "/rule-engine", nil), nil)
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("missing workflow status = %d, want 404", missing.Code)
-	}
-
-	if err := wm.RegisterWorkflow(appTestWorkflow{name: ruleengine.DefaultWorkflowName}); err != nil {
-		t.Fatalf("register workflow: %v", err)
-	}
-	wrongType := httptest.NewRecorder()
-	ruleEngineInfo(wrongType, httptest.NewRequest(http.MethodGet, "/rule-engine", nil), wm)
-	if wrongType.Code != http.StatusInternalServerError {
-		t.Fatalf("wrong workflow type status = %d, want 500", wrongType.Code)
 	}
 }
 
@@ -134,12 +76,6 @@ func TestAdminHandlersHandleEncodeErrors(t *testing.T) {
 	sm := manager.NewServiceManager("test")
 	sm.RegisterService(appTestService{name: "svc"})
 	servicesList(&failingResponseWriter{}, req, sm)
-
-	wm := manager.NewWorkflowManager()
-	if err := wm.RegisterWorkflow(appTestWorkflow{name: "custom"}); err != nil {
-		t.Fatalf("register custom workflow: %v", err)
-	}
-	workflowsList(&failingResponseWriter{}, req, wm)
 
 	dir := t.TempDir()
 	ruleConfigPath := filepath.Join(dir, "rule-engine.yaml")
@@ -159,10 +95,8 @@ workflows:
 	if err != nil {
 		t.Fatalf("new workflow engine: %v", err)
 	}
-	if err := wm.RegisterWorkflow(engine); err != nil {
-		t.Fatalf("register engine: %v", err)
-	}
-	ruleEngineInfo(&failingResponseWriter{}, req, wm)
+	workflowsList(&failingResponseWriter{}, req, engine)
+	ruleEngineInfo(&failingResponseWriter{}, req, engine)
 }
 
 func TestServicesListIncludesWorkflowName(t *testing.T) {
@@ -185,7 +119,7 @@ func TestServicesListIncludesWorkflowName(t *testing.T) {
 func TestAdminMuxRejectsUnsupportedMethods(t *testing.T) {
 	mux := newAdminMux(
 		manager.NewServiceManager("test"),
-		manager.NewWorkflowManager(),
+		nil,
 		health.NewHealthManager(time.Hour, "test"),
 	)
 
@@ -208,17 +142,16 @@ func TestAdminMuxRejectsUnsupportedMethods(t *testing.T) {
 
 func TestSetupMessageListenersReturnsMissingAndTypeMismatchErrors(t *testing.T) {
 	ctx := context.Background()
-	wm := manager.NewWorkflowManager()
 
 	missing := manager.NewServiceManager("test")
-	err := setupMessageListeners(ctx, missing, wm)
+	err := setupMessageListeners(ctx, missing, nil)
 	if err == nil || !strings.Contains(err.Error(), service.WebSocketInputServiceName) {
 		t.Fatalf("missing service error = %v", err)
 	}
 
 	wrongType := manager.NewServiceManager("test")
 	wrongType.RegisterService(appTestService{name: service.WebSocketInputServiceName})
-	err = setupMessageListeners(ctx, wrongType, wm)
+	err = setupMessageListeners(ctx, wrongType, nil)
 	if err == nil || !strings.Contains(err.Error(), "not of type") {
 		t.Fatalf("wrong type error = %v", err)
 	}
@@ -252,52 +185,6 @@ func TestAppStopReturnsServiceShutdownError(t *testing.T) {
 	}
 	if !application.started {
 		t.Fatalf("failed stop cleared lifecycle state")
-	}
-}
-
-func TestAppStopReturnsWorkflowShutdownError(t *testing.T) {
-	wm := manager.NewWorkflowManager()
-	if err := wm.RegisterWorkflow(appFailingStopWorkflow{
-		appTestWorkflow{name: "failing"},
-	}); err != nil {
-		t.Fatalf("register workflow: %v", err)
-	}
-	application := &App{workflowManager: wm, started: true}
-
-	err := application.Stop(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "stop workflows") {
-		t.Fatalf("stop error = %v, want workflow shutdown error", err)
-	}
-	if !application.started {
-		t.Fatalf("failed stop cleared lifecycle state")
-	}
-}
-
-func TestAppStopDrainsWorkflowsBeforeServices(t *testing.T) {
-	var events []string
-	sm := manager.NewServiceManager("test")
-	sm.RegisterService(appRecordingStopService{
-		appTestService: appTestService{name: "service"},
-		events:         &events,
-	})
-	wm := manager.NewWorkflowManager()
-	if err := wm.RegisterWorkflow(appRecordingStopWorkflow{
-		appTestWorkflow: appTestWorkflow{name: "workflow"},
-		events:          &events,
-	}); err != nil {
-		t.Fatalf("register workflow: %v", err)
-	}
-	application := &App{
-		serviceManager:  sm,
-		workflowManager: wm,
-		started:         true,
-	}
-
-	if err := application.Stop(context.Background()); err != nil {
-		t.Fatalf("stop app: %v", err)
-	}
-	if got := strings.Join(events, ","); got != "workflow,service" {
-		t.Fatalf("stop order = %s, want workflow,service", got)
 	}
 }
 
@@ -335,8 +222,8 @@ func TestAppStartCleansUpWhenWorkflowConfigIsInvalid(t *testing.T) {
 	if err == nil {
 		t.Fatalf("start error = nil, want workflow config error")
 	}
-	if !strings.Contains(err.Error(), "failed to initialize workflow manager") {
-		t.Fatalf("error = %q, want workflow manager initialization failure", err.Error())
+	if !strings.Contains(err.Error(), "failed to initialize workflow engine") {
+		t.Fatalf("error = %q, want workflow engine initialization failure", err.Error())
 	}
 }
 

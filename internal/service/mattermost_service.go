@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/elvinyao/go-service-platform/internal/config"
 	"github.com/elvinyao/go-service-platform/pkg/health"
 	"github.com/elvinyao/go-service-platform/pkg/logger"
 
@@ -23,6 +21,17 @@ const (
 	mattermostRequestTimeout    = 10 * time.Second
 	mattermostReconnectInterval = 5 * time.Second
 )
+
+// MattermostConfig holds configuration for connecting to Mattermost
+type MattermostConfig struct {
+	ServerURL    string
+	APIToken     string
+	Team         string
+	Channel      string
+	Username     string
+	Password     string
+	WebsocketURL string
+}
 
 type mattermostPost struct {
 	ChannelID string `json:"channel_id"`
@@ -39,7 +48,7 @@ type MattermostService struct {
 	httpClient *http.Client
 	baseClient *http.Client
 	wsClient   *websocket.Conn
-	config     config.MattermostConfig
+	config     MattermostConfig
 	authToken  string
 	wsCancel   context.CancelFunc
 	wsDone     chan struct{}
@@ -48,7 +57,7 @@ type MattermostService struct {
 }
 
 // NewMattermostService creates a Mattermost-like demo service.
-func NewMattermostService(name, workflow string, config config.MattermostConfig, version string, clients ...*http.Client) *MattermostService {
+func NewMattermostService(name, workflow string, config MattermostConfig, version string, clients ...*http.Client) *MattermostService {
 	var baseClient *http.Client
 	if len(clients) > 0 {
 		baseClient = clients[0]
@@ -357,50 +366,6 @@ func (s *MattermostService) GetMetrics(ctx context.Context) map[string]interface
 	metrics["channel"] = s.config.Channel
 	metrics["api_token_configured"] = s.config.APIToken != "" || s.authToken != ""
 	return metrics
-}
-
-// Configure replaces the service configuration for the next restart.
-func (s *MattermostService) Configure(ctx context.Context, cfg interface{}) error {
-	newConfig, ok := cfg.(config.MattermostConfig)
-	if !ok {
-		return fmt.Errorf("invalid configuration type for MattermostService")
-	}
-	if err := validateMattermostServiceConfig(newConfig); err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	s.config = newConfig
-	s.mu.Unlock()
-	return nil
-}
-
-func validateMattermostServiceConfig(cfg config.MattermostConfig) error {
-	if err := validateAbsoluteServiceURL(cfg.ServerURL, "http", "https"); err != nil {
-		return fmt.Errorf("invalid Mattermost server URL: %w", err)
-	}
-	if cfg.Channel == "" {
-		return fmt.Errorf("Mattermost channel is required")
-	}
-	if cfg.WebsocketURL != "" {
-		if err := validateAbsoluteServiceURL(cfg.WebsocketURL, "ws", "wss"); err != nil {
-			return fmt.Errorf("invalid Mattermost WebSocket URL: %w", err)
-		}
-	}
-	return nil
-}
-
-func validateAbsoluteServiceURL(rawURL string, schemes ...string) error {
-	parsed, err := url.ParseRequestURI(rawURL)
-	if err != nil || parsed.Host == "" {
-		return fmt.Errorf("URL must be absolute")
-	}
-	for _, scheme := range schemes {
-		if parsed.Scheme == scheme {
-			return nil
-		}
-	}
-	return fmt.Errorf("URL scheme must be one of %s", strings.Join(schemes, ", "))
 }
 
 type mattermostConnectionChecker struct {

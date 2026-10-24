@@ -45,9 +45,9 @@ Startup does this:
 2. Load rule engine config from `RULE_ENGINE_CONFIG` or `config/rule-engine.yaml`.
 3. Load local YAML rules from `WORKFLOW_RULES` or `config/workflow-rules.yaml`.
 4. Create `internal/app.App`.
-5. Register and start services through `internal/di` and `internal/manager`.
+5. Register and start services through `internal/manager`.
 6. Create `internal/workflow.WorkflowEngine`.
-7. Bind WebSocket messages to `WorkflowManager.DispatchMessage`.
+7. Bind WebSocket messages to `WorkflowEngine.ProcessMessage`.
 8. Start the admin HTTP server.
 
 The default message path is:
@@ -56,7 +56,6 @@ The default message path is:
 fake WebSocket message
 -> internal/service.WebSocketService
 -> internal/app.setupMessageListeners
--> internal/manager.WorkflowManager.DispatchMessage
 -> internal/workflow.WorkflowEngine.ProcessMessage
 -> pkg/pipeline.Engine.Process
 -> pkg/ruleengine.Composer.BuildExecutionPlan
@@ -197,7 +196,6 @@ Useful breakpoints:
 | Understand config loading | `cmd/service-workflow/main.go:run` |
 | Understand app lifecycle | `internal/app/app.go:Start` |
 | Understand listener wiring | `internal/app/app.go:setupMessageListeners` |
-| See message dispatch | `internal/manager/workflow_manager.go:DispatchMessage` |
 | See rule matching and execution | `internal/workflow/workflow_engine.go:ProcessMessage` |
 | See public pipeline execution | `pkg/pipeline/engine.go:Process` |
 | See provider composition | `pkg/ruleengine/composer.go:BuildExecutionPlan` |
@@ -292,11 +290,10 @@ Read in this order:
 
 1. `internal/service/websocket_service.go`
 2. `internal/app/app.go`
-3. `internal/manager/workflow_manager.go`
-4. `internal/workflow/workflow_engine.go`
-5. `pkg/pipeline/engine.go`
-6. `pkg/ruleengine/composer.go`
-7. `pkg/executor/executor.go`
+3. `internal/workflow/workflow_engine.go`
+4. `pkg/pipeline/engine.go`
+5. `pkg/ruleengine/composer.go`
+6. `pkg/executor/executor.go`
 
 ### Stage 3: Change a Rule
 
@@ -524,10 +521,9 @@ Expected result:
 Set breakpoints in this order:
 
 1. `internal/service/websocket_service.go:ProcessIncomingMessage`
-2. `internal/manager/workflow_manager.go:DispatchMessage`
-3. `internal/workflow/workflow_engine.go:ProcessMessage`
-4. `pkg/ruleengine/matcher.go:MatchRules`
-5. `internal/adapters/mattermost/executor.go:Execute`
+2. `internal/workflow/workflow_engine.go:ProcessMessage`
+3. `pkg/ruleengine/matcher.go:MatchRules`
+4. `internal/adapters/mattermost/executor.go:Execute`
 
 #### Extension Ideas
 

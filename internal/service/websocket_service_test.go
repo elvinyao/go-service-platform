@@ -5,15 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/elvinyao/go-service-platform/internal/config"
-	"github.com/elvinyao/go-service-platform/internal/model"
-	"github.com/elvinyao/go-service-platform/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func testWebSocketConfig() config.WebSocketConfig {
-	return config.WebSocketConfig{
+func testWebSocketConfig() WebSocketConfig {
+	return WebSocketConfig{
 		ServerURL:         "ws://localhost:0",
 		Path:              "/ws",
 		ReconnectInterval: 1 * time.Second,
@@ -103,10 +101,10 @@ func TestWebSocketService_OnMessage(t *testing.T) {
 	assert.NoError(t, err)
 	defer service.Stop(ctx)
 
-	received := make(chan model.Message, 1)
+	received := make(chan ruleengine.Message, 1)
 
 	// Create a message handler
-	handler := func(msg model.Message) {
+	handler := func(msg ruleengine.Message) {
 		received <- msg
 	}
 
@@ -114,7 +112,7 @@ func TestWebSocketService_OnMessage(t *testing.T) {
 	service.OnMessage(handler)
 
 	// Create a test message
-	message := model.Message{
+	message := ruleengine.Message{
 		ID:        "test_id",
 		Type:      "test_type",
 		Content:   "test_content",
@@ -166,52 +164,4 @@ func TestWebSocketService_GetMetrics(t *testing.T) {
 	// Check websocket specific metrics
 	assert.Equal(t, 5, metrics["connections"].(int))
 	assert.InDelta(t, 10.0, metrics["last_message_age_seconds"].(float64), 1.0)
-}
-
-func TestWebSocketService_Configure(t *testing.T) {
-	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", testWebSocketConfig(), "1.0.0")
-	ctx := context.Background()
-	updated := config.WebSocketConfig{
-		ServerURL:         "wss://events.example.test/",
-		Path:              "/events",
-		ReconnectInterval: 2 * time.Second,
-	}
-
-	assert.NoError(t, service.Configure(ctx, updated))
-	metrics := service.GetMetrics(ctx)
-	assert.Equal(t, updated.ServerURL, metrics["server_url"])
-	assert.Equal(t, updated.Path, metrics["path"])
-	assert.Equal(t, updated.ReconnectInterval.String(), metrics["reconnect_interval"])
-	assert.Error(t, service.Configure(ctx, map[string]interface{}{}))
-	assert.Error(t, service.Configure(ctx, config.WebSocketConfig{ServerURL: "http://example.test", Path: "/ws", ReconnectInterval: time.Second}))
-	assert.Error(t, service.Configure(ctx, config.WebSocketConfig{ServerURL: "ws://example.test", Path: "ws", ReconnectInterval: time.Second}))
-	assert.Error(t, service.Configure(ctx, config.WebSocketConfig{ServerURL: "ws://example.test", Path: "/ws"}))
-}
-
-func TestWebSocketService_ReportHealth(t *testing.T) {
-	// Arrange
-	service := NewWebSocketService("TestWebSocketService", "TestWorkflow", testWebSocketConfig(), "1.0.0")
-	ctx := context.Background()
-	report := &health.Report{
-		ServiceName:  "TestWebSocketService",
-		StartTime:    time.Now(),
-		Version:      "1.0.0",
-		CheckResults: []health.CheckResult{},
-	}
-
-	// Act
-	service.ReportHealth(ctx, report)
-
-	// Assert
-	assert.NotEmpty(t, report.CheckResults)
-
-	// Should have websocket-specific health checks
-	foundConnectionCheck := false
-	for _, result := range report.CheckResults {
-		if result.Name == "websocket-connections" {
-			foundConnectionCheck = true
-			break
-		}
-	}
-	assert.True(t, foundConnectionCheck, "Report should contain websocket connection health check")
 }

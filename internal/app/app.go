@@ -4,13 +4,11 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
-	"github.com/elvinyao/go-service-platform/internal/di"
-	"github.com/elvinyao/go-service-platform/internal/interfaces"
 	"github.com/elvinyao/go-service-platform/internal/manager"
-	"github.com/elvinyao/go-service-platform/internal/model"
 	"github.com/elvinyao/go-service-platform/internal/service"
 	"github.com/elvinyao/go-service-platform/internal/workflow"
 	"github.com/elvinyao/go-service-platform/pkg/config"
@@ -18,6 +16,7 @@ import (
 	"github.com/elvinyao/go-service-platform/pkg/errors"
 	"github.com/elvinyao/go-service-platform/pkg/health"
 	"github.com/elvinyao/go-service-platform/pkg/logger"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 	appruntime "github.com/elvinyao/go-service-platform/pkg/runtime"
 )
 
@@ -35,11 +34,10 @@ type App struct {
 	lifecycleMu    sync.Mutex
 	started        bool
 
-	container       *di.Container
-	serviceManager  *manager.ServiceManager
-	workflowManager *manager.WorkflowManager
-	healthManager   *health.HealthManager
-	adminServer     *appruntime.AdminServer
+	serviceManager *manager.ServiceManager
+	workflowEngine *workflow.WorkflowEngine
+	healthManager  *health.HealthManager
+	adminServer    *appruntime.AdminServer
 
 	monitorCancel context.CancelFunc
 	monitorWg     sync.WaitGroup
@@ -72,12 +70,9 @@ func (a *App) Start(ctx context.Context) error {
 	rootCtx = appctx.WithServiceName(rootCtx, a.name)
 	startCtx := appctx.WithOperationName(rootCtx, appStartOperationName)
 
-	a.container = di.NewContainer(appVersion, a.config)
-	a.serviceManager = a.container.GetServiceManager(startCtx)
-
-	if err := a.container.RegisterServices(startCtx); err != nil {
-		return errors.Wrap(err, "failed to register services", errors.TypeInternal)
-	}
+	a.healthManager = health.NewHealthManager(30*time.Second, appVersion)
+	a.serviceManager = manager.NewServiceManager(appVersion, a.healthManager)
+	registerServices(a.serviceManager, a.config, appVersion)
 
 	if len(a.serviceManager.ListServices(startCtx)) > 0 {
 		if err := a.serviceManager.StartAll(startCtx); err != nil {
@@ -98,19 +93,17 @@ func (a *App) Start(ctx context.Context) error {
 		monitorServices(monitorCtx, a.serviceManager)
 	}()
 
-	workflowManager, err := manager.NewWorkflowManagerWithDI(rootCtx, a.serviceManager, func(sm *manager.ServiceManager) (interfaces.Workflow, error) {
-		return workflow.NewWorkflowEngine(rootCtx, sm, a.ruleConfigPath, a.rulePath, a.config)
-	})
+	workflowEngine, err := workflow.NewWorkflowEngine(rootCtx, a.serviceManager, a.ruleConfigPath, a.rulePath, a.config)
 	if err != nil {
 		if cleanupErr := a.stop(context.Background()); cleanupErr != nil {
 			err = stderrors.Join(err, fmt.Errorf("clean up failed startup: %w", cleanupErr))
 		}
-		return errors.Wrap(err, "failed to initialize workflow manager", errors.TypeInternal)
+		return errors.Wrap(err, "failed to initialize workflow engine", errors.TypeInternal)
 	}
-	a.workflowManager = workflowManager
+	a.workflowEngine = workflowEngine
 
 	if a.config.Inputs.WebSocket.Enabled {
-		if err := setupMessageListeners(rootCtx, a.serviceManager, a.workflowManager); err != nil {
+		if err := setupMessageListeners(rootCtx, a.serviceManager, a.workflowEngine); err != nil {
 			if cleanupErr := a.stop(context.Background()); cleanupErr != nil {
 				err = stderrors.Join(err, fmt.Errorf("clean up failed startup: %w", cleanupErr))
 			}
@@ -118,8 +111,7 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
-	a.healthManager = a.container.GetHealthManager(rootCtx)
-	mux := newAdminMux(a.serviceManager, a.workflowManager, a.healthManager)
+	mux := newAdminMux(a.serviceManager, a.workflowEngine, a.healthManager)
 	a.adminServer = appruntime.NewAdminServer(a.config.Admin.Address, mux, appruntime.AdminServerOptions{
 		ReadHeaderTimeout: a.config.Admin.ReadHeaderTimeout,
 		ReadTimeout:       a.config.Admin.ReadTimeout,
@@ -167,8 +159,8 @@ func (a *App) stop(ctx context.Context) error {
 			stopErrors = append(stopErrors, fmt.Errorf("stop admin server: %w", err))
 		}
 	}
-	if a.workflowManager != nil {
-		if err := a.workflowManager.StopAll(ctx); err != nil {
+	if a.workflowEngine != nil {
+		if err := a.workflowEngine.Stop(ctx); err != nil {
 			stopErrors = append(stopErrors, fmt.Errorf("stop workflows: %w", err))
 		}
 	}
@@ -178,6 +170,59 @@ func (a *App) stop(ctx context.Context) error {
 		}
 	}
 	return stderrors.Join(stopErrors...)
+}
+
+func registerServices(sm *manager.ServiceManager, cfg config.RuntimeConfig, version string) {
+	if cfg.Inputs.WebSocket.Enabled {
+		_ = sm.RegisterService(service.NewWebSocketService(
+			service.WebSocketInputServiceName,
+			ruleengine.DefaultWorkflowName,
+			service.WebSocketConfig{
+				ServerURL:         cfg.Inputs.WebSocket.ServerURL,
+				Path:              cfg.Inputs.WebSocket.Path,
+				ReconnectInterval: cfg.Inputs.WebSocket.ReconnectInterval,
+			},
+			version,
+		))
+	}
+
+	if cfg.Adapters.BadgeDB.Enabled {
+		_ = sm.RegisterService(service.NewBadgeDBService(
+			service.BadgeDBServiceName,
+			ruleengine.DefaultWorkflowName,
+			cfg.Adapters.BadgeDB.Path,
+			version,
+		))
+	}
+
+	if cfg.Adapters.Mattermost.Enabled {
+		_ = sm.RegisterService(service.NewMattermostService(
+			service.MattermostServiceName,
+			ruleengine.DefaultWorkflowName,
+			service.MattermostConfig{
+				ServerURL:    cfg.Adapters.Mattermost.ServerURL,
+				APIToken:     cfg.Adapters.Mattermost.APIToken,
+				Channel:      cfg.Adapters.Mattermost.Channel,
+				Username:     os.Getenv("MATTERMOST_USERNAME"),
+				Password:     os.Getenv("MATTERMOST_PASSWORD"),
+				WebsocketURL: cfg.Adapters.Mattermost.WebsocketURL,
+			},
+			version,
+		))
+	}
+
+	if cfg.Adapters.Confluence.Enabled {
+		_ = sm.RegisterService(service.NewConfluenceSettingsService(
+			service.ConfluenceSettingsServiceName,
+			ruleengine.DefaultWorkflowName,
+			service.ConfluenceSettingsConfig{
+				PageID:          cfg.Adapters.Confluence.SettingsPageID,
+				RefreshInterval: cfg.Adapters.Confluence.RefreshInterval,
+				APIEndpoint:     cfg.Adapters.Confluence.APIEndpoint,
+			},
+			version,
+		))
+	}
 }
 
 func shutdownServices(ctx context.Context, serviceManager *manager.ServiceManager) error {
@@ -215,7 +260,7 @@ func monitorServices(ctx context.Context, serviceManager *manager.ServiceManager
 	logger.InfoWithContext(ctx, "Service monitoring stopped")
 }
 
-func setupMessageListeners(ctx context.Context, serviceManager *manager.ServiceManager, workflowManager *manager.WorkflowManager) error {
+func setupMessageListeners(ctx context.Context, serviceManager *manager.ServiceManager, workflowEngine *workflow.WorkflowEngine) error {
 	return logger.LogOperation(ctx, "setup_message_listeners", func(ctx context.Context) error {
 		logger.InfoWithContext(ctx, "Setting up message listeners")
 
@@ -230,9 +275,9 @@ func setupMessageListeners(ctx context.Context, serviceManager *manager.ServiceM
 				WithField("actual_type", fmt.Sprintf("%T", svc))
 		}
 
-		websocketServiceA.OnMessage(func(msg model.Message) {
+		websocketServiceA.OnMessage(func(msg ruleengine.Message) {
 			msgCtx := appctx.NewContext(ctx)
-			if err := workflowManager.DispatchMessage(msgCtx, msg); err != nil {
+			if err := workflowEngine.ProcessMessage(msgCtx, msg); err != nil {
 				logger.WithContextError(msgCtx, err).Errorf("Error dispatching message: %+v", msg)
 			}
 		})

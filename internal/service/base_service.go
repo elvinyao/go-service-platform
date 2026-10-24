@@ -2,10 +2,7 @@ package service
 
 import (
 	"context"
-	"fmt"
-	appctx "github.com/elvinyao/go-service-platform/pkg/context"
 	"github.com/elvinyao/go-service-platform/pkg/health"
-	"github.com/elvinyao/go-service-platform/pkg/logger"
 	"sync"
 	"time"
 )
@@ -101,47 +98,4 @@ func (s *BaseService) GetMetrics(ctx context.Context) map[string]interface{} {
 	}
 
 	return metrics
-}
-
-// ReportHealth reports health status to the provided report
-func (s *BaseService) ReportHealth(ctx context.Context, report *health.Report) {
-	ctx = appctx.WithServiceName(ctx, s.name)
-	ctx = appctx.WithOperationName(ctx, "health_report")
-
-	logger.DebugfWithContext(ctx, "Reporting health for service: %s", s.name)
-
-	checkers := append([]health.Checker{serviceRunningHealthChecker{service: s}}, s.RegisterHealthChecks()...)
-
-	// Convert checkers to check functions
-	checkFuncs := make([]func(context.Context) *health.CheckResult, 0, len(checkers))
-	for _, checker := range checkers {
-		checkFuncs = append(checkFuncs, func(ctx context.Context) *health.CheckResult {
-			return checker.Check(ctx)
-		})
-	}
-
-	// Run checks in parallel
-	results := health.RunChecksParallel(ctx, checkFuncs)
-
-	// Add results to report
-	for _, result := range results {
-		checkResult := *result // Convert to value type
-		report.CheckResults = append(report.CheckResults, checkResult)
-	}
-}
-
-type serviceRunningHealthChecker struct {
-	service *BaseService
-}
-
-func (c serviceRunningHealthChecker) Check(ctx context.Context) *health.CheckResult {
-	result := health.NewCheckResult("service-running", health.CategoryConnectivity)
-	result.Level = health.LevelCritical
-	if c.service.IsRunning(ctx) {
-		result.SetStatus(health.StatusUp, fmt.Sprintf("Service %s is running", c.service.GetName()))
-	} else {
-		result.SetStatus(health.StatusDown, fmt.Sprintf("Service %s is not running", c.service.GetName()))
-	}
-	result.Complete()
-	return result
 }

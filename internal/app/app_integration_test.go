@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/elvinyao/go-service-platform/internal/model"
 	"github.com/elvinyao/go-service-platform/internal/service"
 	"github.com/elvinyao/go-service-platform/pkg/config"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 
 	"github.com/gorilla/websocket"
 )
@@ -52,7 +52,7 @@ func TestAppProcessesWebSocketMessageThroughRulesAndExecutors(t *testing.T) {
 	}()
 
 	conn := waitForWebSocketConnection(t, connections)
-	if err := conn.WriteJSON(model.Message{
+	if err := conn.WriteJSON(ruleengine.Message{
 		ID:      "m1",
 		Type:    "AAA",
 		Content: "hello integration",

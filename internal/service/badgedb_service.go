@@ -15,21 +15,19 @@ import (
 // BadgeDBService manages badge data
 type BadgeDBService struct {
 	*BaseService
-	mu            sync.Mutex
-	db            map[string]interface{}
-	dbPath        string
-	processingMap map[string]string
-	lastBackup    time.Time
+	mu         sync.Mutex
+	db         map[string]model.Badge
+	dbPath     string
+	lastBackup time.Time
 }
 
 // NewBadgeDBService creates a new BadgeDBService
 func NewBadgeDBService(name, workflow, dbPath, version string) *BadgeDBService {
 	s := &BadgeDBService{
-		BaseService:   NewBaseService(name, workflow, "badgedb", version),
-		db:            make(map[string]interface{}),
-		dbPath:        dbPath,
-		processingMap: make(map[string]string),
-		lastBackup:    time.Time{},
+		BaseService: NewBaseService(name, workflow, "badgedb", version),
+		db:          make(map[string]model.Badge),
+		dbPath:      dbPath,
+		lastBackup:  time.Time{},
 	}
 
 	// Add custom health checkers
@@ -57,9 +55,6 @@ func (s *BadgeDBService) Start(ctx context.Context) error {
 	if err := s.loadDB(ctx); err != nil {
 		return err
 	}
-
-	// Initialize processing map
-	s.initProcessingMap()
 
 	// Set service as running
 	s.LockRunning(true)
@@ -110,19 +105,6 @@ func (s *BadgeDBService) Restart(ctx context.Context) error {
 	return s.Start(ctx)
 }
 
-// GetProcessingMethod returns the processing method for a message type
-func (s *BadgeDBService) GetProcessingMethod(messageType string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	method, ok := s.processingMap[messageType]
-	if !ok {
-		return "", fmt.Errorf("no processing method found for message type: %s", messageType)
-	}
-
-	return method, nil
-}
-
 // GetBadge retrieves a badge by ID
 func (s *BadgeDBService) GetBadge(ctx context.Context, id string) (model.Badge, error) {
 	ctx = appctx.WithOperationName(ctx, "get_badge")
@@ -136,14 +118,9 @@ func (s *BadgeDBService) GetBadge(ctx context.Context, id string) (model.Badge, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, ok := s.db[id]
+	badge, ok := s.db[id]
 	if !ok {
 		return model.Badge{}, fmt.Errorf("badge not found: %s", id)
-	}
-
-	badge, ok := data.(model.Badge)
-	if !ok {
-		return model.Badge{}, fmt.Errorf("invalid data type for badge: %s", id)
 	}
 
 	return badge, nil
@@ -164,26 +141,6 @@ func (s *BadgeDBService) SaveBadge(ctx context.Context, badge model.Badge) error
 
 	s.db[badge.ID] = badge
 	return s.backupDBLocked(ctx)
-}
-
-// Configure implements Service interface with context support
-func (s *BadgeDBService) Configure(ctx context.Context, config interface{}) error {
-	ctx = appctx.WithOperationName(ctx, "configure_service")
-	logger.InfofWithContext(ctx, "Configuring service: %s", s.GetName())
-
-	// Handle configuration based on type
-	if configStr, ok := config.(string); ok {
-		if strings.TrimSpace(configStr) == "" {
-			return fmt.Errorf("database path is required")
-		}
-		s.mu.Lock()
-		s.dbPath = configStr
-		s.mu.Unlock()
-		logger.DebugfWithContext(ctx, "Updated DB path to: %s", configStr)
-		return nil
-	}
-
-	return fmt.Errorf("unsupported configuration type")
 }
 
 // GetMetrics implements Service interface with context support
@@ -214,15 +171,6 @@ func (s *BadgeDBService) backupDBLocked(ctx context.Context) error {
 	// The demo store records backup time without writing external state.
 	s.lastBackup = time.Now()
 	return nil
-}
-
-func (s *BadgeDBService) initProcessingMap() {
-	// Initialize the processing method map
-	s.processingMap = map[string]string{
-		"badge_award":    "StandardAward",
-		"badge_revoke":   "StandardRevoke",
-		"badge_transfer": "SecureTransfer",
-	}
 }
 
 // badgeDBAccessChecker checks database access

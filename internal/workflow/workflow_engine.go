@@ -8,7 +8,6 @@ import (
 	"github.com/elvinyao/go-service-platform/internal/adapters/confluence"
 	"github.com/elvinyao/go-service-platform/internal/adapters/mattermost"
 	"github.com/elvinyao/go-service-platform/internal/manager"
-	"github.com/elvinyao/go-service-platform/internal/model"
 	runtimeconfig "github.com/elvinyao/go-service-platform/pkg/config"
 	appctx "github.com/elvinyao/go-service-platform/pkg/context"
 	"github.com/elvinyao/go-service-platform/pkg/errors"
@@ -155,11 +154,11 @@ func (w *WorkflowEngine) Stop(ctx context.Context) error {
 	return w.engine.Stop(ctx)
 }
 
-func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg model.Message) error {
+func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg ruleengine.Message) error {
 	ctx = appctx.WithServiceName(ctx, w.name)
 	ctx = appctx.WithOperationName(ctx, "process_message")
 
-	plan, processErr := w.engine.Process(ctx, w.name, toRuleEngineMessage(msg))
+	plan, processErr := w.engine.Process(ctx, w.name, msg)
 	var executionError *pipeline.ExecutionError
 	if processErr != nil && !errors.As(processErr, &executionError) {
 		return errors.Wrap(processErr, "failed to process rule pipeline", errors.TypeInternal)
@@ -184,15 +183,4 @@ func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg model.Message) 
 	}
 
 	return nil
-}
-
-func toRuleEngineMessage(msg model.Message) ruleengine.Message {
-	return ruleengine.Message{
-		ID:        msg.ID,
-		Type:      msg.Type,
-		Content:   msg.Content,
-		UserID:    msg.UserID,
-		Timestamp: msg.Timestamp,
-		Metadata:  msg.Metadata,
-	}
 }

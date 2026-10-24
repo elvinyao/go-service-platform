@@ -204,7 +204,6 @@ examples/                   Programs using public framework packages
 fake-server/                Local Confluence-, Mattermost-, and WebSocket-like APIs
 internal/adapters/          Optional demo provider and executors
 internal/app/               Reference runtime wiring and admin API
-internal/di/                Reference runtime dependency wiring
 internal/service/           Lifecycle-managed reference services
 pkg/config/                 Public runtime configuration package
 pkg/executor/               Public executor SDK

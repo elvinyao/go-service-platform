@@ -3,7 +3,6 @@ module github.com/elvinyao/go-service-platform
 go 1.26
 
 require (
-	github.com/allegro/bigcache/v3 v3.1.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	gopkg.in/yaml.v3 v3.0.1

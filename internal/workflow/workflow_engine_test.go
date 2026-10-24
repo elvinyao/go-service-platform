@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/elvinyao/go-service-platform/internal/manager"
-	"github.com/elvinyao/go-service-platform/internal/model"
 	runtimeconfig "github.com/elvinyao/go-service-platform/pkg/config"
 	coreexecutor "github.com/elvinyao/go-service-platform/pkg/executor"
 	"github.com/elvinyao/go-service-platform/pkg/pipeline"
@@ -78,7 +77,7 @@ func TestWorkflowEngineProcessMessageExecutesMatchedActionsInPriorityOrder(t *te
 		},
 	}, recorder)
 
-	err := engine.ProcessMessage(context.Background(), model.Message{
+	err := engine.ProcessMessage(context.Background(), ruleengine.Message{
 		ID:        "m1",
 		Type:      "AAA",
 		Content:   "hello",
@@ -115,7 +114,7 @@ func TestWorkflowEngineProcessMessageReturnsNilWhenNoRulesMatch(t *testing.T) {
 		},
 	}, recorder)
 
-	err := engine.ProcessMessage(context.Background(), model.Message{ID: "m1", Type: "BBB"})
+	err := engine.ProcessMessage(context.Background(), ruleengine.Message{ID: "m1", Type: "BBB"})
 	if err != nil {
 		t.Fatalf("process message: %v", err)
 	}
@@ -142,7 +141,7 @@ func TestWorkflowEngineProcessMessageContinuesAfterExecutorFailure(t *testing.T)
 		},
 	}, failing, success)
 
-	err := engine.ProcessMessage(context.Background(), model.Message{ID: "m1", Type: "AAA"})
+	err := engine.ProcessMessage(context.Background(), ruleengine.Message{ID: "m1", Type: "AAA"})
 	if err == nil {
 		t.Fatalf("process message error = nil, want partial failure")
 	}
@@ -151,44 +150,6 @@ func TestWorkflowEngineProcessMessageContinuesAfterExecutorFailure(t *testing.T)
 	}
 	if len(success.Records()) != 1 {
 		t.Fatalf("success executor records len = %d, want 1", len(success.Records()))
-	}
-}
-
-func TestWorkflowManagerDispatchMessageRunsWorkflowEngineIntegration(t *testing.T) {
-	recorder := &recordingWorkflowExecutor{executorType: "record"}
-	engine := newTestWorkflowEngine(t, []ruleengine.Rule{
-		{
-			ID:       "rule-aaa",
-			Workflow: ruleengine.DefaultWorkflowName,
-			Enabled:  true,
-			Conditions: []ruleengine.Condition{
-				{Field: "type", Op: ruleengine.OpEq, Value: "AAA"},
-			},
-			Actions: []ruleengine.Action{{ID: "record", Executor: "record"}},
-		},
-	}, recorder)
-
-	workflowManager := manager.NewWorkflowManager()
-	if err := workflowManager.RegisterWorkflow(engine); err != nil {
-		t.Fatalf("register workflow: %v", err)
-	}
-
-	err := workflowManager.DispatchMessage(context.Background(), model.Message{
-		ID:      "m1",
-		Type:    "AAA",
-		Content: "integration",
-		UserID:  "u1",
-	})
-	if err != nil {
-		t.Fatalf("dispatch message: %v", err)
-	}
-
-	records := recorder.Records()
-	if len(records) != 1 {
-		t.Fatalf("records len = %d, want 1", len(records))
-	}
-	if records[0].Content != "integration" {
-		t.Fatalf("recorded content = %q, want integration", records[0].Content)
 	}
 }
 
@@ -267,7 +228,7 @@ rules:
 		t.Fatalf("yaml rules len = %d, want 1", len(snapshot.Composer.Providers["yaml"].Rules))
 	}
 
-	err = engine.ProcessMessage(context.Background(), model.Message{
+	err = engine.ProcessMessage(context.Background(), ruleengine.Message{
 		ID:        "m1",
 		Type:      "AAA",
 		Timestamp: time.Now(),
@@ -343,7 +304,7 @@ rules:
 		t.Fatalf("db executor should be disabled: %+v", snapshot.Executors)
 	}
 
-	err = engine.ProcessMessage(context.Background(), model.Message{
+	err = engine.ProcessMessage(context.Background(), ruleengine.Message{
 		ID:        "m1",
 		Type:      "AAA",
 		Timestamp: time.Now(),
@@ -515,7 +476,7 @@ func TestWorkflowEngineWrapsPipelineErrors(t *testing.T) {
 	}
 	workflowEngine := &WorkflowEngine{name: ruleengine.DefaultWorkflowName, engine: engine}
 
-	err = workflowEngine.ProcessMessage(context.Background(), model.Message{ID: "m1"})
+	err = workflowEngine.ProcessMessage(context.Background(), ruleengine.Message{ID: "m1"})
 	if err == nil || !strings.Contains(err.Error(), "failed to process rule pipeline") {
 		t.Fatalf("process error = %v", err)
 	}

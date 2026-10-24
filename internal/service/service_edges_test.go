@@ -14,10 +14,9 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/elvinyao/go-service-platform/internal/config"
-	"github.com/elvinyao/go-service-platform/internal/dataaccess"
 	"github.com/elvinyao/go-service-platform/internal/model"
 	"github.com/elvinyao/go-service-platform/pkg/health"
+	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 
 	"github.com/gorilla/websocket"
 )
@@ -61,7 +60,7 @@ func TestMattermostHTTPProtocolWithoutNetwork(t *testing.T) {
 		}, nil
 	})
 
-	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", internalconfig.MattermostConfig{
+	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", MattermostConfig{
 		ServerURL: "http://mattermost.test",
 		Channel:   "channel",
 	}, "test")
@@ -134,7 +133,7 @@ func TestMattermostLoginProtocolWithoutNetwork(t *testing.T) {
 func TestMattermostErrorBranchesWithoutNetwork(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", internalconfig.MattermostConfig{}, "test")
+	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", MattermostConfig{}, "test")
 	if err := svc.Start(canceled); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled start error = %v", err)
 	}
@@ -145,7 +144,7 @@ func TestMattermostErrorBranchesWithoutNetwork(t *testing.T) {
 	}
 	svc.LockRunning(false)
 
-	emptyWebSocket := NewMattermostService(MattermostServiceName, "WorkflowEngine", internalconfig.MattermostConfig{
+	emptyWebSocket := NewMattermostService(MattermostServiceName, "WorkflowEngine", MattermostConfig{
 		ServerURL: "http://mattermost.test",
 		APIToken:  "token",
 	}, "test")
@@ -160,7 +159,7 @@ func TestMattermostErrorBranchesWithoutNetwork(t *testing.T) {
 }
 
 func TestMattermostStartAcceptsNilContext(t *testing.T) {
-	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", internalconfig.MattermostConfig{}, "test")
+	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", MattermostConfig{}, "test")
 	if err := svc.Start(nil); err != nil {
 		t.Fatalf("start with nil context: %v", err)
 	}
@@ -195,7 +194,7 @@ func TestMattermostWebSocketLifecycle(t *testing.T) {
 	}))
 	defer server.Close()
 
-	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", internalconfig.MattermostConfig{
+	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", MattermostConfig{
 		ServerURL:    server.URL,
 		WebsocketURL: httpToWS(server.URL),
 		APIToken:     "token",
@@ -256,7 +255,7 @@ func TestMattermostWebSocketReconnectsAfterDisconnect(t *testing.T) {
 	}))
 	defer server.Close()
 
-	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", internalconfig.MattermostConfig{
+	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", MattermostConfig{
 		ServerURL:    server.URL,
 		WebsocketURL: httpToWS(server.URL),
 		APIToken:     "token",
@@ -280,7 +279,7 @@ func TestMattermostWebSocketReconnectsAfterDisconnect(t *testing.T) {
 }
 
 func TestMattermostConnectionCheckerUsesWarningLevel(t *testing.T) {
-	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", internalconfig.MattermostConfig{
+	svc := NewMattermostService(MattermostServiceName, "WorkflowEngine", MattermostConfig{
 		ServerURL:    "http://mattermost.test",
 		WebsocketURL: "ws://mattermost.test",
 	}, "test")
@@ -303,7 +302,7 @@ func TestMattermostConnectionCheckerUsesWarningLevel(t *testing.T) {
 
 func TestServiceStopsHonorCanceledContext(t *testing.T) {
 	t.Run("WebSocket", func(t *testing.T) {
-		svc := NewWebSocketService(WebSocketInputServiceName, "WorkflowEngine", internalconfig.WebSocketConfig{}, "test")
+		svc := NewWebSocketService(WebSocketInputServiceName, "WorkflowEngine", WebSocketConfig{}, "test")
 		svc.LockRunning(true)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -317,8 +316,7 @@ func TestServiceStopsHonorCanceledContext(t *testing.T) {
 		svc := NewConfluenceSettingsService(
 			ConfluenceSettingsServiceName,
 			"WorkflowEngine",
-			dataaccess.NewCacheDataAccessor(context.Background()),
-			internalconfig.ConfluenceSettingsConfig{},
+			ConfluenceSettingsConfig{},
 			"test",
 		)
 		svc.LockRunning(true)
@@ -365,8 +363,7 @@ func TestConfluencePeriodicRefreshCancelsWithoutHoldingServiceLock(t *testing.T)
 	svc := NewConfluenceSettingsService(
 		ConfluenceSettingsServiceName,
 		"WorkflowEngine",
-		dataaccess.NewCacheDataAccessor(context.Background()),
-		internalconfig.ConfluenceSettingsConfig{
+		ConfluenceSettingsConfig{
 			APIEndpoint:     "http://confluence.test",
 			PageID:          "settings-page-1",
 			RefreshInterval: 10 * time.Millisecond,
@@ -392,18 +389,18 @@ func TestConfluencePeriodicRefreshCancelsWithoutHoldingServiceLock(t *testing.T)
 }
 
 func TestWebSocketMessageHandlerAppliesBackpressure(t *testing.T) {
-	svc := NewWebSocketService(WebSocketInputServiceName, "WorkflowEngine", internalconfig.WebSocketConfig{}, "test")
+	svc := NewWebSocketService(WebSocketInputServiceName, "WorkflowEngine", WebSocketConfig{}, "test")
 	svc.LockRunning(true)
 	handlerStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
-	svc.OnMessage(func(model.Message) {
+	svc.OnMessage(func(ruleengine.Message) {
 		close(handlerStarted)
 		<-releaseHandler
 	})
 
 	processed := make(chan error, 1)
 	go func() {
-		processed <- svc.ProcessIncomingMessage(context.Background(), model.Message{ID: "m1"})
+		processed <- svc.ProcessIncomingMessage(context.Background(), ruleengine.Message{ID: "m1"})
 	}()
 
 	select {
@@ -429,7 +426,7 @@ func TestWebSocketMessageHandlerAppliesBackpressure(t *testing.T) {
 }
 
 func TestServiceEndpointsNormalizeTrailingSlashes(t *testing.T) {
-	if got := webSocketEndpoint(internalconfig.WebSocketConfig{ServerURL: "ws://example.test/", Path: "/ws"}); got != "ws://example.test/ws" {
+	if got := webSocketEndpoint(WebSocketConfig{ServerURL: "ws://example.test/", Path: "/ws"}); got != "ws://example.test/ws" {
 		t.Fatalf("WebSocket endpoint = %q", got)
 	}
 
@@ -467,7 +464,7 @@ func TestConfluenceSettingsServiceFetchReturnsErrorForBadJSON(t *testing.T) {
 }
 
 func TestMattermostServiceReturnsErrorForCreatePostFailure(t *testing.T) {
-	svc := NewMattermostService("MattermostService", "Global", internalconfig.MattermostConfig{
+	svc := NewMattermostService("MattermostService", "Global", MattermostConfig{
 		ServerURL: "http://mattermost.test",
 		APIToken:  "test-token",
 		Channel:   "test-channel",
@@ -545,7 +542,7 @@ func TestWebSocketServiceReconnectsAfterConnectionDrops(t *testing.T) {
 	}))
 	defer server.Close()
 
-	svc := NewWebSocketService(WebSocketInputServiceName, "WorkflowEngine", internalconfig.WebSocketConfig{
+	svc := NewWebSocketService(WebSocketInputServiceName, "WorkflowEngine", WebSocketConfig{
 		ServerURL:         httpToWS(server.URL),
 		Path:              "/ws",
 		ReconnectInterval: 10 * time.Millisecond,
@@ -568,12 +565,10 @@ func newTestConfluenceSettingsService(t *testing.T, client *http.Client) *Conflu
 	return NewConfluenceSettingsService(
 		"ConfluenceSettingsService",
 		"WorkflowEngine",
-		dataaccess.NewCacheDataAccessor(context.Background()),
-		internalconfig.ConfluenceSettingsConfig{
+		ConfluenceSettingsConfig{
 			PageID:          "settings-page-1",
 			RefreshInterval: time.Hour,
 			APIEndpoint:     "http://confluence.test",
-			SpaceKey:        "TEST",
 		},
 		"test",
 		client,

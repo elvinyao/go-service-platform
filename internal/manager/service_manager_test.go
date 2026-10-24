@@ -51,9 +51,7 @@ func (s *testService) IsRunning(context.Context) bool { return s.running }
 func (s *testService) GetMetrics(context.Context) map[string]interface{} {
 	return map[string]interface{}{"running": s.running}
 }
-func (s *testService) Configure(context.Context, interface{}) error { return nil }
-func (s *testService) RegisterHealthChecks() []health.Checker       { return nil }
-func (s *testService) ReportHealth(context.Context, *health.Report) {}
+func (s *testService) RegisterHealthChecks() []health.Checker { return nil }
 
 func TestServiceManagerStartAllReturnsErrorWhenNoServicesRegistered(t *testing.T) {
 	sm := NewServiceManager("test")
@@ -119,18 +117,6 @@ func TestServiceManagerStopAllReturnsPartialFailure(t *testing.T) {
 	}
 }
 
-func TestServiceManagerGetServicesByWorkflowAndType(t *testing.T) {
-	sm := NewServiceManager("test")
-	sm.RegisterService(&testService{name: "match", workflow: "wf", kind: "kind"})
-	sm.RegisterService(&testService{name: "wrong-workflow", workflow: "other", kind: "kind"})
-	sm.RegisterService(&testService{name: "wrong-kind", workflow: "wf", kind: "other"})
-
-	got := sm.GetServicesByWorkflowAndType(context.Background(), "wf", "kind")
-	if len(got) != 1 || got[0].GetName() != "match" {
-		t.Fatalf("matched services = %+v, want only match", got)
-	}
-}
-
 func TestServiceManagerDuplicateRegistrationIsRejected(t *testing.T) {
 	sm := NewServiceManager("test")
 	first := &testService{name: "same", workflow: "wf", kind: "old"}
@@ -151,36 +137,12 @@ func TestServiceManagerDuplicateRegistrationIsRejected(t *testing.T) {
 	}
 }
 
-func TestServiceManagerHealthAndListMethods(t *testing.T) {
+func TestServiceManagerListMethods(t *testing.T) {
 	sm := NewServiceManager("test")
 	running := &testService{name: "running", workflow: "wf", kind: "kind", running: true}
 	down := &testService{name: "down", workflow: "wf", kind: "kind", running: false}
 	sm.RegisterService(running)
 	sm.RegisterService(down)
-
-	report, ok := sm.GetServiceHealth(context.Background(), "running")
-	if !ok {
-		t.Fatalf("running service health not found")
-	}
-	if report.Status != health.StatusUp {
-		t.Fatalf("running status = %s, want UP", report.Status)
-	}
-	report, ok = sm.GetServiceHealth(context.Background(), "missing")
-	if ok {
-		t.Fatalf("missing service health found: %+v", report)
-	}
-
-	all := sm.GetAllServicesHealth(context.Background())
-	if len(all) != 2 {
-		t.Fatalf("all health len = %d, want 2", len(all))
-	}
-	system := sm.GetSystemHealth(context.Background())
-	if system.Status != health.StatusDegraded {
-		t.Fatalf("system status = %s, want DEGRADED", system.Status)
-	}
-	if system.Metadata["service_count"] != 2 {
-		t.Fatalf("service_count = %v, want 2", system.Metadata["service_count"])
-	}
 
 	services := sm.ListServices(context.Background())
 	if len(services) != 2 || services[0].GetName() != "down" || services[1].GetName() != "running" {
@@ -188,7 +150,7 @@ func TestServiceManagerHealthAndListMethods(t *testing.T) {
 	}
 }
 
-func TestServiceManagerRegistrationAndSystemHealthBranches(t *testing.T) {
+func TestServiceManagerRegistrationAndLookupBranches(t *testing.T) {
 	sm := NewServiceManager("test")
 	if err := sm.RegisterService(nil); err == nil {
 		t.Fatalf("nil service registration error = nil")
@@ -201,18 +163,8 @@ func TestServiceManagerRegistrationAndSystemHealthBranches(t *testing.T) {
 		t.Fatalf("empty service name registration error = nil")
 	}
 
-	if report := sm.GetSystemHealth(context.Background()); report.Status != health.StatusUnknown {
-		t.Fatalf("empty system status = %s, want UNKNOWN", report.Status)
-	}
-
 	first := &testService{name: "first", workflow: "wf", kind: "kind", running: false}
-	second := &testService{name: "second", workflow: "wf", kind: "kind", running: false}
 	sm.RegisterService(first)
-	sm.RegisterService(second)
-
-	if report := sm.GetSystemHealth(context.Background()); report.Status != health.StatusDown {
-		t.Fatalf("all-down system status = %s, want DOWN", report.Status)
-	}
 
 	if svc, ok := sm.GetServiceByName(context.Background(), "first"); !ok || svc != first {
 		t.Fatalf("first service lookup = %v %v, want registered service", svc, ok)

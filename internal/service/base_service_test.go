@@ -130,33 +130,6 @@ func TestGetMetrics(t *testing.T) {
 	assert.InDelta(t, 10.0, metrics["uptime_seconds"].(float64), 1.0)
 }
 
-func TestReportHealth(t *testing.T) {
-	// Arrange
-	service := NewBaseService("TestService", "TestWorkflow", "TestType", "1.0.0")
-	ctx := context.Background()
-	report := &health.Report{
-		ServiceName:  "TestService",
-		StartTime:    time.Now(),
-		Version:      "1.0.0",
-		CheckResults: []health.CheckResult{},
-	}
-
-	// Act
-	service.ReportHealth(ctx, report)
-
-	// Assert
-	assert.NotEmpty(t, report.CheckResults)
-	// Should have at least the service running check
-	foundRunningCheck := false
-	for _, result := range report.CheckResults {
-		if result.Name == "service-running" {
-			foundRunningCheck = true
-			break
-		}
-	}
-	assert.True(t, foundRunningCheck, "Report should contain the service running check")
-}
-
 // Mock implementation of health.Checker for testing
 type mockHealthChecker struct{}
 
