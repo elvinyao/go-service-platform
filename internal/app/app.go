@@ -26,13 +26,29 @@ const (
 	serviceShutdownTimeout = 10 * time.Second
 )
 
+// LifecycleState represents the explicit lifecycle state of App.
+type LifecycleState string
+
+const (
+	// AppStateStopped indicates the application is idle with no active subsystems.
+	AppStateStopped LifecycleState = "stopped"
+	// AppStateStarting indicates staged startup is in progress.
+	AppStateStarting LifecycleState = "starting"
+	// AppStateRunning indicates all configured subsystems are active.
+	AppStateRunning LifecycleState = "running"
+	// AppStateStopping indicates graceful shutdown is in progress.
+	AppStateStopping LifecycleState = "stopping"
+	// AppStatePendingCleanup indicates a previous Stop or rollback left subsystems that failed to stop.
+	AppStatePendingCleanup LifecycleState = "pending_cleanup"
+)
+
 type App struct {
 	name           string
 	config         config.RuntimeConfig
 	ruleConfigPath string
 	rulePath       string
 	lifecycleMu    sync.Mutex
-	started        bool
+	state          LifecycleState
 
 	serviceManager *manager.ServiceManager
 	workflowEngine *workflow.WorkflowEngine
@@ -49,7 +65,18 @@ func New(name string, cfg config.RuntimeConfig, ruleConfigPath, rulePath string)
 		config:         cfg,
 		ruleConfigPath: ruleConfigPath,
 		rulePath:       rulePath,
+		state:          AppStateStopped,
 	}
+}
+
+// State returns the current explicit lifecycle state of the application.
+func (a *App) State() LifecycleState {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if a.state == "" {
+		return AppStateStopped
+	}
+	return a.state
 }
 
 func (a *App) AdminAddress() string {
@@ -59,13 +86,21 @@ func (a *App) AdminAddress() string {
 func (a *App) Start(ctx context.Context) error {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
-	if a.started {
+
+	switch a.state {
+	case AppStateRunning:
 		return errors.New(errors.TypeInvalidInput, "application is already started", nil)
+	case AppStatePendingCleanup:
+		return errors.New(errors.TypeServiceUnavailable, "application has subsystems pending cleanup", nil)
+	case AppStateStarting, AppStateStopping:
+		return errors.New(errors.TypeInvalidInput, "application lifecycle transition already in progress", nil)
 	}
 
 	if err := a.config.Validate(); err != nil {
 		return errors.Wrap(err, "invalid runtime config", errors.TypeInvalidInput)
 	}
+
+	a.state = AppStateStarting
 	rootCtx := appctx.NewContext(ctx)
 	rootCtx = appctx.WithServiceName(rootCtx, a.name)
 	startCtx := appctx.WithOperationName(rootCtx, appStartOperationName)
@@ -76,9 +111,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	if len(a.serviceManager.ListServices(startCtx)) > 0 {
 		if err := a.serviceManager.StartAll(startCtx); err != nil {
-			if cleanupErr := a.stop(context.Background()); cleanupErr != nil {
-				err = stderrors.Join(err, fmt.Errorf("clean up failed startup: %w", cleanupErr))
-			}
+			err = a.rollbackStartup(err)
 			return errors.Wrap(err, "failed to start services", errors.TypeServiceUnavailable)
 		}
 	} else {
@@ -95,18 +128,14 @@ func (a *App) Start(ctx context.Context) error {
 
 	workflowEngine, err := workflow.NewWorkflowEngine(rootCtx, a.serviceManager, a.ruleConfigPath, a.rulePath, a.config)
 	if err != nil {
-		if cleanupErr := a.stop(context.Background()); cleanupErr != nil {
-			err = stderrors.Join(err, fmt.Errorf("clean up failed startup: %w", cleanupErr))
-		}
+		err = a.rollbackStartup(err)
 		return errors.Wrap(err, "failed to initialize workflow engine", errors.TypeInternal)
 	}
 	a.workflowEngine = workflowEngine
 
 	if a.config.Inputs.WebSocket.Enabled {
 		if err := setupMessageListeners(rootCtx, a.serviceManager, a.workflowEngine); err != nil {
-			if cleanupErr := a.stop(context.Background()); cleanupErr != nil {
-				err = stderrors.Join(err, fmt.Errorf("clean up failed startup: %w", cleanupErr))
-			}
+			err = a.rollbackStartup(err)
 			return errors.Wrap(err, "failed to set up message listeners", errors.TypeInternal)
 		}
 	}
@@ -119,14 +148,12 @@ func (a *App) Start(ctx context.Context) error {
 		IdleTimeout:       a.config.Admin.IdleTimeout,
 	})
 	if err := a.adminServer.Start(rootCtx); err != nil {
-		if cleanupErr := a.stop(context.Background()); cleanupErr != nil {
-			err = stderrors.Join(err, fmt.Errorf("clean up failed startup: %w", cleanupErr))
-		}
+		err = a.rollbackStartup(err)
 		return errors.Wrap(err, "failed to start admin server", errors.TypeServiceUnavailable)
 	}
 
 	logger.InfofWithContext(rootCtx, "Admin server started on %s", a.adminServer.Addr())
-	a.started = true
+	a.state = AppStateRunning
 	return nil
 }
 
@@ -137,11 +164,28 @@ func (a *App) Stop(ctx context.Context) error {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
 
-	err := a.stop(ctx)
-	if err == nil {
-		a.started = false
+	if a.state == "" || a.state == AppStateStopped {
+		a.state = AppStateStopped
+		return nil
 	}
-	return err
+
+	a.state = AppStateStopping
+	if err := a.stop(ctx); err != nil {
+		a.state = AppStatePendingCleanup
+		return err
+	}
+	a.state = AppStateStopped
+	return nil
+}
+
+func (a *App) rollbackStartup(startErr error) error {
+	a.state = AppStateStopping
+	if cleanupErr := a.stop(context.Background()); cleanupErr != nil {
+		a.state = AppStatePendingCleanup
+		return stderrors.Join(startErr, fmt.Errorf("clean up failed startup: %w", cleanupErr))
+	}
+	a.state = AppStateStopped
+	return startErr
 }
 
 func (a *App) stop(ctx context.Context) error {
@@ -152,22 +196,32 @@ func (a *App) stop(ctx context.Context) error {
 	if a.monitorCancel != nil {
 		a.monitorCancel()
 		a.monitorWg.Wait()
+		a.monitorCancel = nil
 	}
 	if a.adminServer != nil {
 		if err := a.adminServer.Stop(ctx); err != nil {
 			logger.WithContextError(ctx, err).Warn("Admin server shutdown error")
 			stopErrors = append(stopErrors, fmt.Errorf("stop admin server: %w", err))
+		} else {
+			a.adminServer = nil
 		}
 	}
 	if a.workflowEngine != nil {
 		if err := a.workflowEngine.Stop(ctx); err != nil {
 			stopErrors = append(stopErrors, fmt.Errorf("stop workflows: %w", err))
+		} else {
+			a.workflowEngine = nil
 		}
 	}
 	if a.serviceManager != nil {
 		if err := shutdownServices(ctx, a.serviceManager); err != nil {
 			stopErrors = append(stopErrors, err)
+		} else {
+			a.serviceManager = nil
 		}
+	}
+	if len(stopErrors) == 0 {
+		a.healthManager = nil
 	}
 	return stderrors.Join(stopErrors...)
 }

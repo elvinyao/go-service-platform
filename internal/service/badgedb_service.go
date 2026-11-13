@@ -12,6 +12,17 @@ import (
 	"time"
 )
 
+// BackupState represents the freshness state of BadgeDB backups.
+type BackupState string
+
+const (
+	BackupStateNone  BackupState = "none"
+	BackupStateFresh BackupState = "fresh"
+	BackupStateStale BackupState = "stale"
+)
+
+const badgeBackupMaxAge = 24 * time.Hour
+
 // BadgeDBService manages badge data
 type BadgeDBService struct {
 	*BaseService
@@ -143,6 +154,17 @@ func (s *BadgeDBService) SaveBadge(ctx context.Context, badge model.Badge) error
 	return s.backupDBLocked(ctx)
 }
 
+func (s *BadgeDBService) backupStateLocked(now time.Time) (BackupState, time.Duration) {
+	if s.lastBackup.IsZero() {
+		return BackupStateNone, 0
+	}
+	age := now.Sub(s.lastBackup)
+	if age > badgeBackupMaxAge {
+		return BackupStateStale, age
+	}
+	return BackupStateFresh, age
+}
+
 // GetMetrics implements Service interface with context support
 func (s *BadgeDBService) GetMetrics(ctx context.Context) map[string]interface{} {
 	ctx = appctx.WithOperationName(ctx, "get_metrics")
@@ -151,11 +173,14 @@ func (s *BadgeDBService) GetMetrics(ctx context.Context) map[string]interface{} 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	backupState, _ := s.backupStateLocked(time.Now())
 	return map[string]interface{}{
-		"running":     s.IsRunning(ctx),
-		"db_entries":  len(s.db),
-		"db_path":     s.dbPath,
-		"last_backup": s.lastBackup.Format(time.RFC3339),
+		"running":      s.IsRunning(ctx),
+		"state":        string(s.State()),
+		"backup_state": string(backupState),
+		"db_entries":   len(s.db),
+		"db_path":      s.dbPath,
+		"last_backup":  s.lastBackup.Format(time.RFC3339),
 	}
 }
 
@@ -223,22 +248,20 @@ func (c *badgeDBBackupChecker) Check(ctx context.Context) *health.CheckResult {
 		return result
 	}
 
-	// Check last backup time
 	c.service.mu.Lock()
-	lastBackup := c.service.lastBackup
+	backupState, backupAge := c.service.backupStateLocked(time.Now())
 	c.service.mu.Unlock()
 
-	if lastBackup.IsZero() {
+	result.AddDetail("backup_state", string(backupState))
+	switch backupState {
+	case BackupStateNone:
 		result.SetStatus(health.StatusDegraded, "No backup has been performed")
-	} else {
-		backupAge := time.Since(lastBackup)
+	case BackupStateStale:
 		result.AddDetail("last_backup_age_hours", backupAge.Hours())
-
-		if backupAge > 24*time.Hour {
-			result.SetStatus(health.StatusDegraded, fmt.Sprintf("Backup is too old: %v", backupAge))
-		} else {
-			result.SetStatus(health.StatusUp, fmt.Sprintf("Last backup was %v ago", backupAge))
-		}
+		result.SetStatus(health.StatusDegraded, fmt.Sprintf("Backup is too old: %v", backupAge))
+	case BackupStateFresh:
+		result.AddDetail("last_backup_age_hours", backupAge.Hours())
+		result.SetStatus(health.StatusUp, fmt.Sprintf("Last backup was %v ago", backupAge))
 	}
 
 	result.Complete()

@@ -42,18 +42,38 @@ type mattermostEvent struct {
 	Event string `json:"event"`
 }
 
+// MattermostTransportState represents the transport connectivity state of MattermostService.
+type MattermostTransportState string
+
+const (
+	MMTransportStopped       MattermostTransportState = "stopped"
+	MMTransportHTTPOnly      MattermostTransportState = "http_only"
+	MMTransportDualConnected MattermostTransportState = "dual_connected"
+)
+
+// MattermostAuthState represents the authentication state of MattermostService.
+type MattermostAuthState string
+
+const (
+	MMAuthAnonymous   MattermostAuthState = "anonymous"
+	MMAuthToken       MattermostAuthState = "token"
+	MMAuthLoginFailed MattermostAuthState = "login_failed"
+)
+
 type MattermostService struct {
 	*BaseService
-	mu         sync.RWMutex
-	httpClient *http.Client
-	baseClient *http.Client
-	wsClient   *websocket.Conn
-	config     MattermostConfig
-	authToken  string
-	wsCancel   context.CancelFunc
-	wsDone     chan struct{}
-	generation uint64
-	wsRetry    time.Duration
+	mu             sync.RWMutex
+	transportState MattermostTransportState
+	authState      MattermostAuthState
+	httpClient     *http.Client
+	baseClient     *http.Client
+	wsClient       *websocket.Conn
+	config         MattermostConfig
+	authToken      string
+	wsCancel       context.CancelFunc
+	wsDone         chan struct{}
+	generation     uint64
+	wsRetry        time.Duration
 }
 
 // NewMattermostService creates a Mattermost-like demo service.
@@ -63,13 +83,42 @@ func NewMattermostService(name, workflow string, config MattermostConfig, versio
 		baseClient = clients[0]
 	}
 	s := &MattermostService{
-		BaseService: NewBaseService(name, workflow, "mattermost", version),
-		config:      config,
-		baseClient:  baseClient,
-		wsRetry:     mattermostReconnectInterval,
+		BaseService:    NewBaseService(name, workflow, "mattermost", version),
+		transportState: MMTransportStopped,
+		authState:      MMAuthAnonymous,
+		config:         config,
+		baseClient:     baseClient,
+		wsRetry:        mattermostReconnectInterval,
 	}
 	s.AddHealthChecker(&mattermostConnectionChecker{service: s})
 	return s
+}
+
+func (s *MattermostService) effectiveTransportStateLocked() MattermostTransportState {
+	if s.httpClient == nil {
+		return MMTransportStopped
+	}
+	if s.wsClient != nil {
+		return MMTransportDualConnected
+	}
+	return MMTransportHTTPOnly
+}
+
+// TransportState returns the current explicit Mattermost transport state.
+func (s *MattermostService) TransportState() MattermostTransportState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.effectiveTransportStateLocked()
+}
+
+// AuthState returns the current explicit Mattermost authentication state.
+func (s *MattermostService) AuthState() MattermostAuthState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.authState == MMAuthAnonymous && (s.config.APIToken != "" || s.authToken != "") {
+		return MMAuthToken
+	}
+	return s.authState
 }
 
 // Start initializes the bounded HTTP client and optional WebSocket connection.
@@ -87,22 +136,30 @@ func (s *MattermostService) Start(ctx context.Context) error {
 		return nil
 	}
 
+	s.TransitionState(ServiceStateStarting)
 	httpClient := s.baseClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: mattermostRequestTimeout}
 	}
 	authToken := s.config.APIToken
-	if authToken == "" && s.config.Username != "" {
+	authState := MMAuthAnonymous
+	if authToken != "" {
+		authState = MMAuthToken
+	} else if s.config.Username != "" {
 		token, err := loginMattermost(ctx, httpClient, s.config.ServerURL, s.config.Username, s.config.Password)
 		if err != nil {
+			authState = MMAuthLoginFailed
 			logger.WarnfWithContext(ctx, "Mattermost login failed: %v", err)
 		} else {
 			authToken = token
+			authState = MMAuthToken
 		}
 	}
 
 	s.httpClient = httpClient
 	s.authToken = authToken
+	s.authState = authState
+	s.transportState = MMTransportHTTPOnly
 	s.generation++
 	generation := s.generation
 	wsCtx, wsCancel := context.WithCancel(ctx)
@@ -111,7 +168,7 @@ func (s *MattermostService) Start(ctx context.Context) error {
 	done := s.wsDone
 	websocketURL := s.config.WebsocketURL
 	reconnectInterval := s.wsRetry
-	s.LockRunning(true)
+	s.TransitionState(ServiceStateRunning)
 	s.mu.Unlock()
 
 	go s.connectWebSocketLoop(wsCtx, generation, websocketURL, authToken, reconnectInterval, done)
@@ -206,6 +263,7 @@ func (s *MattermostService) runWebSocketSession(
 		return nil
 	}
 	s.wsClient = connection
+	s.transportState = MMTransportDualConnected
 	s.mu.Unlock()
 
 	defer func() {
@@ -213,6 +271,11 @@ func (s *MattermostService) runWebSocketSession(
 		s.mu.Lock()
 		if s.generation == generation && s.wsClient == connection {
 			s.wsClient = nil
+			if s.httpClient != nil {
+				s.transportState = MMTransportHTTPOnly
+			} else {
+				s.transportState = MMTransportStopped
+			}
 		}
 		s.mu.Unlock()
 	}()
@@ -266,7 +329,9 @@ func (s *MattermostService) Stop(ctx context.Context) error {
 	s.wsClient = nil
 	s.wsCancel = nil
 	s.httpClient = nil
-	s.LockRunning(false)
+	s.transportState = MMTransportStopped
+	s.authState = MMAuthAnonymous
+	s.TransitionState(ServiceStateStopping)
 	s.mu.Unlock()
 
 	if cancel != nil {
@@ -279,9 +344,11 @@ func (s *MattermostService) Stop(ctx context.Context) error {
 		select {
 		case <-done:
 		case <-ctx.Done():
+			s.TransitionState(ServiceStateStopped)
 			return ctx.Err()
 		}
 	}
+	s.TransitionState(ServiceStateStopped)
 	return nil
 }
 
@@ -357,10 +424,18 @@ func (s *MattermostService) GetMetrics(ctx context.Context) map[string]interface
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	metrics := make(map[string]interface{}, len(baseMetrics)+4)
+	transportState := s.effectiveTransportStateLocked()
+	authState := s.authState
+	if authState == MMAuthAnonymous && (s.config.APIToken != "" || s.authToken != "") {
+		authState = MMAuthToken
+	}
+
+	metrics := make(map[string]interface{}, len(baseMetrics)+6)
 	for key, value := range baseMetrics {
 		metrics[key] = value
 	}
+	metrics["transport_state"] = string(transportState)
+	metrics["auth_state"] = string(authState)
 	metrics["server_url"] = s.config.ServerURL
 	metrics["websocket_url"] = s.config.WebsocketURL
 	metrics["channel"] = s.config.Channel
@@ -377,19 +452,20 @@ func (c *mattermostConnectionChecker) Check(ctx context.Context) *health.CheckRe
 	result.Level = health.LevelWarning
 
 	c.service.mu.RLock()
-	client := c.service.httpClient
-	wsClient := c.service.wsClient
+	transportState := c.service.effectiveTransportStateLocked()
 	serverURL := c.service.config.ServerURL
 	websocketURL := c.service.config.WebsocketURL
 	c.service.mu.RUnlock()
 
-	if client == nil {
+	switch transportState {
+	case MMTransportStopped:
 		result.SetStatus(health.StatusDegraded, "Mattermost HTTP client is not initialized")
-	} else if wsClient == nil {
+	case MMTransportHTTPOnly:
 		result.SetStatus(health.StatusDegraded, "Mattermost WebSocket is unavailable; HTTP actions remain available")
-	} else {
+	case MMTransportDualConnected:
 		result.SetStatus(health.StatusUp, "Mattermost WebSocket connection established")
 	}
+	result.AddDetail("transport_state", string(transportState))
 	result.AddDetail("server_url", serverURL)
 	result.AddDetail("websocket_url", websocketURL)
 	result.Complete()

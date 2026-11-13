@@ -177,14 +177,17 @@ func TestMonitorServicesReturnsWhenContextIsCanceled(t *testing.T) {
 func TestAppStopReturnsServiceShutdownError(t *testing.T) {
 	sm := manager.NewServiceManager("test")
 	sm.RegisterService(appFailingStopService{appTestService{name: "failing"}})
-	application := &App{serviceManager: sm, started: true}
+	application := &App{serviceManager: sm, state: AppStateRunning}
 
 	err := application.Stop(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "stop services") {
 		t.Fatalf("stop error = %v, want service shutdown error", err)
 	}
-	if !application.started {
-		t.Fatalf("failed stop cleared lifecycle state")
+	if application.State() != AppStatePendingCleanup {
+		t.Fatalf("failed stop state = %s, want %s", application.State(), AppStatePendingCleanup)
+	}
+	if err := application.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "pending cleanup") {
+		t.Fatalf("start while pending cleanup = %v, want pending cleanup error", err)
 	}
 }
 
@@ -276,8 +279,8 @@ workflows:
 	resp.Body.Close()
 
 	stopApp()
-	if application.started {
-		t.Fatalf("stopped application still reports started")
+	if application.State() != AppStateStopped {
+		t.Fatalf("stopped application state = %s, want %s", application.State(), AppStateStopped)
 	}
 	if err := application.Start(ctx); err != nil {
 		t.Fatalf("restart app after clean stop: %v", err)

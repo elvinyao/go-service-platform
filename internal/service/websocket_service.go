@@ -23,32 +23,103 @@ type WebSocketConfig struct {
 	ReconnectInterval time.Duration
 }
 
+// WSConnectionState describes the explicit connection state of WebSocketService.
+type WSConnectionState string
+
+const (
+	WSStateDisconnected WSConnectionState = "disconnected"
+	WSStateDialing      WSConnectionState = "dialing"
+	WSStateConnected    WSConnectionState = "connected"
+	WSStateBackoff      WSConnectionState = "backoff"
+)
+
+// WSMessageFreshnessState describes message activity freshness on an active connection.
+type WSMessageFreshnessState string
+
+const (
+	WSFreshnessIdle  WSMessageFreshnessState = "idle"
+	WSFreshnessFresh WSMessageFreshnessState = "fresh"
+	WSFreshnessStale WSMessageFreshnessState = "stale"
+)
+
+const wsStaleMessageThreshold = 30 * time.Minute
+
+type wsSession struct {
+	generation uint64
+	stopChan   chan struct{}
+	done       chan struct{}
+	stopOnce   sync.Once
+}
+
+func newWSSession(generation uint64) *wsSession {
+	return &wsSession{
+		generation: generation,
+		stopChan:   make(chan struct{}),
+		done:       make(chan struct{}),
+	}
+}
+
+func (ws *wsSession) signalStop() {
+	ws.stopOnce.Do(func() {
+		close(ws.stopChan)
+	})
+}
+
 type WebSocketService struct {
 	*BaseService
 	mu             sync.Mutex
+	connState      WSConnectionState
+	generation     uint64
+	session        *wsSession
 	messageHandler func(msg ruleengine.Message)
 	connections    int
 	lastMessage    time.Time
 	config         WebSocketConfig
 	conn           *websocket.Conn
-	stopChan       chan struct{}
-	done           chan struct{}
 }
 
 func NewWebSocketService(name, workflow string, cfg WebSocketConfig, version string) *WebSocketService {
 	s := &WebSocketService{
 		BaseService: NewBaseService(name, workflow, "websocket", version),
+		connState:   WSStateDisconnected,
+		session:     newWSSession(0),
 		connections: 0,
 		lastMessage: time.Time{},
 		config:      cfg,
-		stopChan:    make(chan struct{}),
-		done:        make(chan struct{}),
 	}
 
 	// Add custom health checkers
 	s.AddHealthChecker(&websocketConnectionChecker{service: s})
 
 	return s
+}
+
+// ConnectionState returns the current explicit WebSocket connection state.
+func (s *WebSocketService) ConnectionState() WSConnectionState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.effectiveConnStateLocked()
+}
+
+func (s *WebSocketService) effectiveConnStateLocked() WSConnectionState {
+	if s.connections > 0 {
+		return WSStateConnected
+	}
+	if s.connState == WSStateConnected {
+		return WSStateDisconnected
+	}
+	return s.connState
+}
+
+func (s *WebSocketService) freshnessStateLocked(now time.Time) (WSMessageFreshnessState, time.Duration) {
+	if s.lastMessage.IsZero() {
+		return WSFreshnessIdle, 0
+	}
+	age := now.Sub(s.lastMessage)
+	if age > wsStaleMessageThreshold {
+		return WSFreshnessStale, age
+	}
+	return WSFreshnessFresh, age
 }
 
 func (s *WebSocketService) Start(ctx context.Context) error {
@@ -64,25 +135,34 @@ func (s *WebSocketService) Start(ctx context.Context) error {
 
 	logger.InfofWithContext(ctx, "Starting service: %s", s.GetName())
 
-	// Mark as running first
-	s.setRunning(true)
-
-	// Reset channels for a fresh start
-	s.stopChan = make(chan struct{})
-	s.done = make(chan struct{})
-	stopChan := s.stopChan
-	done := s.done
+	s.generation++
+	generation := s.generation
+	session := newWSSession(generation)
+	s.session = session
+	s.connState = WSStateDialing
+	s.TransitionState(ServiceStateRunning)
 	cfg := s.config
 
-	// Launch WebSocket connection goroutine
-	go s.connectLoop(ctx, stopChan, done, cfg)
+	// Launch generation-fenced WebSocket connection goroutine
+	go s.connectLoop(ctx, generation, session, cfg)
 
 	logger.InfofWithContext(ctx, "Service %s started successfully", s.GetName())
 	return nil
 }
 
-func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan struct{}, done chan<- struct{}, cfg WebSocketConfig) {
-	defer close(done)
+func (s *WebSocketService) transitionConnForGeneration(generation uint64, next WSConnectionState) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.generation != generation || !s.IsRunning(context.Background()) {
+		return false
+	}
+	s.connState = next
+	return true
+}
+
+func (s *WebSocketService) connectLoop(ctx context.Context, generation uint64, session *wsSession, cfg WebSocketConfig) {
+	defer close(session.done)
+	stopChan := session.stopChan
 
 	// Create a context that cancels when stopChan is closed.
 	// This lets us cancel blocking Dial calls immediately on Stop().
@@ -107,6 +187,10 @@ func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan stru
 		default:
 		}
 
+		if !s.transitionConnForGeneration(generation, WSStateDialing) {
+			return
+		}
+
 		logger.InfofWithContext(ctx, "WebSocket connecting to %s", url)
 		conn, _, err := dialer.DialContext(dialCtx, url, nil)
 		if err != nil {
@@ -115,6 +199,9 @@ func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan stru
 			case <-stopChan:
 				return
 			default:
+			}
+			if !s.transitionConnForGeneration(generation, WSStateBackoff) {
+				return
 			}
 			logger.WarnfWithContext(ctx, "WebSocket dial error: %v, retrying in %v", err, cfg.ReconnectInterval)
 			select {
@@ -129,12 +216,18 @@ func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan stru
 		select {
 		case <-stopChan:
 			s.mu.Unlock()
-			conn.Close()
+			_ = conn.Close()
 			return
 		default:
 		}
+		if s.generation != generation || !s.IsRunning(ctx) {
+			s.mu.Unlock()
+			_ = conn.Close()
+			return
+		}
 		s.conn = conn
 		s.connections = 1
+		s.connState = WSStateConnected
 		s.mu.Unlock()
 
 		logger.InfofWithContext(ctx, "WebSocket connected to %s", url)
@@ -162,14 +255,17 @@ func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan stru
 			}
 
 			logger.DebugfWithContext(ctx, "WebSocket received message: type=%s", msg.Type)
-			s.ProcessIncomingMessage(ctx, msg)
+			_ = s.ProcessIncomingMessage(ctx, msg)
 		}
 
 		// Clean up and retry after the connection is lost.
-		conn.Close()
+		_ = conn.Close()
 		s.mu.Lock()
-		s.conn = nil
-		s.connections = 0
+		if s.generation == generation && s.conn == conn {
+			s.conn = nil
+			s.connections = 0
+			s.connState = WSStateDisconnected
+		}
 		s.mu.Unlock()
 
 		if stopped {
@@ -182,6 +278,9 @@ func (s *WebSocketService) connectLoop(ctx context.Context, stopChan <-chan stru
 		default:
 		}
 
+		if !s.transitionConnForGeneration(generation, WSStateBackoff) {
+			return
+		}
 		logger.InfofWithContext(ctx, "WebSocket disconnected, reconnecting in %v", cfg.ReconnectInterval)
 
 		select {
@@ -209,31 +308,37 @@ func (s *WebSocketService) Stop(ctx context.Context) error {
 
 	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
 
-	// Signal goroutine to stop
-	stopChan := s.stopChan
-	done := s.done
-	close(stopChan)
-
-	// Close connection if active
-	if s.conn != nil {
-		s.conn.Close()
-		s.conn = nil
-	}
-
+	s.generation++
+	session := s.session
+	conn := s.conn
+	s.conn = nil
 	s.connections = 0
-	s.setRunning(false)
+	s.connState = WSStateDisconnected
+	s.TransitionState(ServiceStateStopping)
 	s.mu.Unlock()
 
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		return fmt.Errorf("wait for WebSocket shutdown: %w", ctx.Err())
-	case <-timer.C:
-		return fmt.Errorf("timed out waiting for WebSocket shutdown")
+	if session != nil {
+		session.signalStop()
+	}
+	if conn != nil {
+		_ = conn.Close()
 	}
 
+	if session != nil {
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-session.done:
+		case <-ctx.Done():
+			s.TransitionState(ServiceStateStopped)
+			return fmt.Errorf("wait for WebSocket shutdown: %w", ctx.Err())
+		case <-timer.C:
+			s.TransitionState(ServiceStateStopped)
+			return fmt.Errorf("timed out waiting for WebSocket shutdown")
+		}
+	}
+
+	s.TransitionState(ServiceStateStopped)
 	logger.InfofWithContext(ctx, "Service %s stopped successfully", s.GetName())
 	return nil
 }
@@ -292,19 +397,26 @@ func (s *WebSocketService) GetMetrics(ctx context.Context) map[string]interface{
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now()
+	connState := s.effectiveConnStateLocked()
+	freshnessState, msgAge := s.freshnessStateLocked(now)
+
 	metrics := make(map[string]interface{})
 	for k, v := range baseMetrics {
 		metrics[k] = v
 	}
 
+	metrics["connection_state"] = string(connState)
+	metrics["message_freshness"] = string(freshnessState)
+	metrics["handler_registered"] = s.messageHandler != nil
 	metrics["connections"] = s.connections
 	metrics["server_url"] = s.config.ServerURL
 	metrics["path"] = s.config.Path
 	metrics["reconnect_interval"] = s.config.ReconnectInterval.String()
 
-	if !s.lastMessage.IsZero() {
+	if freshnessState != WSFreshnessIdle {
 		metrics["last_message"] = s.lastMessage.Format(time.RFC3339)
-		metrics["last_message_age_seconds"] = time.Since(s.lastMessage).Seconds()
+		metrics["last_message_age_seconds"] = msgAge.Seconds()
 	}
 
 	return metrics
@@ -327,29 +439,27 @@ func (c *websocketConnectionChecker) Check(ctx context.Context) *health.CheckRes
 		return result
 	}
 
-	// Get connection count
 	c.service.mu.Lock()
 	connections := c.service.connections
-	lastMessage := c.service.lastMessage
+	connState := c.service.effectiveConnStateLocked()
+	freshnessState, messageAge := c.service.freshnessStateLocked(time.Now())
 	c.service.mu.Unlock()
 
 	result.AddDetail("connections", connections)
+	result.AddDetail("connection_state", string(connState))
+	result.AddDetail("message_freshness", string(freshnessState))
 
-	// Check connection count
-	if connections == 0 {
-		result.SetStatus(health.StatusDown, "No active WebSocket connections")
-	} else {
+	switch connState {
+	case WSStateConnected:
 		result.SetStatus(health.StatusUp, fmt.Sprintf("Active WebSocket connections: %d", connections))
-
-		// Message freshness is meaningful only while the input remains connected.
-		if !lastMessage.IsZero() {
-			messageAge := time.Since(lastMessage)
+		if freshnessState != WSFreshnessIdle {
 			result.AddDetail("last_message_age_minutes", messageAge.Minutes())
-
-			if messageAge > 30*time.Minute {
+			if freshnessState == WSFreshnessStale {
 				result.SetStatus(health.StatusDegraded, fmt.Sprintf("No messages received in %v", messageAge))
 			}
 		}
+	default:
+		result.SetStatus(health.StatusDown, "No active WebSocket connections")
 	}
 
 	result.Complete()

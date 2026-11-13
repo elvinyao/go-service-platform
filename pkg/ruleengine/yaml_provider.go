@@ -13,12 +13,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type yamlProviderState uint8
+
+const (
+	yamlStateUnloaded yamlProviderState = iota
+	yamlStateLoaded
+)
+
 type YAMLProvider struct {
 	name     string
 	path     string
 	workflow string
 
 	mu       sync.RWMutex
+	state    yamlProviderState
 	snapshot RuleSet
 }
 
@@ -41,6 +49,7 @@ func NewYAMLProvider(name, path, workflow string) *YAMLProvider {
 		name:     name,
 		path:     path,
 		workflow: workflow,
+		state:    yamlStateUnloaded,
 		snapshot: RuleSet{
 			Source:  name,
 			Version: "0",
@@ -61,13 +70,28 @@ func (p *YAMLProvider) Start(ctx context.Context) error {
 
 	p.mu.Lock()
 	p.snapshot = snapshot
+	p.state = yamlStateLoaded
 	p.mu.Unlock()
 	return nil
+}
+
+// IsLoaded reports whether Start has successfully populated a rule snapshot.
+func (p *YAMLProvider) IsLoaded() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.state == yamlStateLoaded
 }
 
 func (p *YAMLProvider) Snapshot(ctx context.Context) RuleSet {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	if p.state == yamlStateUnloaded {
+		return RuleSet{
+			Source:  p.name,
+			Version: "0",
+			Rules:   []Rule{},
+		}
+	}
 	return CloneRuleSet(p.snapshot)
 }
 

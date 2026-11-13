@@ -26,6 +26,16 @@ type Stopper interface {
 	Stop(context.Context) error
 }
 
+type engineState uint8
+
+const (
+	engineStateStopped engineState = iota
+	engineStateStarting
+	engineStateRunning
+	engineStateStopping
+	engineStatePendingCleanup
+)
+
 // Engine composes rules from providers and executes the resulting actions.
 type Engine struct {
 	config            ruleengine.EngineConfig
@@ -35,7 +45,7 @@ type Engine struct {
 	executorInstances map[string]executor.Executor
 
 	mu              sync.RWMutex
-	started         bool
+	state           engineState
 	activeProviders []string
 	activeExecutors []string
 }
@@ -139,12 +149,17 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.started {
+
+	switch e.state {
+	case engineStateRunning:
 		return nil
-	}
-	if len(e.activeProviders) > 0 || len(e.activeExecutors) > 0 {
+	case engineStatePendingCleanup:
 		return fmt.Errorf("pipeline has components pending cleanup")
+	case engineStateStarting, engineStateStopping:
+		return fmt.Errorf("pipeline lifecycle transition already in progress")
 	}
+
+	e.state = engineStateStarting
 
 	names := make([]string, 0, len(e.providers))
 	for name := range e.providers {
@@ -177,7 +192,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		}
 	}
 
-	e.started = true
+	e.state = engineStateRunning
 	return nil
 }
 
@@ -189,20 +204,33 @@ func (e *Engine) Stop(ctx context.Context) error {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.started && len(e.activeProviders) == 0 && len(e.activeExecutors) == 0 {
-		return nil
-	}
 
-	e.started = false
-	return e.stopComponents(ctx)
+	switch e.state {
+	case engineStateStopped:
+		return nil
+	case engineStateRunning, engineStatePendingCleanup:
+		e.state = engineStateStopping
+		err := e.stopComponents(ctx)
+		if err != nil {
+			e.state = engineStatePendingCleanup
+			return err
+		}
+		e.state = engineStateStopped
+		return nil
+	default:
+		return fmt.Errorf("pipeline cannot stop while in state %d", e.state)
+	}
 }
 
 func (e *Engine) rollbackStartup(startErr error) error {
+	e.state = engineStateStopping
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), lifecycleCleanupTimeout)
 	defer cancel()
 	if cleanupErr := e.stopComponents(cleanupCtx); cleanupErr != nil {
+		e.state = engineStatePendingCleanup
 		return errors.Join(startErr, fmt.Errorf("roll back pipeline startup: %w", cleanupErr))
 	}
+	e.state = engineStateStopped
 	return startErr
 }
 
@@ -257,7 +285,7 @@ func retainNames(names []string, retained map[string]struct{}) []string {
 func (e *Engine) Process(ctx context.Context, workflow string, message ruleengine.Message) (ruleengine.ExecutionPlan, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if !e.started {
+	if e.state != engineStateRunning {
 		return ruleengine.ExecutionPlan{}, fmt.Errorf("pipeline is not started")
 	}
 

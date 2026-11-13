@@ -12,13 +12,27 @@ import (
 	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
 
+// SyncState describes the synchronization state of the Confluence rule provider.
+type SyncState string
+
+const (
+	// SyncStateSeeded indicates no valid live snapshot has been loaded yet.
+	SyncStateSeeded SyncState = "seeded"
+	// SyncStateSynced indicates the most recent snapshot succeeded and updated lastGood.
+	SyncStateSynced SyncState = "synced"
+	// SyncStateFallback indicates the latest snapshot failed and lastGood is being served.
+	SyncStateFallback SyncState = "fallback"
+)
+
 type Provider struct {
 	name           string
 	workflow       string
 	serviceManager *manager.ServiceManager
 
-	mu       sync.RWMutex
-	lastGood ruleengine.RuleSet
+	mu        sync.RWMutex
+	state     SyncState
+	lastGood  ruleengine.RuleSet
+	lastError string
 }
 
 func NewProvider(name, workflow string, serviceManager *manager.ServiceManager) *Provider {
@@ -26,6 +40,7 @@ func NewProvider(name, workflow string, serviceManager *manager.ServiceManager) 
 		name:           name,
 		workflow:       workflow,
 		serviceManager: serviceManager,
+		state:          SyncStateSeeded,
 		lastGood: ruleengine.RuleSet{
 			Source:  name,
 			Version: "1",
@@ -38,22 +53,32 @@ func (p *Provider) Name() string {
 	return p.name
 }
 
+// State returns the current provider synchronization state.
+func (p *Provider) State() SyncState {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.state
+}
+
 func (p *Provider) Start(ctx context.Context) error {
-	rs := p.Snapshot(ctx)
-	p.mu.Lock()
-	p.lastGood = rs
-	p.mu.Unlock()
+	_ = p.Snapshot(ctx)
 	return nil
+}
+
+func (p *Provider) fallbackSnapshot(errMsg string) ruleengine.RuleSet {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.state = SyncStateFallback
+	p.lastError = errMsg
+	rs := ruleengine.CloneRuleSet(p.lastGood)
+	rs.LastError = errMsg
+	return rs
 }
 
 func (p *Provider) Snapshot(ctx context.Context) ruleengine.RuleSet {
 	svc, err := p.getService(ctx)
 	if err != nil {
-		p.mu.RLock()
-		defer p.mu.RUnlock()
-		rs := ruleengine.CloneRuleSet(p.lastGood)
-		rs.LastError = err.Error()
-		return rs
+		return p.fallbackSnapshot(err.Error())
 	}
 
 	settings := svc.GetSettings(ctx)
@@ -105,15 +130,13 @@ func (p *Provider) Snapshot(ctx context.Context) ruleengine.RuleSet {
 		Rules:    rules,
 	}
 	if err := ruleengine.ValidateRuleSet(rs); err != nil {
-		p.mu.RLock()
-		fallback := ruleengine.CloneRuleSet(p.lastGood)
-		p.mu.RUnlock()
-		fallback.LastError = fmt.Sprintf("validate Confluence rules: %v", err)
-		return fallback
+		return p.fallbackSnapshot(fmt.Sprintf("validate Confluence rules: %v", err))
 	}
 
 	p.mu.Lock()
 	p.lastGood = ruleengine.CloneRuleSet(rs)
+	p.lastError = ""
+	p.state = SyncStateSynced
 	p.mu.Unlock()
 
 	return rs

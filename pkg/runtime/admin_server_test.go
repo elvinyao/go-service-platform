@@ -154,3 +154,60 @@ func TestAdminServerStopReturnsServeError(t *testing.T) {
 		t.Fatalf("stop error = %v, want %v", err, want)
 	}
 }
+
+func TestAdminServerDrainingStateBlocksStartUntilRetryStopCompletes(t *testing.T) {
+	handlerStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /slow", func(w http.ResponseWriter, r *http.Request) {
+		close(handlerStarted)
+		<-releaseHandler
+		w.WriteHeader(http.StatusOK)
+	})
+
+	server := NewAdminServer("127.0.0.1:0", mux)
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	addr := server.Addr()
+	if addr == "" {
+		t.Fatalf("expected non-empty addr while serving")
+	}
+
+	reqDone := make(chan error, 1)
+	go func() {
+		resp, err := http.Get("http://" + addr + "/slow")
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		reqDone <- err
+	}()
+	<-handlerStarted
+
+	shortCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := server.Stop(shortCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stop timeout error = %v, want deadline exceeded", err)
+	}
+	if server.Addr() != "" {
+		t.Fatalf("addr during draining = %q, want empty", server.Addr())
+	}
+	if err := server.Start(context.Background()); err == nil {
+		t.Fatalf("expected start error while server is draining")
+	}
+
+	close(releaseHandler)
+	if err := <-reqDone; err != nil {
+		t.Fatalf("in-flight request error: %v", err)
+	}
+
+	if err := server.Stop(context.Background()); err != nil {
+		t.Fatalf("retry stop after handler finished: %v", err)
+	}
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatalf("restart after drain completed: %v", err)
+	}
+	if err := server.Stop(context.Background()); err != nil {
+		t.Fatalf("final stop: %v", err)
+	}
+}

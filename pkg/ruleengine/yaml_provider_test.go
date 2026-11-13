@@ -33,7 +33,13 @@ rules:
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
 	p := NewYAMLProvider("yaml", path, DefaultWorkflowName)
+	require.False(t, p.IsLoaded())
+	preStartSnap := p.Snapshot(context.Background())
+	require.Equal(t, "0", preStartSnap.Version)
+	require.Empty(t, preStartSnap.Rules)
+
 	require.NoError(t, p.Start(context.Background()))
+	require.True(t, p.IsLoaded())
 	snap := p.Snapshot(context.Background())
 	require.Len(t, snap.Rules, 1)
 	require.Equal(t, "r1", snap.Rules[0].ID)

@@ -9,14 +9,28 @@ import (
 	"time"
 )
 
+type adminServerState uint8
+
+const (
+	adminStateStopped adminServerState = iota
+	adminStateServing
+	adminStateDraining
+)
+
+type adminServeSession struct {
+	done chan struct{}
+	err  error
+}
+
 // AdminServer owns a fail-fast HTTP listener with graceful shutdown.
 type AdminServer struct {
 	mu       sync.Mutex
+	state    adminServerState
 	address  string
 	handler  http.Handler
 	server   *http.Server
 	listener net.Listener
-	done     chan error
+	session  *adminServeSession
 	options  AdminServerOptions
 }
 
@@ -59,8 +73,11 @@ func (s *AdminServer) Start(ctx context.Context) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.server != nil {
+	switch s.state {
+	case adminStateServing:
 		return fmt.Errorf("admin server is already started")
+	case adminStateDraining:
+		return fmt.Errorf("admin server is shutting down")
 	}
 
 	listen := s.options.Listen
@@ -72,23 +89,28 @@ func (s *AdminServer) Start(ctx context.Context) error {
 		return err
 	}
 
-	s.listener = listener
-	s.server = &http.Server{
+	server := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: s.options.ReadHeaderTimeout,
 		ReadTimeout:       s.options.ReadTimeout,
 		WriteTimeout:      s.options.WriteTimeout,
 		IdleTimeout:       s.options.IdleTimeout,
 	}
-	s.done = make(chan error, 1)
+	session := &adminServeSession{done: make(chan struct{})}
 
-	go func() {
-		err := s.server.Serve(listener)
+	s.listener = listener
+	s.server = server
+	s.session = session
+	s.state = adminStateServing
+
+	go func(srv *http.Server, ln net.Listener, sess *adminServeSession) {
+		err := srv.Serve(ln)
 		if err == http.ErrServerClosed {
 			err = nil
 		}
-		s.done <- err
-	}()
+		sess.err = err
+		close(sess.done)
+	}(server, listener, session)
 
 	return nil
 }
@@ -100,39 +122,59 @@ func (s *AdminServer) Stop(ctx context.Context) error {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.server == nil {
+	switch s.state {
+	case adminStateStopped:
+		s.mu.Unlock()
+		return nil
+	case adminStateServing, adminStateDraining:
+		s.state = adminStateDraining
+		s.listener = nil
+		server := s.server
+		session := s.session
+		s.mu.Unlock()
+
+		var shutdownErr error
+		if server != nil {
+			shutdownErr = server.Shutdown(ctx)
+		}
+		return s.awaitServeDrain(ctx, session, shutdownErr)
+	default:
+		s.mu.Unlock()
+		return nil
+	}
+}
+
+func (s *AdminServer) awaitServeDrain(ctx context.Context, session *adminServeSession, shutdownErr error) error {
+	// If Shutdown timed out or was cancelled, in-flight HTTP handlers may still be active;
+	// remain in adminStateDraining until a subsequent Stop observes clean completion.
+	if shutdownErr != nil {
+		return shutdownErr
+	}
+	if session == nil {
 		return nil
 	}
 
-	err := s.server.Shutdown(ctx)
-	serveStopped := false
-	if s.done != nil {
-		select {
-		case serveErr := <-s.done:
-			serveStopped = true
-			if err == nil {
-				err = serveErr
-			}
-		case <-ctx.Done():
-			if err == nil {
-				err = ctx.Err()
-			}
+	select {
+	case <-session.done:
+		s.mu.Lock()
+		if s.session == session {
+			s.server = nil
+			s.listener = nil
+			s.session = nil
+			s.state = adminStateStopped
 		}
+		s.mu.Unlock()
+		return session.err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	if serveStopped {
-		s.server = nil
-		s.listener = nil
-		s.done = nil
-	}
-	return err
 }
 
-// Addr returns the bound listener address after Start succeeds.
+// Addr returns the bound listener address while the server is actively serving.
 func (s *AdminServer) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.listener == nil {
+	if s.state != adminStateServing || s.listener == nil {
 		return ""
 	}
 	return s.listener.Addr().String()

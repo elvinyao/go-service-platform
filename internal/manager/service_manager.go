@@ -12,9 +12,22 @@ import (
 	"time"
 )
 
+// ManagerState represents the explicit lifecycle state of ServiceManager.
+type ManagerState string
+
+const (
+	ManagerStateIdle           ManagerState = "idle"
+	ManagerStateStarting       ManagerState = "starting"
+	ManagerStateRunning        ManagerState = "running"
+	ManagerStatePartialFailure ManagerState = "partial_failure"
+	ManagerStateStopping       ManagerState = "stopping"
+	ManagerStateStopped        ManagerState = "stopped"
+)
+
 type ServiceManager struct {
 	services  map[string]service.Service
 	mu        sync.RWMutex
+	state     ManagerState
 	healthMgr *health.HealthManager
 	version   string
 	startTime time.Time
@@ -27,12 +40,26 @@ func NewServiceManager(version string, healthManagers ...*health.HealthManager) 
 	}
 	manager := &ServiceManager{
 		services:  make(map[string]service.Service),
+		state:     ManagerStateIdle,
 		version:   version,
 		startTime: time.Now(),
 		healthMgr: healthManager,
 	}
 
 	return manager
+}
+
+// State returns the current explicit lifecycle state of the ServiceManager.
+func (sm *ServiceManager) State() ManagerState {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.state
+}
+
+func (sm *ServiceManager) setState(next ManagerState) {
+	sm.mu.Lock()
+	sm.state = next
+	sm.mu.Unlock()
 }
 
 func (sm *ServiceManager) RegisterService(s service.Service) error {
@@ -64,17 +91,18 @@ func (sm *ServiceManager) StartAll(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "start_all_services")
 	logger.InfoWithContext(ctx, "Starting all services")
 
-	sm.mu.RLock()
+	sm.mu.Lock()
 	services := make([]service.Service, 0, len(sm.services))
 	for _, svc := range sm.services {
 		services = append(services, svc)
 	}
-	sm.mu.RUnlock()
-
 	if len(services) == 0 {
+		sm.mu.Unlock()
 		logger.ErrorWithContext(ctx, "No services registered to start")
 		return errors.New(errors.TypeInvalidInput, "No services registered to start", nil)
 	}
+	sm.state = ManagerStateStarting
+	sm.mu.Unlock()
 
 	type startResult struct {
 		service       service.Service
@@ -117,6 +145,11 @@ func (sm *ServiceManager) StartAll(ctx context.Context) error {
 		sort.Strings(startErrors)
 		rollbackErrors := rollbackStartedServices(ctx, startedServices)
 		sort.Strings(rollbackErrors)
+		if len(rollbackErrors) > 0 {
+			sm.setState(ManagerStatePartialFailure)
+		} else {
+			sm.setState(ManagerStateStopped)
+		}
 		logger.ErrorfWithContext(ctx, "Failed to start %d services", len(startErrors))
 		err := errors.New(errors.TypeServiceUnavailable, "Failed to start some services", nil).
 			WithField("failed_services", startErrors)
@@ -126,6 +159,7 @@ func (sm *ServiceManager) StartAll(ctx context.Context) error {
 		return err
 	}
 
+	sm.setState(ManagerStateRunning)
 	logger.InfoWithContext(ctx, "All services started successfully")
 	return nil
 }
@@ -216,22 +250,32 @@ func (sm *ServiceManager) MonitorServices(ctx context.Context) {
 	}
 }
 
-// checkServices checks all services and restarts any that are down
+// checkServices checks all services and restarts any that are down when supervision is active.
 func (sm *ServiceManager) checkServices(ctx context.Context) {
 	ctx = appctx.WithOperationName(ctx, "check_services")
 	logger.DebugWithContext(ctx, "Checking service health")
 
 	sm.mu.RLock()
+	switch sm.state {
+	case ManagerStateStarting, ManagerStateStopping, ManagerStateStopped:
+		sm.mu.RUnlock()
+		return
+	}
 	serviceNames := make([]string, 0, len(sm.services))
 	for name := range sm.services {
 		serviceNames = append(serviceNames, name)
 	}
 	sm.mu.RUnlock()
+	sort.Strings(serviceNames)
 
 	for _, serviceName := range serviceNames {
 		serviceCtx := appctx.WithServiceName(ctx, serviceName)
 
 		sm.mu.RLock()
+		if sm.state == ManagerStateStarting || sm.state == ManagerStateStopping || sm.state == ManagerStateStopped {
+			sm.mu.RUnlock()
+			return
+		}
 		svc, exists := sm.services[serviceName]
 		sm.mu.RUnlock()
 
@@ -253,12 +297,13 @@ func (sm *ServiceManager) StopAll(ctx context.Context) error {
 	ctx = appctx.WithOperationName(ctx, "stop_all_services")
 	logger.InfoWithContext(ctx, "Stopping all services")
 
-	sm.mu.RLock()
+	sm.mu.Lock()
+	sm.state = ManagerStateStopping
 	services := make([]service.Service, 0, len(sm.services))
 	for _, svc := range sm.services {
 		services = append(services, svc)
 	}
-	sm.mu.RUnlock()
+	sm.mu.Unlock()
 
 	var stopErrors []string
 	var errMu sync.Mutex
@@ -288,11 +333,13 @@ func (sm *ServiceManager) StopAll(ctx context.Context) error {
 
 	if len(stopErrors) > 0 {
 		sort.Strings(stopErrors)
+		sm.setState(ManagerStatePartialFailure)
 		logger.ErrorfWithContext(ctx, "Failed to stop %d services", len(stopErrors))
 		return errors.New(errors.TypeServiceUnavailable, "Failed to stop some services", nil).
 			WithField("failed_services", stopErrors)
 	}
 
+	sm.setState(ManagerStateStopped)
 	logger.InfoWithContext(ctx, "All services stopped successfully")
 	return nil
 }

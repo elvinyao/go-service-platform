@@ -21,7 +21,7 @@ func TestNewUsesRuntimeConfigAdminAddress(t *testing.T) {
 func TestAppRejectsDuplicateStartBeforeChangingResources(t *testing.T) {
 	cfg := config.DefaultRuntimeConfig()
 	application := New("test", cfg, "missing-engine.yaml", "missing-rules.yaml")
-	application.started = true
+	application.state = AppStateRunning
 
 	err := application.Start(context.Background())
 
@@ -48,12 +48,16 @@ func TestAppRejectsInvalidRuntimeConfigBeforeWiring(t *testing.T) {
 }
 
 func TestAppSuccessfulStopClearsLifecycleState(t *testing.T) {
-	application := &App{started: true}
+	application := &App{state: AppStateRunning}
 
 	if err := application.Stop(nil); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if application.started {
-		t.Fatalf("application remains started after successful stop")
+	if application.State() != AppStateStopped {
+		t.Fatalf("application state = %s, want %s", application.State(), AppStateStopped)
+	}
+	// Repeat Stop is an idempotent no-op.
+	if err := application.Stop(context.Background()); err != nil {
+		t.Fatalf("second stop: %v", err)
 	}
 }

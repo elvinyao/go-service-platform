@@ -83,6 +83,44 @@ func TestWorkerPoolCancellationStopsScheduling(t *testing.T) {
 	}
 }
 
+func TestWorkerPoolMidBatchCancellationDrainsRunningTasks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var completed atomic.Int32
+
+	tasks := []Task{
+		func() error {
+			close(started)
+			<-release
+			completed.Add(1)
+			return nil
+		},
+		func() error {
+			completed.Add(1)
+			return nil
+		},
+		func() error {
+			completed.Add(1)
+			return nil
+		},
+	}
+
+	go func() {
+		<-started
+		cancel()
+		close(release)
+	}()
+
+	err := newTestWorkerPool(t, 1).Run(ctx, tasks...)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("run error = %v, want context canceled", err)
+	}
+	if completed.Load() != 1 {
+		t.Fatalf("completed = %d, want 1 in-flight task drained", completed.Load())
+	}
+}
+
 func TestWorkerPoolValidatesInputsAndEmptyBatch(t *testing.T) {
 	pool := newTestWorkerPool(t, 1)
 	if err := pool.Run(nil); err == nil || err.Error() != "context is nil" {

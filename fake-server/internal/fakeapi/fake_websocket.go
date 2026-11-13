@@ -26,6 +26,7 @@ type WebSocketMessage struct {
 type FakeWebSocketServer struct {
 	mu              sync.RWMutex
 	writeMu         sync.Mutex
+	state           ServerState
 	port            int
 	server          *http.Server
 	clients         map[*websocket.Conn]bool
@@ -39,6 +40,7 @@ type FakeWebSocketServer struct {
 // NewFakeWebSocketServer creates a new fake WebSocket server
 func NewFakeWebSocketServer(port int) *FakeWebSocketServer {
 	return &FakeWebSocketServer{
+		state:           ServerStateStopped,
 		port:            port,
 		clients:         make(map[*websocket.Conn]bool),
 		receivedMsgs:    make([]WebSocketMessage, 0),
@@ -51,8 +53,22 @@ func NewFakeWebSocketServer(port int) *FakeWebSocketServer {
 	}
 }
 
+// State returns the current explicit lifecycle state of the server.
+func (s *FakeWebSocketServer) State() ServerState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
+}
+
 // Start starts the WebSocket server
 func (s *FakeWebSocketServer) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == ServerStateRunning {
+		return nil
+	}
+	s.state = ServerStateStarting
+
 	mux := http.NewServeMux()
 
 	// WebSocket endpoint
@@ -77,7 +93,7 @@ func (s *FakeWebSocketServer) Start() error {
 		})
 	})
 
-	s.server = &http.Server{
+	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.port),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
@@ -85,30 +101,42 @@ func (s *FakeWebSocketServer) Start() error {
 	}
 
 	log.Printf("Starting Fake WebSocket server on port %d", s.port)
-	if err := startHTTPServer(s.server, "Fake WebSocket", s.listen); err != nil {
-		s.server = nil
+	if err := startHTTPServer(server, "Fake WebSocket", s.listen); err != nil {
+		s.state = ServerStateStopped
 		return err
 	}
+	s.server = server
+	s.state = ServerStateRunning
 	return nil
 }
 
 // Stop stops the server
 func (s *FakeWebSocketServer) Stop() error {
 	s.mu.Lock()
+	if s.state == ServerStateStopped {
+		s.mu.Unlock()
+		return nil
+	}
+	s.state = ServerStateStopping
 	for conn := range s.clients {
 		_ = conn.Close()
 	}
 	s.clients = make(map[*websocket.Conn]bool)
-	s.mu.Unlock()
-
 	server := s.server
 	s.server = nil
+	s.mu.Unlock()
+
+	var err error
 	if server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return server.Shutdown(ctx)
+		err = server.Shutdown(ctx)
 	}
-	return nil
+
+	s.mu.Lock()
+	s.state = ServerStateStopped
+	s.mu.Unlock()
+	return err
 }
 
 // handleWebSocket handles WebSocket connections
@@ -120,6 +148,11 @@ func (s *FakeWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Req
 	}
 
 	s.mu.Lock()
+	if s.state == ServerStateStopping {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
 	s.clients[conn] = true
 	clientCount := len(s.clients)
 	s.mu.Unlock()

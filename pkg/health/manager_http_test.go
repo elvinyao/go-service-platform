@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -138,12 +140,76 @@ func TestHealthManagerIgnoresNilRegistrations(t *testing.T) {
 
 func TestHealthManagerContainsReporterPanic(t *testing.T) {
 	manager := NewHealthManager(time.Hour, "test")
+	manager.RegisterChecker(staticChecker{result: &CheckResult{
+		Name:      "warning.degraded",
+		Status:    StatusDegraded,
+		Level:     LevelWarning,
+		Category:  CategoryDependency,
+		Timestamp: time.Now(),
+	}})
 	manager.RegisterReporter(panicHealthReporter{})
 
 	report := manager.RefreshReport(context.Background())
 
 	if !hasCheckResult(report.CheckResults, "reporter.0", StatusUnknown) {
 		t.Fatalf("reporter panic result missing: %+v", report.CheckResults)
+	}
+	if report.Status != StatusUnknown {
+		t.Fatalf("report status = %s, want UNKNOWN even when a warning check is DEGRADED", report.Status)
+	}
+
+	handler := NewHealthHandler(manager)
+	ready := httptest.NewRecorder()
+	handler.HandleReadinessCheck(ready, httptest.NewRequest(http.MethodGet, "/health/readiness", nil))
+	if ready.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness status = %d, want 503 when critical reporter panics", ready.Code)
+	}
+}
+
+type countingSlowChecker struct {
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+	calls   atomic.Int32
+}
+
+func (c *countingSlowChecker) Check(ctx context.Context) *CheckResult {
+	c.calls.Add(1)
+	c.once.Do(func() { close(c.started) })
+	<-c.release
+	res := NewCheckResult("slow", CategoryDependency)
+	res.SetStatus(StatusUp, "ok")
+	return res
+}
+
+func TestHealthManagerCoalescesConcurrentColdCacheReads(t *testing.T) {
+	manager := NewHealthManager(time.Hour, "test")
+	release := make(chan struct{})
+	checker := &countingSlowChecker{
+		started: make(chan struct{}),
+		release: release,
+	}
+	manager.RegisterChecker(checker)
+
+	var wg sync.WaitGroup
+	wg.Add(4)
+	for i := 0; i < 4; i++ {
+		go func() {
+			defer wg.Done()
+			report := manager.GetHealthReport(context.Background())
+			if report.Status != StatusUp {
+				t.Errorf("report status = %s, want UP", report.Status)
+			}
+		}()
+	}
+
+	<-checker.started
+	time.Sleep(15 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := checker.calls.Load(); got != 1 {
+		t.Fatalf("checker calls = %d, want 1 coalesced refresh", got)
 	}
 }
 
@@ -274,7 +340,10 @@ func TestHealthHandlerUnhealthyReadinessDoesNotFailLiveness(t *testing.T) {
 		t.Fatalf("shutting-down readiness status = %d, want 503", ready.Code)
 	}
 
-	manager.shuttingDown = 0
+	manager.SetActive()
+	if manager.IsShuttingDown() || manager.Lifecycle() != LifecycleActive {
+		t.Fatalf("manager should return to active lifecycle")
+	}
 	manager.lastRefresh = time.Now()
 	manager.lastReport = &Report{Status: StatusDown}
 	live := httptest.NewRecorder()

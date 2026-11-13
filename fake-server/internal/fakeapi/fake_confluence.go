@@ -41,6 +41,7 @@ type ConfluencePage struct {
 // FakeConfluenceServer provides a mock Confluence API
 type FakeConfluenceServer struct {
 	mu       sync.RWMutex
+	state    ServerState
 	pages    map[string]*ConfluencePage
 	settings map[string]*ConfluenceSettings
 	port     int
@@ -51,6 +52,7 @@ type FakeConfluenceServer struct {
 // NewFakeConfluenceServer creates a new fake Confluence server
 func NewFakeConfluenceServer(port int) *FakeConfluenceServer {
 	s := &FakeConfluenceServer{
+		state:    ServerStateStopped,
 		pages:    make(map[string]*ConfluencePage),
 		settings: make(map[string]*ConfluenceSettings),
 		port:     port,
@@ -124,8 +126,22 @@ func (s *FakeConfluenceServer) UpdateSettings(pageID string, settings *Confluenc
 	return nil
 }
 
+// State returns the current explicit lifecycle state of the server.
+func (s *FakeConfluenceServer) State() ServerState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
+}
+
 // Start starts the fake Confluence server
 func (s *FakeConfluenceServer) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == ServerStateRunning {
+		return nil
+	}
+	s.state = ServerStateStarting
+
 	mux := http.NewServeMux()
 
 	// GET /rest/api/content/{pageId}
@@ -140,7 +156,7 @@ func (s *FakeConfluenceServer) Start() error {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
-	s.server = &http.Server{
+	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.port),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
@@ -148,21 +164,36 @@ func (s *FakeConfluenceServer) Start() error {
 	}
 
 	log.Printf("Starting Fake Confluence API server on port %d", s.port)
-	if err := startHTTPServer(s.server, "Fake Confluence", s.listen); err != nil {
-		s.server = nil
+	if err := startHTTPServer(server, "Fake Confluence", s.listen); err != nil {
+		s.state = ServerStateStopped
 		return err
 	}
+	s.server = server
+	s.state = ServerStateRunning
 	return nil
 }
 
 // Stop stops the fake Confluence server
 func (s *FakeConfluenceServer) Stop() error {
+	s.mu.Lock()
+	if s.state == ServerStateStopped {
+		s.mu.Unlock()
+		return nil
+	}
+	s.state = ServerStateStopping
 	server := s.server
 	s.server = nil
+	s.mu.Unlock()
+
+	var err error
 	if server != nil {
-		return server.Close()
+		err = server.Close()
 	}
-	return nil
+
+	s.mu.Lock()
+	s.state = ServerStateStopped
+	s.mu.Unlock()
+	return err
 }
 
 // handleGetPage handles GET requests for page content

@@ -10,6 +10,16 @@ import (
 
 type listenFunc func(network, address string) (net.Listener, error)
 
+// ServerState represents the explicit lifecycle state of a fake API server or manager.
+type ServerState string
+
+const (
+	ServerStateStopped  ServerState = "stopped"
+	ServerStateStarting ServerState = "starting"
+	ServerStateRunning  ServerState = "running"
+	ServerStateStopping ServerState = "stopping"
+)
+
 func startHTTPServer(server *http.Server, name string, listen listenFunc) error {
 	if listen == nil {
 		listen = net.Listen

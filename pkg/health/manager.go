@@ -12,6 +12,24 @@ import (
 	"github.com/elvinyao/go-service-platform/pkg/logger"
 )
 
+// LifecycleState represents the operational lifecycle phase of a HealthManager.
+type LifecycleState uint32
+
+const (
+	// LifecycleActive indicates normal health and readiness evaluation.
+	LifecycleActive LifecycleState = iota
+	// LifecycleShuttingDown indicates the process is draining and not ready for traffic.
+	LifecycleShuttingDown
+)
+
+type reportCacheState uint8
+
+const (
+	reportCacheCold reportCacheState = iota
+	reportCacheFresh
+	reportCacheExpired
+)
+
 // HealthManager manages system health checks
 type HealthManager struct {
 	mu               sync.RWMutex
@@ -24,12 +42,12 @@ type HealthManager struct {
 	version          string
 	serviceInstances map[string]ServiceChecker
 	startTime        time.Time
-	shuttingDown     int32 // atomic: 1 = shutting down
+	lifecycle        atomic.Uint32
 }
 
 // NewHealthManager creates a new health check manager
 func NewHealthManager(refreshInterval time.Duration, version string) *HealthManager {
-	return &HealthManager{
+	mgr := &HealthManager{
 		checkers:         make([]Checker, 0),
 		reporters:        make([]Reporter, 0),
 		refreshInterval:  refreshInterval,
@@ -37,6 +55,8 @@ func NewHealthManager(refreshInterval time.Duration, version string) *HealthMana
 		serviceInstances: make(map[string]ServiceChecker),
 		startTime:        time.Now(),
 	}
+	mgr.lifecycle.Store(uint32(LifecycleActive))
+	return mgr
 }
 
 // RegisterChecker registers a health checker
@@ -75,42 +95,73 @@ func (h *HealthManager) RegisterService(service ServiceChecker) {
 	h.serviceInstances[service.GetName()] = service
 }
 
-// SetShuttingDown marks the system as shutting down, causing readiness checks to fail
+// Lifecycle returns the current manager lifecycle state.
+func (h *HealthManager) Lifecycle() LifecycleState {
+	return LifecycleState(h.lifecycle.Load())
+}
+
+// SetShuttingDown transitions the manager to LifecycleShuttingDown, causing readiness checks to fail.
 func (h *HealthManager) SetShuttingDown() {
-	atomic.StoreInt32(&h.shuttingDown, 1)
+	h.lifecycle.Store(uint32(LifecycleShuttingDown))
 }
 
-// IsShuttingDown returns true if the system is in the process of shutting down
+// SetActive transitions the manager back to LifecycleActive.
+func (h *HealthManager) SetActive() {
+	h.lifecycle.Store(uint32(LifecycleActive))
+}
+
+// IsShuttingDown returns true if the system is in the process of shutting down.
 func (h *HealthManager) IsShuttingDown() bool {
-	return atomic.LoadInt32(&h.shuttingDown) == 1
+	return h.Lifecycle() == LifecycleShuttingDown
 }
 
-// GetHealthReport retrieves the health report
-func (h *HealthManager) GetHealthReport(ctx context.Context) *Report {
-	h.mu.RLock()
+func (h *HealthManager) cacheStateLocked(now time.Time) reportCacheState {
+	if h.lastReport == nil {
+		return reportCacheCold
+	}
+	if h.refreshInterval > 0 && now.Sub(h.lastRefresh) < h.refreshInterval {
+		return reportCacheFresh
+	}
+	return reportCacheExpired
+}
 
-	// If the last refresh was within the refresh interval, return the cached report
-	if time.Since(h.lastRefresh) < h.refreshInterval && h.lastReport != nil {
-		report := CloneReport(h.lastReport)
-		h.mu.RUnlock()
+func (h *HealthManager) cachedReportIfFresh() (*Report, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.cacheStateLocked(time.Now()) == reportCacheFresh {
+		return CloneReport(h.lastReport), true
+	}
+	return nil, false
+}
+
+// GetHealthReport retrieves a cached health report when fresh or refreshes it single-flight.
+func (h *HealthManager) GetHealthReport(ctx context.Context) *Report {
+	if report, ok := h.cachedReportIfFresh(); ok {
 		return report
 	}
 
-	h.mu.RUnlock()
+	h.refreshMu.Lock()
+	defer h.refreshMu.Unlock()
 
-	// Need to refresh the report
-	return h.RefreshReport(ctx)
+	if report, ok := h.cachedReportIfFresh(); ok {
+		return report
+	}
+
+	return h.refreshReportLocked(ctx)
 }
 
-// RefreshReport refreshes the health report
+// RefreshReport forces a fresh health report evaluation.
 func (h *HealthManager) RefreshReport(ctx context.Context) *Report {
+	h.refreshMu.Lock()
+	defer h.refreshMu.Unlock()
+	return h.refreshReportLocked(ctx)
+}
+
+func (h *HealthManager) refreshReportLocked(ctx context.Context) *Report {
 	ctx = appctx.WithOperationName(ctx, "health_refresh")
 	startTime := time.Now()
 
 	logger.DebugWithContext(ctx, "Refreshing health report")
-
-	h.refreshMu.Lock()
-	defer h.refreshMu.Unlock()
 
 	checkers, reporters, services, managerStartTime, version := h.snapshot()
 

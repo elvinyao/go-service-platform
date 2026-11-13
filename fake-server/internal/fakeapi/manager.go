@@ -12,7 +12,7 @@ type FakeAPIManager struct {
 	confluence *FakeConfluenceServer
 	mattermost *FakeMattermostServer
 	websocket  *FakeWebSocketServer
-	running    bool
+	state      ServerState
 	mu         sync.Mutex
 }
 
@@ -30,6 +30,7 @@ func NewFakeAPIManager() *FakeAPIManager {
 		confluence: NewFakeConfluenceServer(DefaultConfluencePort),
 		mattermost: NewFakeMattermostServer(DefaultMattermostHTTPPort, DefaultMattermostWSPort),
 		websocket:  NewFakeWebSocketServer(DefaultWebSocketPort),
+		state:      ServerStateStopped,
 	}
 }
 
@@ -39,7 +40,15 @@ func NewFakeAPIManagerWithPorts(confluencePort, mmHTTPPort, mmWSPort, wsPort int
 		confluence: NewFakeConfluenceServer(confluencePort),
 		mattermost: NewFakeMattermostServer(mmHTTPPort, mmWSPort),
 		websocket:  NewFakeWebSocketServer(wsPort),
+		state:      ServerStateStopped,
 	}
+}
+
+// State returns the current explicit lifecycle state of the manager.
+func (m *FakeAPIManager) State() ServerState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.state
 }
 
 // Start starts all fake API servers
@@ -47,21 +56,25 @@ func (m *FakeAPIManager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.running {
+	if m.state == ServerStateRunning {
 		return nil
 	}
 
+	m.state = ServerStateStarting
 	log.Println("Starting all fake API servers...")
 
 	if err := m.confluence.Start(); err != nil {
+		m.state = ServerStateStopped
 		return fmt.Errorf("start fake Confluence server: %w", err)
 	}
 
 	if err := m.mattermost.Start(); err != nil {
 		startErr := fmt.Errorf("start fake Mattermost server: %w", err)
 		if cleanupErr := m.confluence.Stop(); cleanupErr != nil {
+			m.state = ServerStateStopped
 			return errors.Join(startErr, fmt.Errorf("stop fake Confluence server after startup failure: %w", cleanupErr))
 		}
+		m.state = ServerStateStopped
 		return startErr
 	}
 
@@ -73,10 +86,11 @@ func (m *FakeAPIManager) Start() error {
 		if cleanupErr := m.confluence.Stop(); cleanupErr != nil {
 			errs = append(errs, fmt.Errorf("stop fake Confluence server after startup failure: %w", cleanupErr))
 		}
+		m.state = ServerStateStopped
 		return errors.Join(errs...)
 	}
 
-	m.running = true
+	m.state = ServerStateRunning
 
 	log.Println("All fake API servers started:")
 	log.Printf("   Confluence API: http://localhost:%d", m.confluence.GetPort())
@@ -92,10 +106,11 @@ func (m *FakeAPIManager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if !m.running {
+	if m.state == ServerStateStopped {
 		return nil
 	}
 
+	m.state = ServerStateStopping
 	log.Println("Stopping all fake API servers...")
 
 	var errs []error
@@ -109,7 +124,7 @@ func (m *FakeAPIManager) Stop() error {
 		errs = append(errs, fmt.Errorf("stop fake Confluence server: %w", err))
 	}
 
-	m.running = false
+	m.state = ServerStateStopped
 	log.Println("All fake API servers stopped")
 
 	return errors.Join(errs...)
@@ -134,7 +149,7 @@ func (m *FakeAPIManager) GetWebSocket() *FakeWebSocketServer {
 func (m *FakeAPIManager) IsRunning() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.running
+	return m.state == ServerStateRunning
 }
 
 // PrintEndpoints prints all available endpoints

@@ -84,11 +84,17 @@ func TestProviderNameAndStartUseCurrentSnapshot(t *testing.T) {
 	defer cleanup()
 
 	provider := NewProvider("confluence", ruleengine.DefaultWorkflowName, sm)
+	if provider.State() != SyncStateSeeded {
+		t.Fatalf("initial state = %s, want %s", provider.State(), SyncStateSeeded)
+	}
 	if provider.Name() != "confluence" {
 		t.Fatalf("name = %q, want confluence", provider.Name())
 	}
 	if err := provider.Start(ctx); err != nil {
 		t.Fatalf("start provider: %v", err)
+	}
+	if provider.State() != SyncStateSynced {
+		t.Fatalf("state after start = %s, want %s", provider.State(), SyncStateSynced)
 	}
 
 	svc, ok := sm.GetServiceByName(ctx, "ConfluenceSettingsService")
@@ -100,11 +106,17 @@ func TestProviderNameAndStartUseCurrentSnapshot(t *testing.T) {
 	}
 
 	snapshot := provider.Snapshot(ctx)
+	if provider.State() != SyncStateFallback {
+		t.Fatalf("state after fallback = %s, want %s", provider.State(), SyncStateFallback)
+	}
 	if snapshot.LastError == "" {
 		t.Fatalf("last error = empty, want stopped service error")
 	}
 	if len(snapshot.Rules) != 1 {
 		t.Fatalf("rules len = %d, want Start to preserve last good snapshot", len(snapshot.Rules))
+	}
+	if provider.lastGood.LastError != "" {
+		t.Fatalf("lastGood.LastError = %q, want clean lastGood without error pollution", provider.lastGood.LastError)
 	}
 }
 

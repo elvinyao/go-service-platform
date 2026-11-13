@@ -82,7 +82,7 @@ func TestAppProcessesWebSocketMessageThroughRulesAndExecutors(t *testing.T) {
 }
 
 func TestAppAdminEndpointsReturnContracts(t *testing.T) {
-	wsServer, _ := newTestWebSocketServer(t)
+	wsServer, connections := newTestWebSocketServer(t)
 	defer wsServer.Close()
 
 	confluenceServer := newTestConfluenceServer(t)
@@ -114,6 +114,9 @@ func TestAppAdminEndpointsReturnContracts(t *testing.T) {
 			t.Fatalf("stop app: %v", err)
 		}
 	}()
+
+	conn := waitForWebSocketConnection(t, connections)
+	defer conn.Close()
 
 	baseURL := "http://" + application.adminServer.Addr()
 

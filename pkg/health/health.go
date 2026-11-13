@@ -152,38 +152,47 @@ var DefaultThresholds = struct {
 	ErrorRateCritical: 10, // 10%
 }
 
-// DetermineStatus determines the overall status based on check results
+// DetermineStatus reduces individual check results through the health status lattice:
+//  1. Empty results -> UNKNOWN
+//  2. Critical DOWN -> DOWN
+//  3. Critical UNKNOWN (e.g. timeout/panic/cancelled control checks) -> UNKNOWN
+//  4. Non-critical DOWN or any DEGRADED -> DEGRADED
+//  5. Non-critical UNKNOWN -> UNKNOWN
+//  6. All UP -> UP
 func DetermineStatus(results []CheckResult) Status {
-	// If no results, status is unknown
 	if len(results) == 0 {
 		return StatusUnknown
 	}
 
-	hasDown := false
-	hasDegraded := false
-	hasUnknown := false
+	hasCriticalUnknown := false
+	hasDegradedOrNonCriticalDown := false
+	hasNonCriticalUnknown := false
 
 	for _, result := range results {
-		// If any critical check is down, the service is down
-		if result.Level == LevelCritical && result.Status == StatusDown {
-			return StatusDown
-		}
-
-		if result.Status == StatusDown {
-			hasDown = true
-		} else if result.Status == StatusDegraded {
-			hasDegraded = true
-		} else if result.Status == StatusUnknown {
-			hasUnknown = true
+		switch result.Status {
+		case StatusDown:
+			if result.Level == LevelCritical {
+				return StatusDown
+			}
+			hasDegradedOrNonCriticalDown = true
+		case StatusUnknown:
+			if result.Level == LevelCritical {
+				hasCriticalUnknown = true
+			} else {
+				hasNonCriticalUnknown = true
+			}
+		case StatusDegraded:
+			hasDegradedOrNonCriticalDown = true
 		}
 	}
 
-	// Determine overall status based on check results
-	if hasDown {
+	if hasCriticalUnknown {
+		return StatusUnknown
+	}
+	if hasDegradedOrNonCriticalDown {
 		return StatusDegraded
-	} else if hasDegraded {
-		return StatusDegraded
-	} else if hasUnknown {
+	}
+	if hasNonCriticalUnknown {
 		return StatusUnknown
 	}
 
@@ -269,6 +278,24 @@ type indexedCheckResult struct {
 	result *CheckResult
 }
 
+type checkCollectorState uint8
+
+const (
+	collectorStateIdle checkCollectorState = iota
+	collectorStateRunning
+	collectorStateCompleted
+	collectorStateTimedOut
+	collectorStateCancelled
+)
+
+type parallelCheckCollector struct {
+	state     checkCollectorState
+	checks    []func(context.Context) *CheckResult
+	timeout   time.Duration
+	results   []*CheckResult
+	completed int
+}
+
 // RunChecksParallel runs health checks concurrently and returns results in input order.
 func RunChecksParallel(ctx context.Context, checks []func(context.Context) *CheckResult) []*CheckResult {
 	return runChecksParallel(ctx, defaultParallelCheckTimeout, checks)
@@ -279,43 +306,56 @@ func runChecksParallel(
 	timeout time.Duration,
 	checks []func(context.Context) *CheckResult,
 ) []*CheckResult {
-	if len(checks) == 0 {
+	collector := &parallelCheckCollector{
+		state:   collectorStateIdle,
+		checks:  checks,
+		timeout: timeout,
+	}
+	return collector.run(ctx)
+}
+
+func (c *parallelCheckCollector) run(ctx context.Context) []*CheckResult {
+	if len(c.checks) == 0 {
+		c.state = collectorStateCompleted
 		return []*CheckResult{}
 	}
 	ctx = nonNilContext(ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if ctx.Err() != nil {
+		c.state = collectorStateCancelled
 		return []*CheckResult{newControlCheckResult("cancelled", "Health check was cancelled")}
 	}
 
-	results := make([]*CheckResult, len(checks))
-	resultCh := make(chan indexedCheckResult, len(checks))
+	c.state = collectorStateRunning
+	c.results = make([]*CheckResult, len(c.checks))
+	resultCh := make(chan indexedCheckResult, len(c.checks))
 
-	// Start all checks in parallel
-	for index, check := range checks {
+	for index, check := range c.checks {
 		go func(index int, check func(context.Context) *CheckResult) {
 			resultCh <- indexedCheckResult{index: index, result: runHealthCheck(ctx, check)}
 		}(index, check)
 	}
 
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(c.timeout)
 	defer timer.Stop()
-	completed := 0
-	for completed < len(checks) {
+	for c.completed < len(c.checks) {
 		select {
 		case indexed := <-resultCh:
-			results[indexed.index] = indexed.result
-			completed++
+			c.results[indexed.index] = indexed.result
+			c.completed++
 		case <-timer.C:
+			c.state = collectorStateTimedOut
 			cancel()
-			return append(compactCheckResults(results), newControlCheckResult("timeout", "Health check timed out"))
+			return append(compactCheckResults(c.results), newControlCheckResult("timeout", "Health check timed out"))
 		case <-ctx.Done():
-			return append(compactCheckResults(results), newControlCheckResult("cancelled", "Health check was cancelled"))
+			c.state = collectorStateCancelled
+			return append(compactCheckResults(c.results), newControlCheckResult("cancelled", "Health check was cancelled"))
 		}
 	}
 
-	return results
+	c.state = collectorStateCompleted
+	return c.results
 }
 
 func runHealthCheck(ctx context.Context, check func(context.Context) *CheckResult) (result *CheckResult) {

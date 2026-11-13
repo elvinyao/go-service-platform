@@ -206,6 +206,17 @@ func TestDetermineStatus(t *testing.T) {
 		status := DetermineStatus([]CheckResult{})
 		assert.Equal(t, StatusUnknown, status)
 	})
+
+	// Critical UNKNOWN is never masked by a non-critical DEGRADED or DOWN check
+	t.Run("CriticalUnknownPrecedesWarningDegraded", func(t *testing.T) {
+		results := []CheckResult{
+			{Status: StatusDegraded, Level: LevelWarning},
+			{Status: StatusDown, Level: LevelWarning},
+			{Status: StatusUnknown, Level: LevelCritical},
+		}
+		status := DetermineStatus(results)
+		assert.Equal(t, StatusUnknown, status)
+	})
 }
 
 func TestRunChecksParallel(t *testing.T) {

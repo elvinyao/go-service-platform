@@ -47,17 +47,51 @@ type confluenceSettings struct {
 	Rules []SettingRule `json:"rules"`
 }
 
+// SettingsSyncState describes the cache state of Confluence settings.
+type SettingsSyncState string
+
+const (
+	SettingsSyncCold  SettingsSyncState = "cold"
+	SettingsSyncFresh SettingsSyncState = "fresh"
+	SettingsSyncStale SettingsSyncState = "stale"
+)
+
+type confluenceRefreshSession struct {
+	generation uint64
+	stop       chan struct{}
+	done       chan struct{}
+	cancel     context.CancelFunc
+	stopOnce   sync.Once
+}
+
+func newConfluenceRefreshSession(generation uint64, cancel context.CancelFunc) *confluenceRefreshSession {
+	return &confluenceRefreshSession{
+		generation: generation,
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
+		cancel:     cancel,
+	}
+}
+
+func (rs *confluenceRefreshSession) signalStop() {
+	rs.stopOnce.Do(func() {
+		close(rs.stop)
+		if rs.cancel != nil {
+			rs.cancel()
+		}
+	})
+}
+
 // ConfluenceSettingsService manages settings from Confluence with periodic refresh
 type ConfluenceSettingsService struct {
 	*BaseService
-	mu            sync.RWMutex
-	config        ConfluenceSettingsConfig
-	settings      []SettingRule
-	lastRefresh   time.Time
-	stopRefresh   chan struct{}
-	refreshDone   chan struct{}
-	refreshCancel context.CancelFunc
-	httpClient    *http.Client
+	mu                sync.RWMutex
+	config            ConfluenceSettingsConfig
+	settings          []SettingRule
+	lastRefresh       time.Time
+	refreshGeneration uint64
+	refreshSession    *confluenceRefreshSession
+	httpClient        *http.Client
 }
 
 // NewConfluenceSettingsService creates a new ConfluenceSettingsService
@@ -72,12 +106,11 @@ func NewConfluenceSettingsService(
 		httpClient = clients[0]
 	}
 	s := &ConfluenceSettingsService{
-		BaseService: NewBaseService(name, workflow, "confluence-settings", version),
-		config:      cfg,
-		settings:    make([]SettingRule, 0),
-		stopRefresh: make(chan struct{}),
-		refreshDone: make(chan struct{}),
-		httpClient:  httpClient,
+		BaseService:    NewBaseService(name, workflow, "confluence-settings", version),
+		config:         cfg,
+		settings:       make([]SettingRule, 0),
+		refreshSession: newConfluenceRefreshSession(0, nil),
+		httpClient:     httpClient,
 	}
 
 	// Add custom health checker
@@ -99,23 +132,23 @@ func (s *ConfluenceSettingsService) Start(ctx context.Context) error {
 	}
 
 	logger.InfofWithContext(ctx, "Starting service: %s", s.GetName())
+	s.TransitionState(ServiceStateStarting)
 
 	// Initial fetch of settings
 	if err := s.refreshSettingsLocked(ctx); err != nil {
 		logger.WithContextError(ctx, err).Warn("Failed to fetch initial settings, will retry")
 	}
 
-	// Start periodic refresh
-	s.stopRefresh = make(chan struct{})
-	s.refreshDone = make(chan struct{})
-	stopRefresh := s.stopRefresh
-	refreshDone := s.refreshDone
+	// Start generation-fenced periodic refresh
+	s.refreshGeneration++
+	generation := s.refreshGeneration
 	refreshInterval := s.config.RefreshInterval
 	refreshCtx, refreshCancel := context.WithCancel(ctx)
-	s.refreshCancel = refreshCancel
-	go s.periodicRefresh(refreshCtx, refreshInterval, stopRefresh, refreshDone)
+	session := newConfluenceRefreshSession(generation, refreshCancel)
+	s.refreshSession = session
+	s.TransitionState(ServiceStateRunning)
+	go s.periodicRefresh(refreshCtx, generation, refreshInterval, session)
 
-	s.LockRunning(true)
 	logger.InfofWithContext(ctx, "Service %s started successfully", s.GetName())
 	return nil
 }
@@ -134,32 +167,31 @@ func (s *ConfluenceSettingsService) Stop(ctx context.Context) error {
 
 	logger.InfofWithContext(ctx, "Stopping service: %s", s.GetName())
 
-	// Signal the refresh goroutine to stop and mark as not running
-	stopRefresh := s.stopRefresh
-	refreshDone := s.refreshDone
-	refreshCancel := s.refreshCancel
-	s.refreshCancel = nil
-	close(stopRefresh)
-	if refreshCancel != nil {
-		refreshCancel()
-	}
-	s.LockRunning(false)
+	s.refreshGeneration++
+	session := s.refreshSession
+	s.TransitionState(ServiceStateStopping)
 
 	// Release the lock BEFORE waiting, so periodicRefresh can finish
 	// its current cycle and see the stop signal
 	s.mu.Unlock()
 
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	select {
-	case <-refreshDone:
-		logger.DebugfWithContext(ctx, "Periodic refresh stopped")
-	case <-ctx.Done():
-		return fmt.Errorf("wait for periodic refresh shutdown: %w", ctx.Err())
-	case <-timer.C:
-		return fmt.Errorf("timed out waiting for periodic refresh shutdown")
+	if session != nil {
+		session.signalStop()
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-session.done:
+			logger.DebugfWithContext(ctx, "Periodic refresh stopped")
+		case <-ctx.Done():
+			s.TransitionState(ServiceStateStopped)
+			return fmt.Errorf("wait for periodic refresh shutdown: %w", ctx.Err())
+		case <-timer.C:
+			s.TransitionState(ServiceStateStopped)
+			return fmt.Errorf("timed out waiting for periodic refresh shutdown")
+		}
 	}
 
+	s.TransitionState(ServiceStateStopped)
 	logger.InfofWithContext(ctx, "Service %s stopped successfully", s.GetName())
 	return nil
 }
@@ -175,8 +207,16 @@ func (s *ConfluenceSettingsService) Restart(ctx context.Context) error {
 }
 
 // periodicRefresh runs in a goroutine and periodically refreshes settings
-func (s *ConfluenceSettingsService) periodicRefresh(ctx context.Context, refreshInterval time.Duration, stopRefresh <-chan struct{}, refreshDone chan<- struct{}) {
-	defer close(refreshDone)
+func (s *ConfluenceSettingsService) periodicRefresh(
+	ctx context.Context,
+	generation uint64,
+	refreshInterval time.Duration,
+	session *confluenceRefreshSession,
+) {
+	defer close(session.done)
+	if refreshInterval <= 0 {
+		return
+	}
 
 	ticker := time.NewTicker(refreshInterval)
 	defer ticker.Stop()
@@ -185,17 +225,17 @@ func (s *ConfluenceSettingsService) periodicRefresh(ctx context.Context, refresh
 		select {
 		case <-ctx.Done():
 			return
-		case <-stopRefresh:
+		case <-session.stop:
 			return
 		case <-ticker.C:
-			if err := s.refreshSettings(ctx); err != nil && ctx.Err() == nil {
+			if err := s.refreshSettings(ctx, generation); err != nil && ctx.Err() == nil {
 				logger.WithContextError(ctx, err).Warn("Failed to refresh settings")
 			}
 		}
 	}
 }
 
-func (s *ConfluenceSettingsService) refreshSettings(ctx context.Context) error {
+func (s *ConfluenceSettingsService) refreshSettings(ctx context.Context, generation uint64) error {
 	ctx = appctx.WithOperationName(ctx, "refresh_settings")
 	logger.DebugfWithContext(ctx, "Refreshing settings from Confluence")
 
@@ -208,6 +248,10 @@ func (s *ConfluenceSettingsService) refreshSettings(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		s.mu.Unlock()
 		return err
+	}
+	if s.refreshGeneration != generation || !s.IsRunning(ctx) {
+		s.mu.Unlock()
+		return nil
 	}
 	s.settings = settings
 	s.lastRefresh = time.Now()
@@ -295,6 +339,25 @@ func (s *ConfluenceSettingsService) GetLastRefreshTime() time.Time {
 	return s.lastRefresh
 }
 
+func (s *ConfluenceSettingsService) syncStateLocked(now time.Time) (SettingsSyncState, time.Duration) {
+	if s.lastRefresh.IsZero() {
+		return SettingsSyncCold, 0
+	}
+	age := now.Sub(s.lastRefresh)
+	if age > s.config.RefreshInterval*2 {
+		return SettingsSyncStale, age
+	}
+	return SettingsSyncFresh, age
+}
+
+// SyncState returns the explicit Confluence settings cache state.
+func (s *ConfluenceSettingsService) SyncState() SettingsSyncState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state, _ := s.syncStateLocked(time.Now())
+	return state
+}
+
 // GetMetrics returns service metrics
 func (s *ConfluenceSettingsService) GetMetrics(ctx context.Context) map[string]interface{} {
 	baseMetrics := s.BaseService.GetMetrics(ctx)
@@ -302,19 +365,23 @@ func (s *ConfluenceSettingsService) GetMetrics(ctx context.Context) map[string]i
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	now := time.Now()
+	syncState, refreshAge := s.syncStateLocked(now)
+
 	metrics := make(map[string]interface{})
 	for k, v := range baseMetrics {
 		metrics[k] = v
 	}
 
+	metrics["sync_state"] = string(syncState)
 	metrics["settings_count"] = len(s.settings)
 	metrics["refresh_interval"] = s.config.RefreshInterval.String()
 	metrics["api_endpoint"] = s.config.APIEndpoint
 	metrics["page_id"] = s.config.PageID
 
-	if !s.lastRefresh.IsZero() {
+	if syncState != SettingsSyncCold {
 		metrics["last_refresh"] = s.lastRefresh.Format(time.RFC3339)
-		metrics["last_refresh_age_seconds"] = time.Since(s.lastRefresh).Seconds()
+		metrics["last_refresh_age_seconds"] = refreshAge.Seconds()
 	}
 
 	return metrics
@@ -337,23 +404,18 @@ func (c *settingsRefreshChecker) Check(ctx context.Context) *health.CheckResult 
 	}
 
 	c.service.mu.RLock()
-	lastRefresh := c.service.lastRefresh
-	refreshInterval := c.service.config.RefreshInterval
+	syncState, refreshAge := c.service.syncStateLocked(time.Now())
 	c.service.mu.RUnlock()
-	if lastRefresh.IsZero() {
+
+	result.AddDetail("sync_state", string(syncState))
+	switch syncState {
+	case SettingsSyncCold:
 		result.SetStatus(health.StatusDegraded, "Settings have never been refreshed")
-		result.Complete()
-		return result
-	}
-
-	refreshAge := time.Since(lastRefresh)
-	result.AddDetail("last_refresh_age_seconds", refreshAge.Seconds())
-
-	// Check if refresh is stale (more than 2x the refresh interval)
-	staleThreshold := refreshInterval * 2
-	if refreshAge > staleThreshold {
+	case SettingsSyncStale:
+		result.AddDetail("last_refresh_age_seconds", refreshAge.Seconds())
 		result.SetStatus(health.StatusDegraded, fmt.Sprintf("Settings are stale: last refresh was %v ago", refreshAge))
-	} else {
+	case SettingsSyncFresh:
+		result.AddDetail("last_refresh_age_seconds", refreshAge.Seconds())
 		result.SetStatus(health.StatusUp, fmt.Sprintf("Settings refreshed %v ago", refreshAge))
 	}
 

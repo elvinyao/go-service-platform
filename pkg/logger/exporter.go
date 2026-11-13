@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -55,6 +56,14 @@ func (mw *MultiWriter) RemoveWriter(w io.Writer) {
 	}
 }
 
+type rotationState uint8
+
+const (
+	rotationStateOpen rotationState = iota
+	rotationStateDetached
+	rotationStateClosed
+)
+
 // FileRotationHook is an io.Writer that rotates log files.
 type FileRotationHook struct {
 	file         *os.File
@@ -63,6 +72,7 @@ type FileRotationHook struct {
 	rotateTime   time.Duration
 	lastRotation time.Time
 	currentSize  int64
+	state        rotationState
 	mu           sync.Mutex
 }
 
@@ -86,6 +96,7 @@ func NewFileRotationHook(filename string, maxSizeMB int, rotateHours int) (*File
 		rotateTime:   time.Duration(rotateHours) * time.Hour,
 		lastRotation: time.Now(),
 		currentSize:  stat.Size(),
+		state:        rotationStateOpen,
 	}, nil
 }
 
@@ -94,9 +105,18 @@ func (hook *FileRotationHook) Write(p []byte) (n int, err error) {
 	hook.mu.Lock()
 	defer hook.mu.Unlock()
 
-	if hook.shouldRotate() {
-		if err := hook.rotate(); err != nil {
+	switch hook.state {
+	case rotationStateClosed:
+		return 0, fmt.Errorf("file rotation hook is closed: %w", os.ErrClosed)
+	case rotationStateDetached:
+		if err := hook.reopenLocked(); err != nil {
 			return 0, err
+		}
+	case rotationStateOpen:
+		if hook.shouldRotate() {
+			if err := hook.rotate(); err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -113,32 +133,54 @@ func (hook *FileRotationHook) shouldRotate() bool {
 }
 
 func (hook *FileRotationHook) rotate() error {
-	if err := hook.file.Close(); err != nil {
+	if hook.file != nil {
+		closeErr := hook.file.Close()
+		hook.file = nil
+		hook.state = rotationStateDetached
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+
+	timestamp := time.Now().Format("20060102-150405.000000000")
+	if err := os.Rename(hook.filename, hook.filename+"."+timestamp); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
-	timestamp := time.Now().Format("20060102-150405")
-	if err := os.Rename(hook.filename, hook.filename+"."+timestamp); err != nil {
-		return err
-	}
+	return hook.reopenLocked()
+}
 
+func (hook *FileRotationHook) reopenLocked() error {
 	file, err := os.OpenFile(hook.filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666)
 	if err != nil {
 		return err
 	}
 
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return err
+	}
+
 	hook.file = file
-	hook.currentSize = 0
+	hook.currentSize = stat.Size()
 	hook.lastRotation = time.Now()
+	hook.state = rotationStateOpen
 	return nil
 }
 
-// Close closes the file.
+// Close closes the file and transitions the hook to the closed state.
 func (hook *FileRotationHook) Close() error {
 	hook.mu.Lock()
 	defer hook.mu.Unlock()
-	if hook.file != nil {
-		return hook.file.Close()
+	if hook.state == rotationStateClosed {
+		return nil
+	}
+	file := hook.file
+	hook.file = nil
+	hook.state = rotationStateClosed
+	if file != nil {
+		return file.Close()
 	}
 	return nil
 }

@@ -322,8 +322,23 @@ func TestFakeAPIManagerLifecycleAndAccessors(t *testing.T) {
 	if err := manager.Start(); err != nil {
 		t.Fatalf("start manager: %v", err)
 	}
-	if !manager.IsRunning() {
-		t.Fatalf("manager should be running")
+	if !manager.IsRunning() || manager.State() != ServerStateRunning {
+		t.Fatalf("manager state = %s, want running", manager.State())
+	}
+	if manager.GetConfluence().State() != ServerStateRunning ||
+		manager.GetMattermost().State() != ServerStateRunning ||
+		manager.GetWebSocket().State() != ServerStateRunning {
+		t.Fatalf("expected all child servers in running state")
+	}
+	// Duplicate Start on individual servers and manager is idempotent.
+	if err := manager.GetConfluence().Start(); err != nil {
+		t.Fatalf("duplicate confluence start: %v", err)
+	}
+	if err := manager.GetMattermost().Start(); err != nil {
+		t.Fatalf("duplicate mattermost start: %v", err)
+	}
+	if err := manager.GetWebSocket().Start(); err != nil {
+		t.Fatalf("duplicate websocket start: %v", err)
 	}
 	if err := manager.Start(); err != nil {
 		t.Fatalf("second start: %v", err)
@@ -331,8 +346,8 @@ func TestFakeAPIManagerLifecycleAndAccessors(t *testing.T) {
 	if err := manager.Stop(); err != nil {
 		t.Fatalf("stop manager: %v", err)
 	}
-	if manager.IsRunning() {
-		t.Fatalf("manager should not be running after stop")
+	if manager.IsRunning() || manager.State() != ServerStateStopped {
+		t.Fatalf("manager state after stop = %s, want stopped", manager.State())
 	}
 	if err := manager.Stop(); err != nil {
 		t.Fatalf("second stop: %v", err)

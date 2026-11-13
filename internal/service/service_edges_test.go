@@ -604,3 +604,54 @@ func TestConfluenceSettingsServiceFetchParsesSettings(t *testing.T) {
 func httpToWS(rawURL string) string {
 	return "ws" + rawURL[len("http"):]
 }
+
+func TestServiceExplicitStateTransitions(t *testing.T) {
+	ctx := context.Background()
+
+	mm := NewMattermostService(MattermostServiceName, "WorkflowEngine", MattermostConfig{
+		ServerURL: "http://mattermost.test",
+		Username:  "user",
+		Password:  "bad",
+		Channel:   "general",
+	}, "test", testHTTPClient(http.StatusUnauthorized, "bad credentials"))
+	if mm.TransportState() != MMTransportStopped || mm.AuthState() != MMAuthAnonymous {
+		t.Fatalf("initial mattermost states = %s/%s", mm.TransportState(), mm.AuthState())
+	}
+	if err := mm.Start(ctx); err != nil {
+		t.Fatalf("start mattermost: %v", err)
+	}
+	if mm.TransportState() != MMTransportHTTPOnly || mm.AuthState() != MMAuthLoginFailed {
+		t.Fatalf("running mattermost states = %s/%s, want http_only/login_failed", mm.TransportState(), mm.AuthState())
+	}
+	metrics := mm.GetMetrics(ctx)
+	if metrics["transport_state"] != string(MMTransportHTTPOnly) || metrics["auth_state"] != string(MMAuthLoginFailed) {
+		t.Fatalf("mattermost metrics = %+v", metrics)
+	}
+	if err := mm.Stop(ctx); err != nil {
+		t.Fatalf("stop mattermost: %v", err)
+	}
+	if mm.TransportState() != MMTransportStopped || mm.State() != ServiceStateStopped {
+		t.Fatalf("stopped mattermost states = %s/%s", mm.TransportState(), mm.State())
+	}
+
+	cf := newTestConfluenceSettingsService(t, testHTTPClient(http.StatusServiceUnavailable, "down"))
+	if cf.SyncState() != SettingsSyncCold {
+		t.Fatalf("initial confluence sync state = %s, want cold", cf.SyncState())
+	}
+	if err := cf.Start(ctx); err != nil {
+		t.Fatalf("start confluence: %v", err)
+	}
+	if cf.SyncState() != SettingsSyncCold {
+		t.Fatalf("failed-initial-fetch sync state = %s, want cold", cf.SyncState())
+	}
+	_ = cf.Stop(ctx)
+
+	ws := NewWebSocketService(WebSocketInputServiceName, "WorkflowEngine", WebSocketConfig{
+		ServerURL:         "ws://127.0.0.1:1",
+		Path:              "/ws",
+		ReconnectInterval: 50 * time.Millisecond,
+	}, "test")
+	if ws.ConnectionState() != WSStateDisconnected {
+		t.Fatalf("initial ws state = %s, want disconnected", ws.ConnectionState())
+	}
+}

@@ -247,6 +247,34 @@ func TestEngineStopRetriesFailedComponentsAndAllowsRestart(t *testing.T) {
 	}
 }
 
+func TestEngineRollbackFailureEntersPendingCleanupUntilStopSucceeds(t *testing.T) {
+	cleanupErr := errors.New("rollback busy")
+	first := &lifecycleProvider{name: "a", stopErrs: []error{cleanupErr, nil}}
+	second := &lifecycleProvider{name: "b", startErr: errors.New("start failed")}
+	engine, err := New(lifecycleEngineConfig("a", "b"), []ruleengine.RuleProvider{first, second}, nil)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	err = engine.Start(context.Background())
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("start rollback error = %v, want %v", err, cleanupErr)
+	}
+	if engine.state != engineStatePendingCleanup {
+		t.Fatalf("engine state = %v, want pending cleanup", engine.state)
+	}
+	if err := engine.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "pending cleanup") {
+		t.Fatalf("start while pending cleanup = %v, want pending cleanup error", err)
+	}
+
+	if err := engine.Stop(context.Background()); err != nil {
+		t.Fatalf("stop to drain pending cleanup: %v", err)
+	}
+	if engine.state != engineStateStopped {
+		t.Fatalf("engine state after drain = %v, want stopped", engine.state)
+	}
+}
+
 func TestEngineStopsExecutorWithoutStarter(t *testing.T) {
 	provider := &lifecycleProvider{name: "rules"}
 	actionExecutor := &stopOnlyExecutor{testExecutor: testExecutor{name: "log"}}

@@ -206,3 +206,31 @@ func TestServiceManagerMonitorServicesStopsOnContextCancel(t *testing.T) {
 		t.Fatalf("monitor did not stop after context cancellation")
 	}
 }
+
+func TestServiceManagerStatePreventsRestartAfterStopAll(t *testing.T) {
+	sm := NewServiceManager("test")
+	if sm.State() != ManagerStateIdle {
+		t.Fatalf("initial state = %s, want idle", sm.State())
+	}
+	svc := &testService{name: "svc", workflow: "wf", kind: "kind"}
+	if err := sm.RegisterService(svc); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := sm.StartAll(context.Background()); err != nil {
+		t.Fatalf("start all: %v", err)
+	}
+	if sm.State() != ManagerStateRunning {
+		t.Fatalf("state after start = %s, want running", sm.State())
+	}
+	if err := sm.StopAll(context.Background()); err != nil {
+		t.Fatalf("stop all: %v", err)
+	}
+	if sm.State() != ManagerStateStopped {
+		t.Fatalf("state after stop = %s, want stopped", sm.State())
+	}
+
+	sm.checkServices(context.Background())
+	if svc.restarted != 0 || svc.running {
+		t.Fatalf("checkServices restarted stopped manager service: restarted=%d running=%v", svc.restarted, svc.running)
+	}
+}

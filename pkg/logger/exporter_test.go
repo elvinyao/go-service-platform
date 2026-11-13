@@ -142,3 +142,30 @@ func TestAddFileLogger(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, string(fileContent), "test message for file logger")
 }
+
+func TestFileRotationHookCloseAndDetachedRecovery(t *testing.T) {
+	tempDir := t.TempDir()
+	logFile := filepath.Join(tempDir, "lifecycle.log")
+
+	hook, err := NewFileRotationHook(logFile, 1, 1)
+	require.NoError(t, err)
+	assert.Equal(t, rotationStateOpen, hook.state)
+
+	// Simulate detached state after a mid-rotation failure and ensure Write recovers cleanly.
+	require.NoError(t, hook.file.Close())
+	hook.file = nil
+	hook.state = rotationStateDetached
+
+	_, err = hook.Write([]byte("recovered\n"))
+	require.NoError(t, err)
+	assert.Equal(t, rotationStateOpen, hook.state)
+
+	// Close is idempotent and transitions to closed; subsequent writes fail with os.ErrClosed.
+	require.NoError(t, hook.Close())
+	require.NoError(t, hook.Close())
+	assert.Equal(t, rotationStateClosed, hook.state)
+	assert.Nil(t, hook.file)
+
+	_, err = hook.Write([]byte("after close\n"))
+	assert.ErrorIs(t, err, os.ErrClosed)
+}

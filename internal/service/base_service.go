@@ -7,14 +7,31 @@ import (
 	"time"
 )
 
+// LifecycleState represents the explicit operational state of a Service.
+type LifecycleState string
+
+const (
+	// ServiceStateNew indicates the service has never been started.
+	ServiceStateNew LifecycleState = "new"
+	// ServiceStateStarting indicates the service is initializing.
+	ServiceStateStarting LifecycleState = "starting"
+	// ServiceStateRunning indicates the service is active.
+	ServiceStateRunning LifecycleState = "running"
+	// ServiceStateStopping indicates the service is draining resources.
+	ServiceStateStopping LifecycleState = "stopping"
+	// ServiceStateStopped indicates the service has been stopped after running.
+	ServiceStateStopped LifecycleState = "stopped"
+)
+
 // BaseService provides common functionality for all services
 type BaseService struct {
 	name           string
 	workflow       string
 	serviceType    string
-	running        bool
+	state          LifecycleState
 	mu             sync.RWMutex
 	startTime      time.Time
+	stopTime       time.Time
 	version        string
 	customCheckers []health.Checker
 }
@@ -25,6 +42,7 @@ func NewBaseService(name, workflow, serviceType, version string) *BaseService {
 		name:           name,
 		workflow:       workflow,
 		serviceType:    serviceType,
+		state:          ServiceStateNew,
 		version:        version,
 		customCheckers: []health.Checker{},
 	}
@@ -45,20 +63,40 @@ func (s *BaseService) GetType() string {
 	return s.serviceType
 }
 
+// State returns the current explicit lifecycle state of the service.
+func (s *BaseService) State() LifecycleState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
+}
+
+// TransitionState updates the explicit lifecycle state and records start/stop timestamps.
+func (s *BaseService) TransitionState(next LifecycleState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if next == ServiceStateRunning && s.state != ServiceStateRunning {
+		s.startTime = now
+		s.stopTime = time.Time{}
+	} else if next == ServiceStateStopped && s.state != ServiceStateStopped && !s.startTime.IsZero() {
+		s.stopTime = now
+	}
+	s.state = next
+}
+
 // IsRunning returns whether the service is running
 func (s *BaseService) IsRunning(ctx context.Context) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.running
+	return s.state == ServiceStateRunning
 }
 
 func (s *BaseService) setRunning(r bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if r && !s.running {
-		s.startTime = time.Now()
+	if r {
+		s.TransitionState(ServiceStateRunning)
+		return
 	}
-	s.running = r
+	s.TransitionState(ServiceStateStopped)
 }
 
 // LockRunning updates running state for service implementations and tests.
@@ -87,13 +125,19 @@ func (s *BaseService) GetMetrics(ctx context.Context) map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	running := s.state == ServiceStateRunning
 	metrics := make(map[string]interface{})
-	metrics["running"] = s.running
+	metrics["running"] = running
+	metrics["state"] = string(s.state)
 	metrics["type"] = s.serviceType
 	metrics["workflow"] = s.workflow
 
 	if !s.startTime.IsZero() {
-		metrics["uptime_seconds"] = time.Since(s.startTime).Seconds()
+		end := time.Now()
+		if !running && !s.stopTime.IsZero() {
+			end = s.stopTime
+		}
+		metrics["uptime_seconds"] = end.Sub(s.startTime).Seconds()
 		metrics["start_time"] = s.startTime.Format(time.RFC3339)
 	}
 

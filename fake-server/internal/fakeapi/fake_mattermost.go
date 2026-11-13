@@ -41,6 +41,7 @@ type MattermostUser struct {
 // FakeMattermostServer provides a mock Mattermost API
 type FakeMattermostServer struct {
 	mu          sync.RWMutex
+	state       ServerState
 	posts       []MattermostPost
 	channels    map[string]*MattermostChannel
 	users       map[string]*MattermostUser
@@ -59,6 +60,7 @@ type FakeMattermostServer struct {
 // NewFakeMattermostServer creates a new fake Mattermost server
 func NewFakeMattermostServer(httpPort, wsPort int) *FakeMattermostServer {
 	s := &FakeMattermostServer{
+		state:      ServerStateStopped,
 		posts:      make([]MattermostPost, 0),
 		channels:   make(map[string]*MattermostChannel),
 		users:      make(map[string]*MattermostUser),
@@ -111,22 +113,39 @@ func (s *FakeMattermostServer) addDefaultData() {
 	s.authTokens["test-token-123"] = "user-1"
 }
 
+// State returns the current explicit lifecycle state of the server.
+func (s *FakeMattermostServer) State() ServerState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
+}
+
 // Start starts both HTTP and WebSocket servers
 func (s *FakeMattermostServer) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == ServerStateRunning {
+		return nil
+	}
+	s.state = ServerStateStarting
+
 	// Start HTTP API server
-	if err := s.startHTTPServer(); err != nil {
+	if err := s.startHTTPServerLocked(); err != nil {
+		s.state = ServerStateStopped
 		return err
 	}
 
 	// Start WebSocket server
-	if err := s.startWSServer(); err != nil {
+	if err := s.startWSServerLocked(); err != nil {
+		s.state = ServerStateStopped
 		return err
 	}
 
+	s.state = ServerStateRunning
 	return nil
 }
 
-func (s *FakeMattermostServer) startHTTPServer() error {
+func (s *FakeMattermostServer) startHTTPServerLocked() error {
 	mux := http.NewServeMux()
 
 	// Authentication
@@ -161,7 +180,7 @@ func (s *FakeMattermostServer) startHTTPServer() error {
 	return nil
 }
 
-func (s *FakeMattermostServer) startWSServer() error {
+func (s *FakeMattermostServer) startWSServerLocked() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/websocket", s.handleWebSocket)
 
@@ -186,6 +205,18 @@ func (s *FakeMattermostServer) startWSServer() error {
 
 // Stop stops both servers
 func (s *FakeMattermostServer) Stop() error {
+	s.mu.Lock()
+	if s.state == ServerStateStopped {
+		s.mu.Unlock()
+		return nil
+	}
+	s.state = ServerStateStopping
+	wsServer := s.wsServer
+	httpServer := s.server
+	s.wsServer = nil
+	s.server = nil
+	s.mu.Unlock()
+
 	// Close all WebSocket connections
 	s.wsMu.Lock()
 	for conn := range s.wsClients {
@@ -193,11 +224,6 @@ func (s *FakeMattermostServer) Stop() error {
 	}
 	s.wsClients = make(map[*websocket.Conn]bool)
 	s.wsMu.Unlock()
-
-	wsServer := s.wsServer
-	httpServer := s.server
-	s.wsServer = nil
-	s.server = nil
 
 	var errs []error
 	if wsServer != nil {
@@ -210,6 +236,10 @@ func (s *FakeMattermostServer) Stop() error {
 			errs = append(errs, fmt.Errorf("close HTTP server: %w", err))
 		}
 	}
+
+	s.mu.Lock()
+	s.state = ServerStateStopped
+	s.mu.Unlock()
 	return errors.Join(errs...)
 }
 
@@ -356,6 +386,13 @@ func (s *FakeMattermostServer) handleWebSocket(w http.ResponseWriter, r *http.Re
 		return
 	}
 	defer conn.Close()
+
+	s.mu.RLock()
+	stopping := s.state == ServerStateStopping
+	s.mu.RUnlock()
+	if stopping {
+		return
+	}
 
 	s.wsMu.Lock()
 	s.wsClients[conn] = true

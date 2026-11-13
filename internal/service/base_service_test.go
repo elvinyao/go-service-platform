@@ -26,7 +26,8 @@ func TestNewBaseService(t *testing.T) {
 	assert.Equal(t, workflow, service.GetWorkflow())
 	assert.Equal(t, serviceType, service.GetType())
 	assert.Equal(t, version, service.version)
-	assert.False(t, service.running)
+	assert.Equal(t, ServiceStateNew, service.State())
+	assert.False(t, service.IsRunning(context.Background()))
 	assert.NotNil(t, service.customCheckers)
 	assert.Empty(t, service.customCheckers)
 }
@@ -83,6 +84,13 @@ func TestIsRunning(t *testing.T) {
 
 	// Act & Assert
 	assert.False(t, service.IsRunning(ctx))
+	assert.Equal(t, ServiceStateStopped, service.State())
+
+	// Uptime freezes once stopped instead of continuing to grow.
+	firstUptime := service.GetMetrics(ctx)["uptime_seconds"].(float64)
+	time.Sleep(15 * time.Millisecond)
+	secondUptime := service.GetMetrics(ctx)["uptime_seconds"].(float64)
+	assert.Equal(t, firstUptime, secondUptime)
 }
 
 func TestAddHealthChecker(t *testing.T) {
