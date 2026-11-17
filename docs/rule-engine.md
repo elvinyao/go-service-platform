@@ -213,6 +213,48 @@ Retrying stops as soon as an attempt succeeds, the executor returns an error mar
 
 Retries can repeat side effects. Enable them only for actions that are safe to run more than once.
 
+## Concurrent Dispatch and Deduplication
+
+`Engine.Process` handles one event synchronously. A long-running input such as a chat connection should not call it directly, because one slow action would hold up every later event. `pipeline.Dispatcher` sits between the input and the engine:
+
+```go
+dispatcher, err := pipeline.NewDispatcher(config.Dispatch, func(ctx context.Context, message ruleengine.Message) {
+    if _, err := engine.Process(ctx, ruleengine.DefaultWorkflowName, message); err != nil {
+        log.Printf("event %s failed: %v", message.ID, err)
+    }
+})
+if err != nil {
+    return err
+}
+defer dispatcher.Stop(context.Background())
+
+// In the input's receive loop:
+err = dispatcher.Submit(ctx, message)
+```
+
+It is configured by the `dispatch` block of the engine configuration:
+
+```yaml
+dispatch:
+  workers: 4
+  queue_size: 64
+  ordering_key: "payload.channel.id"
+  queue_full: block
+  dedup:
+    enabled: true
+    ttl: "10m"
+    max_entries: 10000
+```
+
+- `workers` is how many events are processed at the same time (default `4`). `queue_size` is how many events may wait per worker (default `64`).
+- `ordering_key` names a message field. Events with the same value go to the same worker and are processed one at a time in arrival order, so two messages in one channel are never handled out of order. Events with different values run in parallel. When it is empty, or the field is absent from an event, that event has no ordering guarantee.
+- `queue_full` decides what happens when a worker's queue is full. `block` (default) makes `Submit` wait, which pushes backpressure onto the input. `drop` makes `Submit` return `pipeline.ErrQueueFull` immediately.
+- `dedup` drops an event whose `id` was already accepted within `ttl`; `Submit` returns `pipeline.ErrDuplicateEvent`. It is off by default in the SDK and enabled in the repository profiles. Events without an `id` are never deduplicated. At most `max_entries` IDs are remembered, oldest forgotten first.
+
+An ID is remembered when the event is accepted, not when it succeeds, so a redelivered event is skipped even if its first run failed; use action retries for transient failures. A dropped event is not remembered and can be redelivered. Deduplication state is in memory and is lost on restart.
+
+`Stop` rejects new events and waits for everything already queued to finish, up to the context deadline. `Stats` reports workers, queue depth, and accepted, processed, duplicate, dropped, and panic counts. Handlers and executors run concurrently and must be safe for concurrent use.
+
 ## Running a Pipeline
 
 ```go

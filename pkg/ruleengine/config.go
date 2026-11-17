@@ -30,6 +30,7 @@ func DefaultEngineConfig() EngineConfig {
 			Dedup: true,
 			Order: ActionOrderPriority,
 		},
+		Dispatch: DispatchConfig{}.WithDefaults(),
 	}
 }
 
@@ -61,6 +62,7 @@ func LoadEngineConfig(path string) (EngineConfig, error) {
 }
 
 func normalizeEngineConfig(cfg *EngineConfig) {
+	cfg.Dispatch = cfg.Dispatch.WithDefaults()
 	if cfg.ActionMerge.Order == "" {
 		cfg.ActionMerge.Order = ActionOrderPriority
 	}
@@ -133,6 +135,9 @@ func (c EngineConfig) Validate() error {
 		return err
 	}
 	if err := validateExecutionSettings("execution", c.Execution.Timeout, &c.Execution.Retry); err != nil {
+		return err
+	}
+	if err := c.Dispatch.Validate(); err != nil {
 		return err
 	}
 

@@ -122,10 +122,41 @@ type WorkflowPolicy struct {
 	ActionMerge   ActionMergeConfig `yaml:"action_merge" json:"action_merge"`
 }
 
+// Queue-full behaviors for DispatchConfig.QueueFull.
+const (
+	QueueFullBlock = "block"
+	QueueFullDrop  = "drop"
+)
+
+// DedupConfig controls dropping of redelivered events by Message.ID.
+type DedupConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// TTL is how long an event ID is remembered.
+	TTL string `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+	// MaxEntries bounds the remembered IDs; the oldest are forgotten first.
+	MaxEntries int `yaml:"max_entries,omitempty" json:"max_entries,omitempty"`
+}
+
+// DispatchConfig controls concurrent event processing by pipeline.Dispatcher.
+type DispatchConfig struct {
+	// Workers is the number of events processed at the same time.
+	Workers int `yaml:"workers" json:"workers"`
+	// QueueSize is how many events may wait per worker.
+	QueueSize int `yaml:"queue_size" json:"queue_size"`
+	// OrderingKey is a message field such as "user_id" or "payload.channel.id".
+	// Events with the same value are processed one at a time, in arrival order.
+	// Empty, or absent from an event, means no ordering guarantee.
+	OrderingKey string `yaml:"ordering_key,omitempty" json:"ordering_key,omitempty"`
+	// QueueFull is "block" (apply backpressure to the input) or "drop".
+	QueueFull string      `yaml:"queue_full" json:"queue_full"`
+	Dedup     DedupConfig `yaml:"dedup" json:"dedup"`
+}
+
 type EngineConfig struct {
 	Workflows   []WorkflowPolicy  `yaml:"workflows" json:"workflows"`
 	ActionMerge ActionMergeConfig `yaml:"action_merge" json:"action_merge"`
 	Execution   ExecutionConfig   `yaml:"execution" json:"execution"`
+	Dispatch    DispatchConfig    `yaml:"dispatch" json:"dispatch"`
 }
 
 type ExecutionPlan struct {

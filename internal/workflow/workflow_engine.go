@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 
 	"github.com/elvinyao/go-service-platform/internal/adapters/badgedb"
@@ -18,14 +19,16 @@ import (
 )
 
 type WorkflowEngine struct {
-	name   string
-	engine *pipeline.Engine
+	name       string
+	engine     *pipeline.Engine
+	dispatcher *pipeline.Dispatcher
 }
 
 type EngineAdminSnapshot struct {
 	Name      string                      `json:"name"`
 	Composer  ruleengine.ComposerSnapshot `json:"composer"`
 	Executors []string                    `json:"executors"`
+	Dispatch  pipeline.DispatchStats      `json:"dispatch"`
 }
 
 func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPath, rulesPath string, configs ...runtimeconfig.RuntimeConfig) (*WorkflowEngine, error) {
@@ -77,10 +80,20 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 		return nil, errors.Wrap(err, "failed to start rule pipeline", errors.TypeInvalidInput)
 	}
 
-	return &WorkflowEngine{
+	w := &WorkflowEngine{
 		name:   ruleengine.DefaultWorkflowName,
 		engine: engine,
-	}, nil
+	}
+	dispatcher, err := pipeline.NewDispatcher(cfg.Dispatch, w.handleDispatched)
+	if err != nil {
+		startErr := errors.Wrap(err, "failed to create event dispatcher", errors.TypeInvalidInput)
+		if stopErr := engine.Stop(context.Background()); stopErr != nil {
+			return nil, stderrors.Join(startErr, stopErr)
+		}
+		return nil, startErr
+	}
+	w.dispatcher = dispatcher
+	return w, nil
 }
 
 func validateRuntimeAdapterDependencies(cfg ruleengine.EngineConfig, runtimeCfg runtimeconfig.RuntimeConfig) error {
@@ -142,16 +155,54 @@ func (w *WorkflowEngine) GetName() string {
 
 func (w *WorkflowEngine) AdminSnapshot(ctx context.Context) EngineAdminSnapshot {
 	snapshot := w.engine.Snapshot(ctx)
-	return EngineAdminSnapshot{
+	admin := EngineAdminSnapshot{
 		Name:      w.name,
 		Composer:  snapshot.Composer,
 		Executors: snapshot.Executors,
 	}
+	if w.dispatcher != nil {
+		admin.Dispatch = w.dispatcher.Stats()
+	}
+	return admin
 }
 
-// Stop releases lifecycle-aware rule providers and executors.
+// Stop drains queued events, then releases lifecycle-aware rule providers and executors.
 func (w *WorkflowEngine) Stop(ctx context.Context) error {
+	if w.dispatcher != nil {
+		if err := w.dispatcher.Stop(ctx); err != nil {
+			return err
+		}
+	}
 	return w.engine.Stop(ctx)
+}
+
+// Submit queues a message for concurrent processing. Duplicate and dropped
+// events are logged and reported as nil because they are expected outcomes;
+// the returned error is non-nil only when the message could not be queued.
+func (w *WorkflowEngine) Submit(ctx context.Context, msg ruleengine.Message) error {
+	if w.dispatcher == nil {
+		w.handleDispatched(ctx, msg)
+		return nil
+	}
+	err := w.dispatcher.Submit(ctx, msg)
+	switch {
+	case err == nil:
+		return nil
+	case stderrors.Is(err, pipeline.ErrDuplicateEvent):
+		logger.InfofWithContext(ctx, "Skipping duplicate event type=%s id=%s", msg.Type, msg.ID)
+		return nil
+	case stderrors.Is(err, pipeline.ErrQueueFull):
+		logger.WarnfWithContext(ctx, "Dropping event type=%s id=%s: dispatch queue is full", msg.Type, msg.ID)
+		return nil
+	default:
+		return err
+	}
+}
+
+func (w *WorkflowEngine) handleDispatched(ctx context.Context, msg ruleengine.Message) {
+	if err := w.ProcessMessage(ctx, msg); err != nil {
+		logger.WithContextError(ctx, err).Errorf("Error processing message type=%s id=%s", msg.Type, msg.ID)
+	}
 }
 
 func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg ruleengine.Message) error {

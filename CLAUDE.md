@@ -28,6 +28,8 @@ make test-race
 # Enforce statement coverage gate across both modules (>= 90% per package with test files; override via COVERAGE_MIN=95)
 make coverage
 
+# CI (.github/workflows/ci.yml) runs gofmt -l, make verify, make test-race, and make coverage on pushes to main and on pull requests.
+
 # Static analysis (go vet is the repository's standard check)
 make vet
 make vet-fake
@@ -74,7 +76,8 @@ make build-fake
 In the reference runtime, events flow through:
 
 ```text
-service.WebSocketService -> app.setupMessageListeners -> workflow.WorkflowEngine.ProcessMessage
+service.WebSocketService -> app.setupMessageListeners -> workflow.WorkflowEngine.Submit
+  -> pipeline.Dispatcher (worker) -> workflow.WorkflowEngine.ProcessMessage
   -> pipeline.Engine.Process -> ruleengine.Composer.BuildExecutionPlan -> executor.Registry -> Executor.Execute
 ```
 
@@ -86,6 +89,7 @@ Key engine invariants:
 - **Deterministic ordering & deduplication**: Matched rules sort by ascending `Rule.Priority` (lower runs first). Actions are collected in rule order, optionally deduplicated (by `Action.ID`, or `Executor|JSON(Params)` when `ID` is empty), and sorted by ascending `Action.Priority`.
 - **Snapshot isolation**: `Composer` deep-clones configs, provider `RuleSet` snapshots, and actions so concurrent evaluation or callers cannot mutate provider state.
 - **Timeouts and retries**: `pipeline.Engine.executeAction` runs each action under the policy from `EngineConfig.ResolveExecution` (engine `execution` block, overridden per action by `timeout`/`retry`). Defaults are no timeout and one attempt. Errors wrapped with `executor.Permanent`, executor panics, and caller cancellation are never retried.
+- **Concurrent dispatch**: the reference runtime never calls `ProcessMessage` from the input loop; `WorkflowEngine.Submit` hands events to `pipeline.Dispatcher` (engine `dispatch` block). Events sharing `ordering_key` stay ordered on one worker, a full queue blocks or drops per `queue_full`, and events with a recently accepted `Message.ID` are skipped when `dedup.enabled`. Tests that send the same ID twice will see only one execution under the repository profiles.
 - **Partial failure semantics**: `pipeline.Engine.Process` executes **all** planned actions even if earlier actions fail, returning both the `ExecutionPlan` and an aggregated `*pipeline.ExecutionError` (which `WorkflowEngine` wraps as `errors.TypePartialFailure` without crashing the runtime).
 
 ### Configuration & Startup Preflight

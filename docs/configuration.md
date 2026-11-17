@@ -174,6 +174,8 @@ execution:
     max_attempts: 1
 ```
 
+The repository profiles also carry a `dispatch` block that controls concurrent event processing, per-key ordering, queue backpressure, and event deduplication; see [Concurrent Dispatch and Deduplication](rule-engine.md#concurrent-dispatch-and-deduplication). Because deduplication is enabled there, sending the same event `id` twice within ten minutes processes it once; change the `id` when resending a test event.
+
 The `execution` block sets the default per-attempt timeout and retry policy for every action; see [Timeouts and Retries](rule-engine.md#timeouts-and-retries). Omitting it means no timeout and a single attempt.
 
 The demo profile adds the `confluence` provider and uses `or` composition. Supported modes are:

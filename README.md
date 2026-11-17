@@ -10,6 +10,7 @@ The SDK provides:
 - rule conditions with comparison operators and `any` / `all` / `not` groups
 - composable rule providers and deterministic action plans
 - pluggable action executors with engine-level timeouts and retries
+- a concurrent dispatcher with per-key ordering, backpressure, and event deduplication
 - strict YAML configuration with environment overrides
 - lifecycle-managed services with startup rollback and graceful shutdown
 - structured logging and health, readiness, liveness, and admin APIs
@@ -223,7 +224,7 @@ make test-race
 make coverage
 ```
 
-`make coverage` enforces at least 90% statement coverage for every package that contains tests in both Go modules.
+`make coverage` enforces at least 90% statement coverage for every package that contains tests in both Go modules. GitHub Actions runs a `gofmt` check and these three targets on every pull request and on pushes to `main`.
 
 New users should begin with [Getting Started](docs/getting-started.md), then use the [Framework Cookbook](docs/cookbook.md) for focused extension recipes. The full developer workflow, debugger setup, architecture tour, troubleshooting steps, and six realistic use cases are in the [Development Guidebook](docs/development.md).
 

@@ -19,3 +19,13 @@ execution:
   timeout: "10s"
   retry:
     max_attempts: 1
+
+dispatch:
+  workers: 4
+  queue_size: 64
+  ordering_key: "user_id"
+  queue_full: block
+  dedup:
+    enabled: true
+    ttl: "10m"
+    max_entries: 10000

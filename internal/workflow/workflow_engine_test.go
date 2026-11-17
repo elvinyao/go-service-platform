@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -557,5 +558,78 @@ func writeFile(t *testing.T, path, contents string) {
 
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestWorkflowEngineSubmitProcessesAsynchronouslyAndSkipsDuplicates(t *testing.T) {
+	recorder := &recordingWorkflowExecutor{executorType: "record"}
+	failing := &recordingWorkflowExecutor{executorType: "fail", err: fmt.Errorf("boom")}
+	engine := newTestWorkflowEngine(t, []ruleengine.Rule{{
+		ID:       "rule-all",
+		Workflow: ruleengine.DefaultWorkflowName,
+		Enabled:  true,
+		Actions:  []ruleengine.Action{{ID: "record", Executor: "record"}, {ID: "fail", Executor: "fail"}},
+	}}, recorder, failing)
+
+	// Without a dispatcher, Submit processes inline.
+	if err := engine.Submit(context.Background(), ruleengine.Message{ID: "inline"}); err != nil {
+		t.Fatalf("inline submit: %v", err)
+	}
+	if len(recorder.Records()) != 1 {
+		t.Fatalf("inline submit should have executed the action")
+	}
+
+	dispatcher, err := pipeline.NewDispatcher(ruleengine.DispatchConfig{
+		Workers: 1, QueueSize: 1, QueueFull: ruleengine.QueueFullDrop,
+		Dedup: ruleengine.DedupConfig{Enabled: true},
+	}, engine.handleDispatched)
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+	engine.dispatcher = dispatcher
+
+	ctx := context.Background()
+	if err := engine.Submit(ctx, ruleengine.Message{ID: "m1"}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if err := engine.Submit(ctx, ruleengine.Message{ID: "m1"}); err != nil {
+		t.Fatalf("duplicate submit should be reported as handled, got %v", err)
+	}
+	// Flood the single-slot queue so at least one event is dropped.
+	for i := 0; i < 50; i++ {
+		if err := engine.Submit(ctx, ruleengine.Message{ID: fmt.Sprintf("flood-%d", i)}); err != nil {
+			t.Fatalf("dropped submit should be reported as handled, got %v", err)
+		}
+	}
+
+	if err := engine.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	stats := engine.AdminSnapshot(ctx).Dispatch
+	if stats.Duplicates != 1 || stats.Accepted != stats.Processed || stats.Accepted+stats.Dropped != 51 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if got := len(recorder.Records()); got != int(stats.Accepted)+1 {
+		t.Fatalf("recorded %d actions, want %d", got, stats.Accepted+1)
+	}
+	if err := engine.Submit(ctx, ruleengine.Message{ID: "late"}); err == nil {
+		t.Fatalf("submit after stop should fail")
+	}
+}
+
+func TestNewWorkflowEngineRejectsInvalidDispatchConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "rule-engine.yaml")
+	writeFile(t, configPath, `
+workflows:
+  - name: WorkflowEngine
+    providers: [yaml]
+    mode: single
+dispatch:
+  queue_full: explode
+`)
+	_, err := NewWorkflowEngine(context.Background(), manager.NewServiceManager("test"), configPath, "")
+	if err == nil || !strings.Contains(err.Error(), "dispatch.queue_full") {
+		t.Fatalf("error = %v, want dispatch.queue_full", err)
 	}
 }

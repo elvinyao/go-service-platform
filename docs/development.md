@@ -56,6 +56,8 @@ The default message path is:
 fake WebSocket message
 -> internal/service.WebSocketService
 -> internal/app.setupMessageListeners
+-> internal/workflow.WorkflowEngine.Submit
+-> pkg/pipeline.Dispatcher worker
 -> internal/workflow.WorkflowEngine.ProcessMessage
 -> pkg/pipeline.Engine.Process
 -> pkg/ruleengine.Composer.BuildExecutionPlan

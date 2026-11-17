@@ -210,6 +210,12 @@ func compileConditionRegex(cond Condition) (*regexp.Regexp, error) {
 	return compiled, nil
 }
 
+// Field returns the value addressed by a condition field name, such as
+// "user_id" or "payload.channel.id", and whether it is present.
+func (m Message) Field(field string) (interface{}, bool) {
+	return getMessageField(m, field)
+}
+
 func getMessageField(msg Message, field string) (interface{}, bool) {
 	switch field {
 	case "id":

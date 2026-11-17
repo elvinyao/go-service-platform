@@ -256,3 +256,62 @@ func TestCloneRuleSetDeepCopiesNestedConditionsAndRetry(t *testing.T) {
 		t.Fatalf("clone mutated original: %+v", rule)
 	}
 }
+
+func TestDispatchConfigDefaultsAndValidation(t *testing.T) {
+	defaults := DispatchConfig{}.WithDefaults()
+	want := DispatchConfig{
+		Workers: 4, QueueSize: 64, QueueFull: QueueFullBlock,
+		Dedup: DedupConfig{TTL: "10m", MaxEntries: 10000},
+	}
+	if defaults != want {
+		t.Fatalf("defaults = %+v, want %+v", defaults, want)
+	}
+	if DefaultEngineConfig().Dispatch != want {
+		t.Fatalf("engine default dispatch = %+v", DefaultEngineConfig().Dispatch)
+	}
+	if ttl, err := defaults.DedupTTL(); err != nil || ttl != 10*time.Minute {
+		t.Fatalf("ttl = %v err = %v", ttl, err)
+	}
+
+	valid := DispatchConfig{Workers: 2, QueueSize: 8, OrderingKey: "payload.channel.id", QueueFull: QueueFullDrop}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid config: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		config  DispatchConfig
+		wantErr string
+	}{
+		{"workers", DispatchConfig{Workers: -1}, "dispatch.workers"},
+		{"queue size", DispatchConfig{QueueSize: -1}, "dispatch.queue_size"},
+		{"queue full", DispatchConfig{QueueFull: "panic"}, "dispatch.queue_full"},
+		{"ordering key", DispatchConfig{OrderingKey: "channel"}, "dispatch.ordering_key"},
+		{"ttl syntax", DispatchConfig{Dedup: DedupConfig{TTL: "soon"}}, "dispatch.dedup.ttl"},
+		{"ttl zero", DispatchConfig{Dedup: DedupConfig{TTL: "0s"}}, "greater than zero"},
+		{"max entries", DispatchConfig{Dedup: DedupConfig{MaxEntries: -1}}, "dispatch.dedup.max_entries"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+			}
+			engine := DefaultEngineConfig()
+			engine.Dispatch = tt.config
+			if err := engine.Validate(); err == nil {
+				t.Fatalf("engine config should reject invalid dispatch settings")
+			}
+		})
+	}
+}
+
+func TestMessageFieldAccessor(t *testing.T) {
+	value, ok := imMessage().Field("payload.channel.id")
+	if !ok || value != "C1" {
+		t.Fatalf("field = %v, %v", value, ok)
+	}
+	if _, ok := imMessage().Field("payload.missing"); ok {
+		t.Fatalf("missing field should not be present")
+	}
+}
