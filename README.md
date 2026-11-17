@@ -1,12 +1,17 @@
 # Go Service Platform
 
-Go Service Platform is a configurable, rule-driven framework for building event-processing services. It separates reusable rule and action orchestration from transport and business integrations, while keeping a complete reference runtime that can be started locally with one command.
+Go Service Platform is a lightweight rule-routing SDK for Go: an event comes in, declarative rules decide which actions apply, and pluggable executors run them. It is built for event-driven services such as chat (IM) bots, webhook handlers, and notification routers.
 
-The platform provides:
+It is a router, not a workflow orchestrator: each event is matched and its actions are run once, in priority order. There are no multi-step flows, persisted state, or resumable instances.
 
-- strict YAML configuration with environment overrides
+The SDK provides:
+
+- an event model with a small fixed envelope and a free-form `payload`
+- rule conditions with comparison operators and `any` / `all` / `not` groups
 - composable rule providers and deterministic action plans
-- pluggable action executors
+- pluggable action executors with engine-level timeouts and retries
+- a concurrent dispatcher with per-key ordering, backpressure, and event deduplication
+- strict YAML configuration with environment overrides
 - lifecycle-managed services with startup rollback and graceful shutdown
 - structured logging and health, readiness, liveness, and admin APIs
 - runnable examples that use only public framework packages
@@ -138,7 +143,35 @@ rules:
           template: "YAML matched event type={{.Type}} id={{.ID}}"
 ```
 
-Rules support `eq`, `contains`, and `regex` conditions. Built-in executors are `log` and `http`; applications can register their own `executor.Executor` implementations.
+Conditions read the fixed message fields and any path under `payload` or `metadata`. Operators are `eq`, `ne`, `contains`, `not_contains`, `prefix`, `suffix`, `regex`, `in`, `not_in`, `exists`, `not_exists`, `gt`, `gte`, `lt`, and `lte`, with optional `ignore_case`, and they combine with `any`, `all`, and `not` groups. A chat-bot rule that answers a mention or a direct message looks like this:
+
+```yaml
+rules:
+  - id: mention_or_direct_help
+    conditions:
+      - field: type
+        op: eq
+        value: message
+      - any:
+          - field: payload.mentions
+            op: contains
+            value: bot
+          - field: payload.channel.type
+            op: eq
+            value: direct
+    actions:
+      - id: reply_help
+        executor: http
+        timeout: "3s"
+        retry:
+          max_attempts: 3
+          backoff: "200ms"
+        params:
+          url: "https://chat.example/api/posts"
+          body_template: '{"channel":"{{.Payload.channel.id}}","text":"Hi <@{{.UserID}}>"}'
+```
+
+Built-in executors are `log` and `http`; applications can register their own `executor.Executor` implementations. See [Rule Engine](docs/rule-engine.md) for condition and retry semantics.
 
 ## Public Packages
 
@@ -174,13 +207,14 @@ Liveness reports only whether the process and admin server can respond; dependen
 
 ```bash
 go run ./examples/basic-rule-pipeline
+go run ./examples/im-bot
 go run ./examples/custom-executor
 WORKFLOW_RULES=examples/rules/incident-routing.yaml go run ./examples/http-event-gateway
 go run ./examples/websocket-to-log
 go run ./examples/websocket-to-mattermost
 ```
 
-The HTTP gateway and custom executor need no external services. The WebSocket examples require `make fake-server` in another terminal. See [Runnable Examples](examples/README.md) for complete inputs, environment variables, and four reusable rule sets.
+The IM bot, HTTP gateway, and custom executor need no external services. The WebSocket examples require `make fake-server` in another terminal. See [Runnable Examples](examples/README.md) for complete inputs, environment variables, and five reusable rule sets.
 
 ## Development
 
@@ -190,14 +224,14 @@ make test-race
 make coverage
 ```
 
-`make coverage` enforces at least 90% statement coverage for every package that contains tests in both Go modules.
+`make coverage` enforces at least 90% statement coverage for every package that contains tests in both Go modules. GitHub Actions runs a `gofmt` check and these three targets on every pull request and on pushes to `main`.
 
 New users should begin with [Getting Started](docs/getting-started.md), then use the [Framework Cookbook](docs/cookbook.md) for focused extension recipes. The full developer workflow, debugger setup, architecture tour, troubleshooting steps, and six realistic use cases are in the [Development Guidebook](docs/development.md).
 
 ## Project Layout
 
 ```text
-cmd/service-workflow/       Reference runtime entry point
+cmd/go-service-platform/       Reference runtime entry point
 config/                     Base and demo-profile configuration
 docs/                       Architecture and developer documentation
 examples/                   Programs using public framework packages

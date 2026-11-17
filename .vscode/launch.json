@@ -2,11 +2,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug service-workflow (YAML-first)",
+      "name": "Debug go-service-platform (YAML-first)",
       "type": "go",
       "request": "launch",
       "mode": "debug",
-      "program": "${workspaceFolder}/cmd/service-workflow",
+      "program": "${workspaceFolder}/cmd/go-service-platform",
       "cwd": "${workspaceFolder}",
       "env": {
         "RUNTIME_CONFIG": "config/runtime.yaml",
@@ -16,11 +16,11 @@
       }
     },
     {
-      "name": "Debug service-workflow (demo profile)",
+      "name": "Debug go-service-platform (demo profile)",
       "type": "go",
       "request": "launch",
       "mode": "debug",
-      "program": "${workspaceFolder}/cmd/service-workflow",
+      "program": "${workspaceFolder}/cmd/go-service-platform",
       "cwd": "${workspaceFolder}",
       "env": {
         "RUNTIME_CONFIG": "config/profiles/demo/runtime.yaml",

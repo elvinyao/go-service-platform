@@ -36,7 +36,7 @@ func TestAppProcessesWebSocketMessageThroughRulesAndExecutors(t *testing.T) {
 	cfg := demoRuntimeConfig()
 	cfg.Admin.Address = "127.0.0.1:0"
 
-	application := New("test-service-workflow", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")
+	application := New("test-go-service-platform", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -100,7 +100,7 @@ func TestAppAdminEndpointsReturnContracts(t *testing.T) {
 	cfg := demoRuntimeConfig()
 	cfg.Admin.Address = "127.0.0.1:0"
 
-	application := New("test-service-workflow", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")
+	application := New("test-go-service-platform", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -201,7 +201,7 @@ func TestAppStartFailsWhenAdminAddressIsInUse(t *testing.T) {
 	cfg.ApplyEnv()
 	cfg.Admin.Address = listener.Addr().String()
 
-	application := New("test-service-workflow", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")
+	application := New("test-go-service-platform", cfg, "testdata/rule-engine.yaml", "testdata/workflow-rules.yaml")
 	err = application.Start(context.Background())
 	if err == nil {
 		t.Fatalf("start app error = nil, want admin bind error")

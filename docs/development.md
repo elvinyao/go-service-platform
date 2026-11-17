@@ -28,7 +28,7 @@ Read the runtime as four layers:
 
 | Layer | Main Files | Responsibility |
 | --- | --- | --- |
-| Runtime | `cmd/service-workflow/main.go`, `internal/app/app.go` | Load config, start services, wire managers, expose admin API |
+| Runtime | `cmd/go-service-platform/main.go`, `internal/app/app.go` | Load config, start services, wire managers, expose admin API |
 | Services | `internal/service/*` | Connect to inputs and demo dependencies |
 | Rules | `pkg/ruleengine/*`, `pkg/pipeline/*`, `internal/workflow/workflow_engine.go` | Build and execute plans from rule providers |
 | Actions | `pkg/executor/*`, `internal/adapters/*` | Execute selected actions |
@@ -37,7 +37,7 @@ The public orchestration boundary is `pkg/pipeline/engine.go`. The reference run
 
 ## Startup Flow
 
-The main entry point is `cmd/service-workflow/main.go`.
+The main entry point is `cmd/go-service-platform/main.go`.
 
 Startup does this:
 
@@ -56,6 +56,8 @@ The default message path is:
 fake WebSocket message
 -> internal/service.WebSocketService
 -> internal/app.setupMessageListeners
+-> internal/workflow.WorkflowEngine.Submit
+-> pkg/pipeline.Dispatcher worker
 -> internal/workflow.WorkflowEngine.ProcessMessage
 -> pkg/pipeline.Engine.Process
 -> pkg/ruleengine.Composer.BuildExecutionPlan
@@ -140,7 +142,7 @@ This enables the YAML and Confluence providers plus the Mattermost and BadgeDB e
 RUNTIME_CONFIG=config/profiles/demo/runtime.yaml \
 RULE_ENGINE_CONFIG=config/profiles/demo/rule-engine.yaml \
 WORKFLOW_RULES=config/profiles/demo/workflow-rules.yaml \
-go run ./cmd/service-workflow
+go run ./cmd/go-service-platform
 ```
 
 ## Docker Compose
@@ -156,7 +158,7 @@ curl -s http://localhost:18080/health
 curl -s http://localhost:18080/rule-engine
 ```
 
-The fake server image includes its own health-check mode. Compose waits for that check to pass before it starts `service-workflow`, matching the dependency gate used by `make dev`.
+The fake server image includes its own health-check mode. Compose waits for that check to pass before it starts `go-service-platform`, matching the dependency gate used by `make dev`.
 
 Compose publishes the admin and fake API ports on the host loopback interface. The admin API uses host port `18080` by default to avoid local `8080` conflicts. Override it with:
 
@@ -181,20 +183,20 @@ make fake-server
 Run the runtime under Delve:
 
 ```bash
-dlv debug ./cmd/service-workflow
+dlv debug ./cmd/go-service-platform
 ```
 
 If you need a different admin address:
 
 ```bash
-ADMIN_ADDR=:18081 dlv debug ./cmd/service-workflow
+ADMIN_ADDR=:18081 dlv debug ./cmd/go-service-platform
 ```
 
 Useful breakpoints:
 
 | Goal | Breakpoint |
 | --- | --- |
-| Understand config loading | `cmd/service-workflow/main.go:run` |
+| Understand config loading | `cmd/go-service-platform/main.go:run` |
 | Understand app lifecycle | `internal/app/app.go:Start` |
 | Understand listener wiring | `internal/app/app.go:setupMessageListeners` |
 | See rule matching and execution | `internal/workflow/workflow_engine.go:ProcessMessage` |
@@ -209,8 +211,8 @@ Useful breakpoints:
 
 The repository includes `.vscode/launch.json` with three configurations:
 
-- `Debug service-workflow (YAML-first)`
-- `Debug service-workflow (demo profile)`
+- `Debug go-service-platform (YAML-first)`
+- `Debug go-service-platform (demo profile)`
 - `Debug fake-server`
 
 The checked-in configuration is equivalent to:
@@ -220,11 +222,11 @@ The checked-in configuration is equivalent to:
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug service-workflow (YAML-first)",
+      "name": "Debug go-service-platform (YAML-first)",
       "type": "go",
       "request": "launch",
       "mode": "debug",
-      "program": "${workspaceFolder}/cmd/service-workflow",
+      "program": "${workspaceFolder}/cmd/go-service-platform",
       "cwd": "${workspaceFolder}",
       "env": {
         "RUNTIME_CONFIG": "config/runtime.yaml",
@@ -234,11 +236,11 @@ The checked-in configuration is equivalent to:
       }
     },
     {
-      "name": "Debug service-workflow (demo profile)",
+      "name": "Debug go-service-platform (demo profile)",
       "type": "go",
       "request": "launch",
       "mode": "debug",
-      "program": "${workspaceFolder}/cmd/service-workflow",
+      "program": "${workspaceFolder}/cmd/go-service-platform",
       "cwd": "${workspaceFolder}",
       "env": {
         "RUNTIME_CONFIG": "config/profiles/demo/runtime.yaml",
@@ -279,7 +281,7 @@ Goal: understand the moving parts without editing code.
 
 Read:
 
-- `cmd/service-workflow/main.go`
+- `cmd/go-service-platform/main.go`
 - `internal/app/app.go`
 - `internal/app/admin.go`
 
@@ -1091,7 +1093,7 @@ Expected result:
 
 Step through:
 
-1. `cmd/service-workflow/main.go:run`
+1. `cmd/go-service-platform/main.go:run`
 2. `internal/app/app.go:Start`
 3. `internal/service/websocket_service.go:ProcessIncomingMessage`
 4. `internal/workflow/workflow_engine.go:ProcessMessage`

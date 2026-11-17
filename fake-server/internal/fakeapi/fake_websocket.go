@@ -20,6 +20,7 @@ type WebSocketMessage struct {
 	UserID    string                 `json:"user_id"`
 	Timestamp time.Time              `json:"timestamp"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	Payload   map[string]interface{} `json:"payload,omitempty"`
 }
 
 // FakeWebSocketServer provides a mock WebSocket server for testing

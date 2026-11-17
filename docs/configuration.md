@@ -44,7 +44,7 @@ The equivalent explicit command is:
 RUNTIME_CONFIG=config/profiles/demo/runtime.yaml \
 RULE_ENGINE_CONFIG=config/profiles/demo/rule-engine.yaml \
 WORKFLOW_RULES=config/profiles/demo/workflow-rules.yaml \
-go run ./cmd/service-workflow
+go run ./cmd/go-service-platform
 ```
 
 ## Runtime Configuration
@@ -80,7 +80,7 @@ adapters:
     channel: "test-channel-1"
   badgedb:
     enabled: false
-    path: "/tmp/service-workflow-badges.db"
+    path: "/tmp/go-service-platform-badges.db"
 ```
 
 ### Admin Fields
@@ -167,7 +167,16 @@ workflows:
 action_merge:
   dedup: true
   order: priority
+
+execution:
+  timeout: "10s"
+  retry:
+    max_attempts: 1
 ```
+
+The repository profiles also carry a `dispatch` block that controls concurrent event processing, per-key ordering, queue backpressure, and event deduplication; see [Concurrent Dispatch and Deduplication](rule-engine.md#concurrent-dispatch-and-deduplication). Because deduplication is enabled there, sending the same event `id` twice within ten minutes processes it once; change the `id` when resending a test event.
+
+The `execution` block sets the default per-attempt timeout and retry policy for every action; see [Timeouts and Retries](rule-engine.md#timeouts-and-retries). Omitting it means no timeout and a single attempt.
 
 The demo profile adds the `confluence` provider and uses `or` composition. Supported modes are:
 
@@ -217,6 +226,8 @@ Rule behavior:
 - A rule with no conditions matches every message for its workflow.
 - Every rule requires at least one action.
 - Every action requires an `executor`.
+- An action may set `timeout` and `retry` to override the engine `execution` defaults.
+- Conditions support comparison operators and `any` / `all` / `not` groups over the fixed message fields and `payload.<path>` / `metadata.<path>`; see [Conditions](rule-engine.md#conditions).
 - Referencing an executor that was not registered fails pipeline startup.
 
 ## Strict Validation Examples

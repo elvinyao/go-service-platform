@@ -406,7 +406,7 @@ Select files explicitly in deployment manifests:
 RUNTIME_CONFIG=/etc/service/runtime.yaml \
 RULE_ENGINE_CONFIG=/etc/service/rule-engine.yaml \
 WORKFLOW_RULES=/etc/service/workflow-rules.yaml \
-./service-workflow
+./go-service-platform
 ```
 
 The reference runtime supports environment overrides documented in `docs/configuration.md`. An application embedding only `pkg/pipeline` owns its own configuration layer.

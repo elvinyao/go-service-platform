@@ -23,25 +23,84 @@ func ValidateRuleSet(ruleSet RuleSet) error {
 			return fmt.Errorf("%s.actions is required", prefix)
 		}
 		for conditionIndex, condition := range rule.Conditions {
-			conditionPrefix := fmt.Sprintf("%s.conditions[%d]", prefix, conditionIndex)
-			if !validConditionField(condition.Field) {
-				return fmt.Errorf("%s.field %q is invalid", conditionPrefix, condition.Field)
-			}
-			switch condition.Op {
-			case OpEq, OpContains:
-			case OpRegex:
-				if _, err := regexp.Compile(normalizeValue(condition.Value)); err != nil {
-					return fmt.Errorf("%s.value regex is invalid: %w", conditionPrefix, err)
-				}
-			default:
-				return fmt.Errorf("%s.op %q is invalid", conditionPrefix, condition.Op)
+			if err := validateCondition(fmt.Sprintf("%s.conditions[%d]", prefix, conditionIndex), condition); err != nil {
+				return err
 			}
 		}
 		for actionIndex, action := range rule.Actions {
+			actionPrefix := fmt.Sprintf("%s.actions[%d]", prefix, actionIndex)
 			if action.Executor == "" {
-				return fmt.Errorf("%s.actions[%d].executor is required", prefix, actionIndex)
+				return fmt.Errorf("%s.executor is required", actionPrefix)
+			}
+			if err := validateExecutionSettings(actionPrefix, action.Timeout, action.Retry); err != nil {
+				return err
 			}
 		}
+	}
+	return nil
+}
+
+// validateCondition checks one leaf comparison or logical group, recursively.
+func validateCondition(prefix string, condition Condition) error {
+	groups := 0
+	if len(condition.All) > 0 {
+		groups++
+	}
+	if len(condition.Any) > 0 {
+		groups++
+	}
+	if condition.Not != nil {
+		groups++
+	}
+	if groups > 1 {
+		return fmt.Errorf("%s must use only one of all, any, or not", prefix)
+	}
+	if groups == 1 {
+		if condition.Field != "" || condition.Op != "" || condition.Value != nil || condition.IgnoreCase {
+			return fmt.Errorf("%s must not combine all, any, or not with field, op, value, or ignore_case", prefix)
+		}
+		for i, nested := range condition.All {
+			if err := validateCondition(fmt.Sprintf("%s.all[%d]", prefix, i), nested); err != nil {
+				return err
+			}
+		}
+		for i, nested := range condition.Any {
+			if err := validateCondition(fmt.Sprintf("%s.any[%d]", prefix, i), nested); err != nil {
+				return err
+			}
+		}
+		if condition.Not != nil {
+			return validateCondition(prefix+".not", *condition.Not)
+		}
+		return nil
+	}
+
+	if condition.Field == "" {
+		return fmt.Errorf("%s.field is required", prefix)
+	}
+	if !validConditionField(condition.Field) {
+		return fmt.Errorf("%s.field %q is invalid", prefix, condition.Field)
+	}
+	switch condition.Op {
+	case OpEq, OpNe, OpContains, OpNotContains, OpPrefix, OpSuffix:
+	case OpExists, OpNotExists:
+		if condition.Value != nil {
+			return fmt.Errorf("%s.value must be omitted for op %q", prefix, condition.Op)
+		}
+	case OpRegex:
+		if _, err := regexp.Compile(normalizeValue(condition.Value)); err != nil {
+			return fmt.Errorf("%s.value regex is invalid: %w", prefix, err)
+		}
+	case OpIn, OpNotIn:
+		if elements, ok := listElements(condition.Value); !ok || len(elements) == 0 {
+			return fmt.Errorf("%s.value must be a non-empty list for op %q", prefix, condition.Op)
+		}
+	case OpGt, OpGte, OpLt, OpLte:
+		if _, ok := toNumber(condition.Value); !ok {
+			return fmt.Errorf("%s.value must be a number for op %q", prefix, condition.Op)
+		}
+	default:
+		return fmt.Errorf("%s.op %q is invalid", prefix, condition.Op)
 	}
 	return nil
 }
@@ -95,10 +154,13 @@ func validConditionField(field string) bool {
 		return true
 	}
 
-	if !strings.HasPrefix(field, "metadata.") {
-		return false
+	path, ok := strings.CutPrefix(field, "metadata.")
+	if !ok {
+		if path, ok = strings.CutPrefix(field, "payload."); !ok {
+			return false
+		}
 	}
-	for _, segment := range strings.Split(strings.TrimPrefix(field, "metadata."), ".") {
+	for _, segment := range strings.Split(path, ".") {
 		if segment == "" {
 			return false
 		}

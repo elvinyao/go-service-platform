@@ -62,6 +62,7 @@ The reference runtime lives under `cmd/` and `internal/`. The design specificati
 The `../examples/` directory is executable documentation:
 
 - `basic-rule-pipeline`: smallest in-process example
+- `im-bot`: chat-bot event routing with payload conditions and retries
 - `http-event-gateway`: custom HTTP input with selectable YAML rules
 - `custom-executor`: application-owned executor
 - `websocket-to-log`: WebSocket input with built-in executors

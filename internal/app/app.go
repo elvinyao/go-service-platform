@@ -331,8 +331,8 @@ func setupMessageListeners(ctx context.Context, serviceManager *manager.ServiceM
 
 		websocketServiceA.OnMessage(func(msg ruleengine.Message) {
 			msgCtx := appctx.NewContext(ctx)
-			if err := workflowEngine.ProcessMessage(msgCtx, msg); err != nil {
-				logger.WithContextError(msgCtx, err).Errorf("Error dispatching message: %+v", msg)
+			if err := workflowEngine.Submit(msgCtx, msg); err != nil {
+				logger.WithContextError(msgCtx, err).Warnf("Message type=%s id=%s was not queued", msg.Type, msg.ID)
 			}
 		})
 

@@ -14,7 +14,7 @@ services:
       retries: 30
       start_period: 1s
 
-  service-workflow:
+  go-service-platform:
     build:
       context: .
     environment:

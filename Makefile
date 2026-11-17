@@ -24,14 +24,14 @@ verify: test test-fake vet vet-fake build build-fake
 
 build:
 	mkdir -p bin
-	go build -o bin/service-workflow ./cmd/service-workflow
+	go build -o bin/go-service-platform ./cmd/go-service-platform
 
 build-fake:
 	mkdir -p bin
 	cd fake-server && go build -o ../bin/fake-server ./cmd/fake-server
 
 run:
-	go run ./cmd/service-workflow
+	go run ./cmd/go-service-platform
 
 fake-server:
 	cd fake-server && go run ./cmd/fake-server
@@ -57,7 +57,7 @@ dev: build-fake
 	RUNTIME_CONFIG=config/profiles/demo/runtime.yaml \
 	RULE_ENGINE_CONFIG=config/profiles/demo/rule-engine.yaml \
 	WORKFLOW_RULES=config/profiles/demo/workflow-rules.yaml \
-	go run ./cmd/service-workflow
+	go run ./cmd/go-service-platform
 
 clean:
 	rm -rf bin

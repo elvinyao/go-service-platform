@@ -3,6 +3,8 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -314,5 +316,63 @@ func TestHTTPExecutorRequiresURL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "params.url") {
 		t.Fatalf("error = %q, want params.url", err.Error())
+	}
+}
+
+func TestPermanentMarksErrorsAsNotRetryable(t *testing.T) {
+	if Permanent(nil) != nil {
+		t.Fatalf("Permanent(nil) should stay nil")
+	}
+	base := errors.New("bad params")
+	wrapped := fmt.Errorf("execute: %w", Permanent(base))
+	if !IsPermanent(wrapped) {
+		t.Fatalf("wrapped permanent error should be permanent")
+	}
+	if !errors.Is(wrapped, base) || wrapped.Error() != "execute: bad params" {
+		t.Fatalf("permanent error should preserve the cause, got %v", wrapped)
+	}
+	if IsPermanent(base) || IsPermanent(nil) {
+		t.Fatalf("plain and nil errors are not permanent")
+	}
+}
+
+func TestHTTPExecutorClassifiesRetryableStatuses(t *testing.T) {
+	tests := []struct {
+		status    int
+		permanent bool
+	}{
+		{http.StatusBadRequest, true},
+		{http.StatusNotFound, true},
+		{http.StatusRequestTimeout, false},
+		{http.StatusTooManyRequests, false},
+		{http.StatusBadGateway, false},
+	}
+	for _, tt := range tests {
+		client := &http.Client{Transport: executorRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return executorHTTPResponse(request, tt.status, "nope"), nil
+		})}
+		err := NewHTTPExecutorWithClient(client).Execute(context.Background(), ruleengine.Message{}, ruleengine.Action{
+			Params: map[string]interface{}{"url": "https://service.example/events"},
+		})
+		if err == nil || IsPermanent(err) != tt.permanent {
+			t.Fatalf("status %d: err = %v, permanent = %v, want %v", tt.status, err, IsPermanent(err), tt.permanent)
+		}
+	}
+
+	err := NewHTTPExecutor().Execute(context.Background(), ruleengine.Message{}, ruleengine.Action{})
+	if !IsPermanent(err) {
+		t.Fatalf("missing url should be permanent, got %v", err)
+	}
+}
+
+func TestRenderTemplateExposesPayload(t *testing.T) {
+	got, err := RenderTemplate("channel={{.Payload.channel.id}}", ruleengine.Message{
+		Payload: map[string]interface{}{"channel": map[string]interface{}{"id": "C1"}},
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got != "channel=C1" {
+		t.Fatalf("rendered = %q", got)
 	}
 }

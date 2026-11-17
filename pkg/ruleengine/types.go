@@ -2,10 +2,24 @@ package ruleengine
 
 import "time"
 
+// Condition operators. A leaf condition whose field is absent from the message
+// never matches, except OpNotExists, which matches only then.
 const (
-	OpEq       = "eq"
-	OpContains = "contains"
-	OpRegex    = "regex"
+	OpEq          = "eq"
+	OpNe          = "ne"
+	OpContains    = "contains"
+	OpNotContains = "not_contains"
+	OpPrefix      = "prefix"
+	OpSuffix      = "suffix"
+	OpRegex       = "regex"
+	OpIn          = "in"
+	OpNotIn       = "not_in"
+	OpExists      = "exists"
+	OpNotExists   = "not_exists"
+	OpGt          = "gt"
+	OpGte         = "gte"
+	OpLt          = "lt"
+	OpLte         = "lte"
 )
 
 const (
@@ -19,10 +33,35 @@ const (
 	ActionOrderPriority = "priority"
 )
 
+// Condition is either a leaf comparison (Field, Op, Value) or exactly one
+// logical group (All, Any, or Not) over nested conditions.
 type Condition struct {
-	Field string      `yaml:"field" json:"field"`
-	Op    string      `yaml:"op" json:"op"`
-	Value interface{} `yaml:"value" json:"value"`
+	Field string      `yaml:"field,omitempty" json:"field,omitempty"`
+	Op    string      `yaml:"op,omitempty" json:"op,omitempty"`
+	Value interface{} `yaml:"value,omitempty" json:"value,omitempty"`
+	// IgnoreCase makes string comparisons of a leaf condition case-insensitive.
+	IgnoreCase bool `yaml:"ignore_case,omitempty" json:"ignore_case,omitempty"`
+
+	All []Condition `yaml:"all,omitempty" json:"all,omitempty"`
+	Any []Condition `yaml:"any,omitempty" json:"any,omitempty"`
+	Not *Condition  `yaml:"not,omitempty" json:"not,omitempty"`
+}
+
+// RetryPolicy controls how the pipeline retries a failed action.
+type RetryPolicy struct {
+	// MaxAttempts is the total number of attempts, including the first one.
+	MaxAttempts int `yaml:"max_attempts" json:"max_attempts"`
+	// Backoff is the wait before the second attempt; it doubles on each retry.
+	Backoff string `yaml:"backoff,omitempty" json:"backoff,omitempty"`
+	// MaxBackoff caps the doubled backoff. Empty means uncapped.
+	MaxBackoff string `yaml:"max_backoff,omitempty" json:"max_backoff,omitempty"`
+}
+
+// ExecutionConfig holds engine-wide defaults for running actions.
+type ExecutionConfig struct {
+	// Timeout bounds each attempt of an action. Empty or "0s" means no limit.
+	Timeout string      `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Retry   RetryPolicy `yaml:"retry" json:"retry"`
 }
 
 type Action struct {
@@ -30,6 +69,10 @@ type Action struct {
 	Executor string                 `yaml:"executor" json:"executor"`
 	Priority int                    `yaml:"priority" json:"priority"`
 	Params   map[string]interface{} `yaml:"params" json:"params"`
+	// Timeout overrides the engine execution timeout for this action.
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	// Retry replaces the engine retry policy for this action.
+	Retry *RetryPolicy `yaml:"retry,omitempty" json:"retry,omitempty"`
 }
 
 type Rule struct {
@@ -50,6 +93,10 @@ type RuleSet struct {
 	LastError string    `json:"last_error,omitempty"`
 }
 
+// Message is the event evaluated by rules. The fixed fields cover the common
+// envelope; Payload carries any event-specific data (for example an IM event's
+// channel, mentions, or thread) and is addressable as "payload.<path>" in
+// conditions and as .Payload in templates.
 type Message struct {
 	ID        string                 `json:"id"`
 	Type      string                 `json:"type"`
@@ -57,6 +104,7 @@ type Message struct {
 	UserID    string                 `json:"user_id"`
 	Timestamp time.Time              `json:"timestamp"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	Payload   map[string]interface{} `json:"payload,omitempty"`
 }
 
 type ActionMergeConfig struct {
@@ -74,9 +122,41 @@ type WorkflowPolicy struct {
 	ActionMerge   ActionMergeConfig `yaml:"action_merge" json:"action_merge"`
 }
 
+// Queue-full behaviors for DispatchConfig.QueueFull.
+const (
+	QueueFullBlock = "block"
+	QueueFullDrop  = "drop"
+)
+
+// DedupConfig controls dropping of redelivered events by Message.ID.
+type DedupConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// TTL is how long an event ID is remembered.
+	TTL string `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+	// MaxEntries bounds the remembered IDs; the oldest are forgotten first.
+	MaxEntries int `yaml:"max_entries,omitempty" json:"max_entries,omitempty"`
+}
+
+// DispatchConfig controls concurrent event processing by pipeline.Dispatcher.
+type DispatchConfig struct {
+	// Workers is the number of events processed at the same time.
+	Workers int `yaml:"workers" json:"workers"`
+	// QueueSize is how many events may wait per worker.
+	QueueSize int `yaml:"queue_size" json:"queue_size"`
+	// OrderingKey is a message field such as "user_id" or "payload.channel.id".
+	// Events with the same value are processed one at a time, in arrival order.
+	// Empty, or absent from an event, means no ordering guarantee.
+	OrderingKey string `yaml:"ordering_key,omitempty" json:"ordering_key,omitempty"`
+	// QueueFull is "block" (apply backpressure to the input) or "drop".
+	QueueFull string      `yaml:"queue_full" json:"queue_full"`
+	Dedup     DedupConfig `yaml:"dedup" json:"dedup"`
+}
+
 type EngineConfig struct {
 	Workflows   []WorkflowPolicy  `yaml:"workflows" json:"workflows"`
 	ActionMerge ActionMergeConfig `yaml:"action_merge" json:"action_merge"`
+	Execution   ExecutionConfig   `yaml:"execution" json:"execution"`
+	Dispatch    DispatchConfig    `yaml:"dispatch" json:"dispatch"`
 }
 
 type ExecutionPlan struct {

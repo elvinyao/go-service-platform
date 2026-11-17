@@ -39,14 +39,14 @@ func (e *HTTPExecutor) Execute(ctx context.Context, msg ruleengine.Message, acti
 
 	url, _ := action.Params["url"].(string)
 	if url == "" {
-		return fmt.Errorf("http action requires params.url")
+		return Permanent(fmt.Errorf("http action requires params.url"))
 	}
 
 	body := ""
 	if tmpl, _ := action.Params["body_template"].(string); tmpl != "" {
 		rendered, err := RenderTemplate(tmpl, msg)
 		if err != nil {
-			return fmt.Errorf("render http body template: %w", err)
+			return Permanent(fmt.Errorf("render http body template: %w", err))
 		}
 		body = rendered
 	}
@@ -74,7 +74,7 @@ func (e *HTTPExecutor) Execute(ctx context.Context, msg ruleengine.Message, acti
 
 	req, err := http.NewRequestWithContext(requestCtx, method, url, bytes.NewBufferString(body))
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		return Permanent(fmt.Errorf("create request: %w", err))
 	}
 
 	if headers, ok := action.Params["headers"].(map[string]interface{}); ok {
@@ -101,5 +101,18 @@ func (e *HTTPExecutor) Execute(ctx context.Context, msg ruleengine.Message, acti
 	}
 
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	return fmt.Errorf("http executor non-2xx status=%d body=%s", resp.StatusCode, string(b))
+	statusErr := fmt.Errorf("http executor non-2xx status=%d body=%s", resp.StatusCode, string(b))
+	if isPermanentHTTPStatus(resp.StatusCode) {
+		return Permanent(statusErr)
+	}
+	return statusErr
+}
+
+// isPermanentHTTPStatus reports client errors that a retry cannot fix. Request
+// timeouts and rate limits stay retryable.
+func isPermanentHTTPStatus(status int) bool {
+	if status == http.StatusRequestTimeout || status == http.StatusTooManyRequests {
+		return false
+	}
+	return status >= 400 && status < 500
 }

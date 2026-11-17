@@ -51,7 +51,7 @@ Built-in executors use Go templates:
 template: "type={{.Type}} id={{.ID}} content={{.Content}}"
 ```
 
-Available values are `.ID`, `.Type`, `.Content`, `.UserID`, `.Timestamp`, and `.Metadata`. Invalid template syntax is returned as an action error.
+Available values are `.ID`, `.Type`, `.Content`, `.UserID`, `.Timestamp`, `.Metadata`, and `.Payload` (for example `{{.Payload.channel.name}}`). Invalid template syntax is returned as an action error.
 
 ## Log Executor
 
@@ -79,7 +79,7 @@ actions:
       url: "http://localhost:9000/events"
       timeout_ms: 3000
       headers:
-        X-Source: service-workflow
+        X-Source: go-service-platform
       body_template: '{"id":"{{.ID}}","type":"{{.Type}}"}'
 ```
 
@@ -126,6 +126,19 @@ Keep executors stateless when practical. If an executor owns shared state, make 
 ## Failure Semantics
 
 The pipeline attempts every action in the plan even if an earlier action fails. It then returns one `pipeline.ExecutionError` containing all failures. This is useful for independent notifications, but it is not a transaction.
+
+Each action runs under the engine's timeout and retry policy, described in [Timeouts and Retries](rule-engine.md#timeouts-and-retries). Two things make an executor work well with it:
+
+- Honor the context. The per-attempt timeout is delivered as a context deadline, so an executor that ignores `ctx` cannot be interrupted.
+- Mark errors that a retry cannot fix. Wrap them with `executor.Permanent` so the engine stops retrying immediately:
+
+```go
+if url == "" {
+    return executor.Permanent(errors.New("action requires params.url"))
+}
+```
+
+The built-in `http` executor treats invalid parameters and `4xx` responses as permanent, except `408` and `429`; network errors and `5xx` responses stay retryable. A panic in an executor is recovered and reported as a permanent failure of that action.
 
 For operations that must be atomic, place the transaction inside one executor or build a domain-specific executor that owns compensation and idempotency.
 

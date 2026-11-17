@@ -165,7 +165,7 @@ func TestYAMLProviderValidatesRequiredFields(t *testing.T) {
 		{name: "unsupported condition field", data: `rules:
   - id: r1
     conditions:
-      - field: payload.status
+      - field: body.status
         op: eq
         value: ready
     actions:

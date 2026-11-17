@@ -5,6 +5,7 @@ Run commands from the repository root. Every Go program in this directory import
 | Example | Purpose | Dependencies |
 | --- | --- | --- |
 | `basic-rule-pipeline` | Smallest static rule pipeline | None |
+| `im-bot` | Chat-bot event routing: commands, mentions, reactions, threads, retries | None |
 | `http-event-gateway` | YAML rules behind a local HTTP input | None |
 | `custom-executor` | Application-owned action implementation | None |
 | `websocket-to-log` | YAML pipeline with WebSocket input | `fake-server` |
@@ -96,6 +97,31 @@ curl -s -X POST http://127.0.0.1:18081/events \
 ```
 
 The logs first report the raw deployment and then the generated `DEPLOY_AUDIT` event. This example assumes the default `127.0.0.1:18081` address.
+
+## IM Bot
+
+Route chat events to bot actions with `examples/rules/im-bot.yaml`:
+
+```bash
+go run ./examples/im-bot
+```
+
+The program feeds six sample events through the pipeline and prints what a real bot would post:
+
+```text
+evt-1 message from alice: "!Deploy billing-api"
+  reply attempt failed (chat API temporarily unavailable); the engine retries
+  reply to #ops: Deploy requested by <@alice>: !Deploy billing-api
+  matched rule command_deploy
+evt-2 message from bob: "hey bot, what can you do?"
+  reply to #general: Hi <@bob>, try `!deploy <service>`.
+  matched rule mention_or_direct_help
+...
+evt-6 message from frank: "lunch?"
+  no rule matched
+```
+
+The rules show a case-insensitive command prefix, a mention-or-direct-message group, a reaction allow-list, and a numeric thread threshold, all reading event data from `payload`. The local `reply` executor fails its first call on purpose so the action-level `retry` policy is visible, and marks configuration mistakes with `executor.Permanent`. Replace it with a client for your chat service to build a real bot.
 
 ## Custom Executor
 
