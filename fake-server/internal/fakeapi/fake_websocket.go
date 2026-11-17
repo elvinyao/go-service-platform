@@ -119,7 +119,7 @@ func (s *FakeWebSocketServer) Stop() error {
 	}
 	s.state = ServerStateStopping
 	for conn := range s.clients {
-		_ = conn.Close()
+		closeClientGracefully(conn)
 	}
 	s.clients = make(map[*websocket.Conn]bool)
 	server := s.server
@@ -137,6 +137,17 @@ func (s *FakeWebSocketServer) Stop() error {
 	s.state = ServerStateStopped
 	s.mu.Unlock()
 	return err
+}
+
+// closeClientGracefully tells the client the server is going away before
+// closing, so clients see a clean close (1001) instead of an abnormal one (1006).
+func closeClientGracefully(conn *websocket.Conn) {
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down"),
+		time.Now().Add(time.Second),
+	)
+	_ = conn.Close()
 }
 
 // handleWebSocket handles WebSocket connections

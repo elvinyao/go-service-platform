@@ -25,7 +25,7 @@
       "env": {
         "RUNTIME_CONFIG": "config/profiles/demo/runtime.yaml",
         "RULE_ENGINE_CONFIG": "config/profiles/demo/rule-engine.yaml",
-        "WORKFLOW_RULES": "config/workflow-rules.yaml",
+        "WORKFLOW_RULES": "config/profiles/demo/workflow-rules.yaml",
         "ADMIN_ADDR": "127.0.0.1:18080"
       }
     },

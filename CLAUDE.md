@@ -92,7 +92,7 @@ Key engine invariants:
 Configuration is split across three files (selected via `RUNTIME_CONFIG`, `RULE_ENGINE_CONFIG`, and `WORKFLOW_RULES`):
 - `config/runtime.yaml` (or `config/profiles/demo/runtime.yaml`): admin server timeouts/address, WebSocket input, and adapter enablement. (`config/config.yaml` is an unused migration stub.)
 - `config/rule-engine.yaml` (or `config/profiles/demo/rule-engine.yaml`): workflow policies, provider lists, composition `mode`, and `action_merge`.
-- `config/workflow-rules.yaml`: local rule definitions (`eq`, `contains`, and `regex` conditions; Go `text/template` rendering via `executor.RenderTemplate` in `log` and `http` executors).
+- `config/workflow-rules.yaml` (or `config/profiles/demo/workflow-rules.yaml`, which adds a `BADGE` rule for the `db` executor): local rule definitions (`eq`, `contains`, and `regex` conditions; Go `text/template` rendering via `executor.RenderTemplate` in `log` and `http` executors).
 
 Validation is fail-fast and strict:
 - YAML loaders enforce `KnownFields(true)` and reject multi-document YAML, invalid URLs/durations, and duplicate IDs. Do not relax config validation to work around profile mismatches.

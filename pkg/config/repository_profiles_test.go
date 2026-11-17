@@ -65,17 +65,38 @@ func TestRepositoryProfilesLoadWithExpectedCapabilities(t *testing.T) {
 }
 
 func TestRepositoryWorkflowRulesLoad(t *testing.T) {
-	provider := ruleengine.NewYAMLProvider(
-		"yaml",
-		filepath.Join("..", "..", "config", "workflow-rules.yaml"),
-		ruleengine.DefaultWorkflowName,
-	)
-	if err := provider.Start(context.Background()); err != nil {
-		t.Fatalf("load repository workflow rules: %v", err)
+	tests := []struct {
+		name      string
+		path      string
+		executors []string
+	}{
+		{name: "base", path: "config/workflow-rules.yaml", executors: []string{"log"}},
+		{name: "demo", path: "config/profiles/demo/workflow-rules.yaml", executors: []string{"db", "log"}},
 	}
 
-	snapshot := provider.Snapshot(context.Background())
-	if len(snapshot.Rules) == 0 {
-		t.Fatalf("repository workflow rules are empty")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := ruleengine.NewYAMLProvider(
+				"yaml",
+				filepath.Join("..", "..", tt.path),
+				ruleengine.DefaultWorkflowName,
+			)
+			if err := provider.Start(context.Background()); err != nil {
+				t.Fatalf("load repository workflow rules: %v", err)
+			}
+
+			var executors []string
+			for _, rule := range provider.Snapshot(context.Background()).Rules {
+				for _, action := range rule.Actions {
+					if !slices.Contains(executors, action.Executor) {
+						executors = append(executors, action.Executor)
+					}
+				}
+			}
+			slices.Sort(executors)
+			if !slices.Equal(executors, tt.executors) {
+				t.Fatalf("executors = %+v, want %+v", executors, tt.executors)
+			}
+		})
 	}
 }

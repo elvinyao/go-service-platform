@@ -1,0 +1,39 @@
+version: "1"
+rules:
+  - id: yaml_log_aaa
+    workflow: WorkflowEngine
+    enabled: true
+    priority: 100
+    conditions:
+      - field: type
+        op: eq
+        value: AAA
+    actions:
+      - id: log_aaa
+        executor: log
+        priority: 100
+        params:
+          level: info
+          template: "YAML matched event type={{.Type}} id={{.ID}}"
+  - id: yaml_badge_award
+    workflow: WorkflowEngine
+    enabled: true
+    priority: 200
+    conditions:
+      - field: type
+        op: eq
+        value: BADGE
+    actions:
+      - id: badge_award
+        executor: db
+        priority: 100
+        params:
+          name: "Demo Badge"
+          description: "Awarded by the demo profile YAML rule"
+          badge_type: "demo"
+      - id: log_badge
+        executor: log
+        priority: 200
+        params:
+          level: info
+          template: "Badge awarded to user={{.UserID}} for event id={{.ID}}"

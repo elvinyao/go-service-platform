@@ -20,6 +20,7 @@ services:
     environment:
       RUNTIME_CONFIG: "/app/config/profiles/demo/runtime.yaml"
       RULE_ENGINE_CONFIG: "/app/config/profiles/demo/rule-engine.yaml"
+      WORKFLOW_RULES: "/app/config/profiles/demo/workflow-rules.yaml"
       ADMIN_ADDR: ":8080"
       WEBSOCKET_SERVER_URL: "ws://fake-server:8093"
       CONFLUENCE_API_ENDPOINT: "http://fake-server:8090"

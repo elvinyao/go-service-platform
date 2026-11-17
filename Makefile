@@ -52,9 +52,11 @@ dev: build-fake
 	done; \
 	printf '%s\n' 'Admin API: http://localhost:18080' \
 	  'Health: curl -s http://localhost:18080/health' \
-	  'Send event: curl -s -X POST http://localhost:8093/api/send -H "Content-Type: application/json" -d '\''{"id":"m1","type":"AAA","content":"hello","user_id":"u1"}'\'''; \
+	  'Send event: curl -s -X POST http://localhost:8093/api/send -H "Content-Type: application/json" -d '\''{"id":"m1","type":"AAA","content":"hello","user_id":"u1"}'\''' \
+	  'Award badge: curl -s -X POST http://localhost:8093/api/send -H "Content-Type: application/json" -d '\''{"id":"b1","type":"BADGE","content":"first badge","user_id":"u1"}'\'''; \
 	RUNTIME_CONFIG=config/profiles/demo/runtime.yaml \
 	RULE_ENGINE_CONFIG=config/profiles/demo/rule-engine.yaml \
+	WORKFLOW_RULES=config/profiles/demo/workflow-rules.yaml \
 	go run ./cmd/service-workflow
 
 clean:

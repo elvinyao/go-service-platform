@@ -220,7 +220,7 @@ func (s *FakeMattermostServer) Stop() error {
 	// Close all WebSocket connections
 	s.wsMu.Lock()
 	for conn := range s.wsClients {
-		_ = conn.Close()
+		closeClientGracefully(conn)
 	}
 	s.wsClients = make(map[*websocket.Conn]bool)
 	s.wsMu.Unlock()

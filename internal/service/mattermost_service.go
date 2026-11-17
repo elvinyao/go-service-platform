@@ -338,7 +338,7 @@ func (s *MattermostService) Stop(ctx context.Context) error {
 		cancel()
 	}
 	if connection != nil {
-		connection.Close()
+		closeWebSocketGracefully(connection)
 	}
 	if done != nil {
 		select {
