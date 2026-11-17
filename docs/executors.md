@@ -79,7 +79,7 @@ actions:
       url: "http://localhost:9000/events"
       timeout_ms: 3000
       headers:
-        X-Source: service-workflow
+        X-Source: go-service-platform
       body_template: '{"id":"{{.ID}}","type":"{{.Type}}"}'
 ```
 

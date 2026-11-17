@@ -32,7 +32,7 @@ make coverage
 make vet
 make vet-fake
 
-# Build binaries into ./bin/service-workflow and ./bin/fake-server
+# Build binaries into ./bin/go-service-platform and ./bin/fake-server
 make build
 make build-fake
 ```
@@ -66,7 +66,7 @@ make build-fake
 ### SDK vs. Reference Runtime Boundary
 
 - **`pkg/` (Public Framework SDK)**: Domain-agnostic packages (`pkg/ruleengine`, `pkg/executor`, `pkg/pipeline`, `pkg/config`, `pkg/runtime`, `pkg/health`, `pkg/logger`, `pkg/errors`, `pkg/concurrency`, `pkg/context`). Must never depend on `internal/` or demo integrations. Programs under `examples/` import only `pkg/` packages and exclude tests so `make coverage` skips them.
-- **`cmd/service-workflow/` & `internal/` (Reference Application)**: Wires `pkg/` into a runnable service runtime (`internal/app`, `internal/workflow`, `internal/manager`, `internal/service`) alongside optional demo adapters (`internal/adapters/{confluence,mattermost,badgedb}`).
+- **`cmd/go-service-platform/` & `internal/` (Reference Application)**: Wires `pkg/` into a runnable service runtime (`internal/app`, `internal/workflow`, `internal/manager`, `internal/service`) alongside optional demo adapters (`internal/adapters/{confluence,mattermost,badgedb}`).
 - **`fake-server/`**: Standalone local server emulating Confluence (`:8090`), Mattermost HTTP/WS (`:8091`/`:8092`), and an HTTP-to-WebSocket event broadcaster (`:8093`) for local runs and integration tests.
 
 ### Event Processing & Rule Composition

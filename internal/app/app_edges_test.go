@@ -217,7 +217,7 @@ func TestAppStartCleansUpWhenWorkflowConfigIsInvalid(t *testing.T) {
 	cfg.ApplyEnv()
 	cfg.Admin.Address = "127.0.0.1:0"
 
-	application := New("test-service-workflow", cfg, badConfigPath, "testdata/workflow-rules.yaml")
+	application := New("test-go-service-platform", cfg, badConfigPath, "testdata/workflow-rules.yaml")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -253,7 +253,7 @@ workflows:
 	cfg.Adapters.Mattermost.Enabled = false
 	cfg.Adapters.BadgeDB.Enabled = false
 
-	application := New("test-service-workflow", cfg, ruleConfigPath, rulesPath)
+	application := New("test-go-service-platform", cfg, ruleConfigPath, rulesPath)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

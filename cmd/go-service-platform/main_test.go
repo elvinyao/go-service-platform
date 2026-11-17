@@ -84,7 +84,7 @@ func TestMainReportsRunErrorThroughFatal(t *testing.T) {
 }
 
 func TestServiceWorkflowBinaryBuilds(t *testing.T) {
-	output := filepath.Join(t.TempDir(), "service-workflow")
+	output := filepath.Join(t.TempDir(), "go-service-platform")
 	cmd := exec.Command("go", "build", "-o", output, ".")
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()

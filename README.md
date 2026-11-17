@@ -230,7 +230,7 @@ New users should begin with [Getting Started](docs/getting-started.md), then use
 ## Project Layout
 
 ```text
-cmd/service-workflow/       Reference runtime entry point
+cmd/go-service-platform/       Reference runtime entry point
 config/                     Base and demo-profile configuration
 docs/                       Architecture and developer documentation
 examples/                   Programs using public framework packages

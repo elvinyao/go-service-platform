@@ -33,7 +33,7 @@ adapters:
     channel: "test-channel-1"
   badgedb:
     enabled: true
-    path: "/tmp/service-workflow-badges.db"
+    path: "/tmp/go-service-platform-badges.db"
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

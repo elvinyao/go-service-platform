@@ -26,4 +26,4 @@ adapters:
     channel: "test-channel-1"
   badgedb:
     enabled: false
-    path: "/tmp/service-workflow-badges.db"
+    path: "/tmp/go-service-platform-badges.db"

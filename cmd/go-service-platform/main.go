@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	appName         = "service-workflow"
+	appName         = "go-service-platform"
 	shutdownTimeout = 30 * time.Second
 )
 

@@ -97,7 +97,7 @@ BadgeDB is a concurrency-safe in-memory demo store. Its configured path is an id
 adapters:
   badgedb:
     enabled: true
-    path: "/tmp/service-workflow-badges.db"
+    path: "/tmp/go-service-platform-badges.db"
 ```
 
 Rule action:

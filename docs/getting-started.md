@@ -20,7 +20,7 @@ By the end of the tutorial, you will be able to:
 | Route chat-bot events with payload rules | `examples/im-bot` | None |
 | Experiment with YAML rules over HTTP | `examples/http-event-gateway` | None |
 | Learn how to add an action type | `examples/custom-executor` | None |
-| Study service lifecycle and admin APIs | `cmd/service-workflow` | `fake-server` |
+| Study service lifecycle and admin APIs | `cmd/go-service-platform` | `fake-server` |
 | Exercise all demo adapters | `make dev` | Started by the command |
 
 New users should complete the HTTP event gateway exercise before reading the reference runtime. It exposes the same public pipeline with fewer moving parts.
@@ -254,7 +254,7 @@ For the public framework:
 
 For the reference runtime, continue with:
 
-1. `cmd/service-workflow/main.go`
+1. `cmd/go-service-platform/main.go`
 2. `internal/app/app.go`
 3. `internal/service/websocket_service.go`
 4. `internal/workflow/workflow_engine.go`

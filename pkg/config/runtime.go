@@ -142,7 +142,7 @@ func DefaultRuntimeConfig() RuntimeConfig {
 			},
 			BadgeDB: BadgeDBAdapterConfig{
 				Enabled: false,
-				Path:    "/tmp/service-workflow-badges.db",
+				Path:    "/tmp/go-service-platform-badges.db",
 			},
 		},
 	}
