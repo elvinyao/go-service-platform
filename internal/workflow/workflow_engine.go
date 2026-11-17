@@ -165,7 +165,7 @@ func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg ruleengine.Mess
 	}
 
 	if len(plan.Actions) == 0 {
-		logger.DebugfWithContext(ctx, "No matching rules for message type=%s id=%s", msg.Type, msg.ID)
+		logger.InfofWithContext(ctx, "WorkflowEngine matched no rules for message type=%s id=%s", msg.Type, msg.ID)
 		return nil
 	}
 

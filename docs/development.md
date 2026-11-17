@@ -139,6 +139,7 @@ This enables the YAML and Confluence providers plus the Mattermost and BadgeDB e
 ```bash
 RUNTIME_CONFIG=config/profiles/demo/runtime.yaml \
 RULE_ENGINE_CONFIG=config/profiles/demo/rule-engine.yaml \
+WORKFLOW_RULES=config/profiles/demo/workflow-rules.yaml \
 go run ./cmd/service-workflow
 ```
 

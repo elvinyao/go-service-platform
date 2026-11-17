@@ -50,7 +50,7 @@ The repository intentionally has two local modes:
 | YAML-first | `make fake-server`, then `make run` | YAML | `log`, `http` | Learn and build without business-specific adapters |
 | Full demo | `make dev` | YAML, Confluence | `log`, `http`, Mattermost, BadgeDB | Exercise all reference integrations |
 
-`make run` loads `config/runtime.yaml`, `config/rule-engine.yaml`, and `config/workflow-rules.yaml`. `make dev` selects `config/profiles/demo/runtime.yaml` and `config/profiles/demo/rule-engine.yaml` while using the same YAML rules.
+`make run` loads `config/runtime.yaml`, `config/rule-engine.yaml`, and `config/workflow-rules.yaml`. `make dev` selects `config/profiles/demo/runtime.yaml`, `config/profiles/demo/rule-engine.yaml`, and `config/profiles/demo/workflow-rules.yaml`; the demo rules add a `BADGE` event rule that exercises the BadgeDB `db` executor.
 
 Run the equivalent full demo with Docker:
 

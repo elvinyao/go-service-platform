@@ -243,7 +243,11 @@ func (s *WebSocketService) connectLoop(ctx context.Context, generation uint64, s
 					logger.DebugfWithContext(ctx, "WebSocket read loop exiting during shutdown: %v", err)
 					stopped = true
 				default:
-					logger.WarnfWithContext(ctx, "WebSocket read error: %v", err)
+					if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+						logger.InfofWithContext(ctx, "WebSocket closed by server: %v", err)
+					} else {
+						logger.WarnfWithContext(ctx, "WebSocket read error: %v", err)
+					}
 				}
 				break
 			}
@@ -291,6 +295,17 @@ func (s *WebSocketService) connectLoop(ctx context.Context, generation uint64, s
 	}
 }
 
+// closeWebSocketGracefully sends a normal-closure frame before closing so the
+// peer observes a clean shutdown (1000) instead of an abnormal one (1006).
+func closeWebSocketGracefully(conn *websocket.Conn) {
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+		time.Now().Add(time.Second),
+	)
+	_ = conn.Close()
+}
+
 func webSocketEndpoint(cfg WebSocketConfig) string {
 	return strings.TrimRight(cfg.ServerURL, "/") + cfg.Path
 }
@@ -321,7 +336,7 @@ func (s *WebSocketService) Stop(ctx context.Context) error {
 		session.signalStop()
 	}
 	if conn != nil {
-		_ = conn.Close()
+		closeWebSocketGracefully(conn)
 	}
 
 	if session != nil {

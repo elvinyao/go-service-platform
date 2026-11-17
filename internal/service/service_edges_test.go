@@ -655,3 +655,45 @@ func TestServiceExplicitStateTransitions(t *testing.T) {
 		t.Fatalf("initial ws state = %s, want disconnected", ws.ConnectionState())
 	}
 }
+
+func TestWebSocketServiceStopSendsNormalCloseFrame(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	closeErr := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		_, _, err = connection.ReadMessage()
+		closeErr <- err
+	}))
+	defer server.Close()
+
+	svc := NewWebSocketService("ws", "wf", WebSocketConfig{
+		ServerURL:         "ws" + strings.TrimPrefix(server.URL, "http"),
+		ReconnectInterval: time.Hour,
+	}, "test")
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for svc.ConnectionState() != WSStateConnected {
+		if time.Now().After(deadline) {
+			t.Fatalf("WebSocket service did not connect")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := svc.Stop(context.Background()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	select {
+	case err := <-closeErr:
+		if !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+			t.Fatalf("server read error = %v, want normal closure (1000)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("server did not observe the connection closing")
+	}
+}
