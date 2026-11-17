@@ -72,6 +72,7 @@ func TestRepositoryWorkflowRulesLoad(t *testing.T) {
 	}{
 		{name: "base", path: "config/workflow-rules.yaml", executors: []string{"log"}},
 		{name: "demo", path: "config/profiles/demo/workflow-rules.yaml", executors: []string{"db", "log"}},
+		{name: "im-bot example", path: "examples/rules/im-bot.yaml", executors: []string{"log", "reply"}},
 	}
 
 	for _, tt := range tests {

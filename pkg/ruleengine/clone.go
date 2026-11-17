@@ -16,8 +16,7 @@ func cloneRule(in Rule) Rule {
 	out := in
 	out.Conditions = make([]Condition, len(in.Conditions))
 	for i, condition := range in.Conditions {
-		out.Conditions[i] = condition
-		out.Conditions[i].Value = cloneRuleValue(condition.Value)
+		out.Conditions[i] = cloneCondition(condition)
 	}
 	out.Actions = make([]Action, len(in.Actions))
 	for i, action := range in.Actions {
@@ -26,8 +25,35 @@ func cloneRule(in Rule) Rule {
 	return out
 }
 
+func cloneCondition(in Condition) Condition {
+	out := in
+	out.Value = cloneRuleValue(in.Value)
+	out.All = cloneConditions(in.All)
+	out.Any = cloneConditions(in.Any)
+	if in.Not != nil {
+		not := cloneCondition(*in.Not)
+		out.Not = &not
+	}
+	return out
+}
+
+func cloneConditions(in []Condition) []Condition {
+	if in == nil {
+		return nil
+	}
+	out := make([]Condition, len(in))
+	for i, condition := range in {
+		out[i] = cloneCondition(condition)
+	}
+	return out
+}
+
 func cloneAction(in Action) Action {
 	out := in
+	if in.Retry != nil {
+		retry := *in.Retry
+		out.Retry = &retry
+	}
 	if in.Params != nil {
 		out.Params = cloneRuleValue(in.Params).(map[string]interface{})
 	}

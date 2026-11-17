@@ -1,0 +1,81 @@
+version: "1"
+rules:
+  # "!deploy <service>" typed in any channel, in any letter case.
+  - id: command_deploy
+    priority: 10
+    conditions:
+      - field: type
+        op: eq
+        value: message
+      - field: content
+        op: prefix
+        value: "!deploy"
+        ignore_case: true
+    actions:
+      - id: reply_deploy
+        executor: reply
+        retry:
+          max_attempts: 3
+          backoff: "50ms"
+        params:
+          template: "Deploy requested by <@{{.UserID}}>: {{.Content}}"
+
+  # The bot was mentioned, or the message is a direct message, and it is not
+  # one of the "!" commands handled above.
+  - id: mention_or_direct_help
+    priority: 20
+    conditions:
+      - field: type
+        op: eq
+        value: message
+      - any:
+          - field: payload.mentions
+            op: contains
+            value: bot
+          - field: payload.channel.type
+            op: eq
+            value: direct
+      - not:
+          field: content
+          op: prefix
+          value: "!"
+    actions:
+      - id: reply_help
+        executor: reply
+        params:
+          template: "Hi <@{{.UserID}}>, try `!deploy <service>`."
+
+  # A thumbs-up or check-mark reaction on a message in an approvals channel.
+  - id: approval_reaction
+    priority: 30
+    conditions:
+      - field: type
+        op: eq
+        value: reaction_added
+      - field: payload.reaction
+        op: in
+        value: ["+1", "white_check_mark"]
+      - field: payload.channel.name
+        op: suffix
+        value: "-approvals"
+    actions:
+      - id: log_approval
+        executor: log
+        params:
+          level: info
+          template: "approval by {{.UserID}} in {{.Payload.channel.name}}"
+
+  # Long threads get escalated once.
+  - id: busy_thread
+    priority: 40
+    conditions:
+      - field: payload.thread.reply_count
+        op: gte
+        value: 20
+      - field: payload.thread.escalated
+        op: not_exists
+    actions:
+      - id: reply_escalate
+        executor: reply
+        params:
+          template: "This thread has {{.Payload.thread.reply_count}} replies; paging the on-call."

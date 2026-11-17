@@ -132,6 +132,9 @@ func (c EngineConfig) Validate() error {
 	if err := validateActionMerge("action_merge", c.ActionMerge); err != nil {
 		return err
 	}
+	if err := validateExecutionSettings("execution", c.Execution.Timeout, &c.Execution.Retry); err != nil {
+		return err
+	}
 
 	workflowNames := make(map[string]struct{}, len(c.Workflows))
 	for i, workflow := range c.Workflows {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"regexp"
 	"sort"
 	"sync"
 	"time"
@@ -182,16 +181,8 @@ func validateRule(rule yamlRule, idx int) error {
 		return fmt.Errorf("rules[%d].actions is required", idx)
 	}
 	for ci, c := range rule.Conditions {
-		if c.Field == "" {
-			return fmt.Errorf("rules[%d].conditions[%d].field is required", idx, ci)
-		}
-		if c.Op != OpEq && c.Op != OpContains && c.Op != OpRegex {
-			return fmt.Errorf("rules[%d].conditions[%d].op is invalid", idx, ci)
-		}
-		if c.Op == OpRegex {
-			if _, err := regexp.Compile(normalizeValue(c.Value)); err != nil {
-				return fmt.Errorf("rules[%d].conditions[%d].value regex invalid: %w", idx, ci, err)
-			}
+		if err := validateCondition(fmt.Sprintf("rules[%d].conditions[%d]", idx, ci), c); err != nil {
+			return err
 		}
 	}
 

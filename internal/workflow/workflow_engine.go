@@ -174,7 +174,7 @@ func (w *WorkflowEngine) ProcessMessage(ctx context.Context, msg ruleengine.Mess
 	if processErr != nil {
 		execErrs := make([]string, 0, len(executionError.Failures))
 		for idx, failure := range executionError.Failures {
-			execErrs = append(execErrs, fmt.Sprintf("action[%d] id=%s executor=%s failed: %v", idx, failure.ActionID, failure.Executor, failure.Err))
+			execErrs = append(execErrs, fmt.Sprintf("action[%d] id=%s executor=%s failed after %d attempt(s): %v", idx, failure.ActionID, failure.Executor, failure.Attempts, failure.Err))
 		}
 		return errors.New(errors.TypePartialFailure, "workflow execution had partial failures", nil).
 			WithField("errors", execErrs).

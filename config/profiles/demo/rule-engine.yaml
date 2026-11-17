@@ -14,3 +14,8 @@ workflows:
 action_merge:
   dedup: true
   order: priority
+
+execution:
+  timeout: "10s"
+  retry:
+    max_attempts: 1

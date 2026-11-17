@@ -60,6 +60,8 @@ type Snapshot struct {
 type ActionFailure struct {
 	ActionID string
 	Executor string
+	// Attempts is how many times the action ran before the engine gave up.
+	Attempts int
 	Err      error
 }
 
@@ -305,10 +307,11 @@ func (e *Engine) Process(ctx context.Context, workflow string, message ruleengin
 			})
 			continue
 		}
-		if err := actionExecutor.Execute(ctx, message, action); err != nil {
+		if attempts, err := e.executeAction(ctx, actionExecutor, message, action); err != nil {
 			failures = append(failures, ActionFailure{
 				ActionID: action.ID,
 				Executor: action.Executor,
+				Attempts: attempts,
 				Err:      err,
 			})
 		}
@@ -317,6 +320,55 @@ func (e *Engine) Process(ctx context.Context, workflow string, message ruleengin
 		return plan, &ExecutionError{Failures: failures}
 	}
 	return plan, nil
+}
+
+// executeAction runs one action under the resolved timeout and retry policy.
+// It stops early on success, a permanent error, or caller cancellation.
+func (e *Engine) executeAction(ctx context.Context, actionExecutor executor.Executor, message ruleengine.Message, action ruleengine.Action) (int, error) {
+	policy, err := e.config.ResolveExecution(action)
+	if err != nil {
+		return 0, executor.Permanent(fmt.Errorf("resolve execution policy: %w", err))
+	}
+
+	backoff := policy.Backoff
+	for attempt := 1; ; attempt++ {
+		err := runAttempt(ctx, actionExecutor, message, action, policy.Timeout)
+		if err == nil {
+			return attempt, nil
+		}
+		if attempt >= policy.MaxAttempts || executor.IsPermanent(err) || ctx.Err() != nil {
+			return attempt, err
+		}
+		if backoff > 0 {
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return attempt, err
+			case <-timer.C:
+			}
+			backoff *= 2
+			if policy.MaxBackoff > 0 && backoff > policy.MaxBackoff {
+				backoff = policy.MaxBackoff
+			}
+		}
+	}
+}
+
+// runAttempt executes one attempt, bounding it with timeout and converting an
+// executor panic into a permanent error so one bad action cannot crash the host.
+func runAttempt(ctx context.Context, actionExecutor executor.Executor, message ruleengine.Message, action ruleengine.Action, timeout time.Duration) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = executor.Permanent(fmt.Errorf("executor panicked: %v", recovered))
+		}
+	}()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	return actionExecutor.Execute(ctx, message, action)
 }
 
 // Snapshot returns the current composition, provider snapshots, and executor types.

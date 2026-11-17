@@ -85,6 +85,7 @@ Key engine invariants:
   - `and` / `pipeline`: **every** configured provider must match at least one rule or the resulting `ExecutionPlan` has zero actions (`pipeline` uses `pipeline_order` when non-empty).
 - **Deterministic ordering & deduplication**: Matched rules sort by ascending `Rule.Priority` (lower runs first). Actions are collected in rule order, optionally deduplicated (by `Action.ID`, or `Executor|JSON(Params)` when `ID` is empty), and sorted by ascending `Action.Priority`.
 - **Snapshot isolation**: `Composer` deep-clones configs, provider `RuleSet` snapshots, and actions so concurrent evaluation or callers cannot mutate provider state.
+- **Timeouts and retries**: `pipeline.Engine.executeAction` runs each action under the policy from `EngineConfig.ResolveExecution` (engine `execution` block, overridden per action by `timeout`/`retry`). Defaults are no timeout and one attempt. Errors wrapped with `executor.Permanent`, executor panics, and caller cancellation are never retried.
 - **Partial failure semantics**: `pipeline.Engine.Process` executes **all** planned actions even if earlier actions fail, returning both the `ExecutionPlan` and an aggregated `*pipeline.ExecutionError` (which `WorkflowEngine` wraps as `errors.TypePartialFailure` without crashing the runtime).
 
 ### Configuration & Startup Preflight
@@ -92,7 +93,7 @@ Key engine invariants:
 Configuration is split across three files (selected via `RUNTIME_CONFIG`, `RULE_ENGINE_CONFIG`, and `WORKFLOW_RULES`):
 - `config/runtime.yaml` (or `config/profiles/demo/runtime.yaml`): admin server timeouts/address, WebSocket input, and adapter enablement. (`config/config.yaml` is an unused migration stub.)
 - `config/rule-engine.yaml` (or `config/profiles/demo/rule-engine.yaml`): workflow policies, provider lists, composition `mode`, and `action_merge`.
-- `config/workflow-rules.yaml` (or `config/profiles/demo/workflow-rules.yaml`, which adds a `BADGE` rule for the `db` executor): local rule definitions (`eq`, `contains`, and `regex` conditions; Go `text/template` rendering via `executor.RenderTemplate` in `log` and `http` executors).
+- `config/workflow-rules.yaml` (or `config/profiles/demo/workflow-rules.yaml`, which adds a `BADGE` rule for the `db` executor): local rule definitions (comparison operators plus `any`/`all`/`not` groups over fixed fields and `payload.<path>`/`metadata.<path>`, validated by `validateCondition` in `pkg/ruleengine/validation.go`; Go `text/template` rendering via `executor.RenderTemplate` in `log` and `http` executors).
 
 Validation is fail-fast and strict:
 - YAML loaders enforce `KnownFields(true)` and reject multi-document YAML, invalid URLs/durations, and duplicate IDs. Do not relax config validation to work around profile mismatches.

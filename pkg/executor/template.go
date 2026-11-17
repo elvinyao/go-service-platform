@@ -24,6 +24,7 @@ func RenderTemplate(tmpl string, msg ruleengine.Message) (string, error) {
 		"UserID":    msg.UserID,
 		"Timestamp": msg.Timestamp,
 		"Metadata":  msg.Metadata,
+		"Payload":   msg.Payload,
 	}
 
 	var out bytes.Buffer

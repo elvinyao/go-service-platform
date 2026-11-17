@@ -17,6 +17,7 @@ By the end of the tutorial, you will be able to:
 | Goal | Start Here | External Services |
 | --- | --- | --- |
 | See the smallest pipeline | `examples/basic-rule-pipeline` | None |
+| Route chat-bot events with payload rules | `examples/im-bot` | None |
 | Experiment with YAML rules over HTTP | `examples/http-event-gateway` | None |
 | Learn how to add an action type | `examples/custom-executor` | None |
 | Study service lifecycle and admin APIs | `cmd/service-workflow` | `fake-server` |

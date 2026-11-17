@@ -167,7 +167,14 @@ workflows:
 action_merge:
   dedup: true
   order: priority
+
+execution:
+  timeout: "10s"
+  retry:
+    max_attempts: 1
 ```
+
+The `execution` block sets the default per-attempt timeout and retry policy for every action; see [Timeouts and Retries](rule-engine.md#timeouts-and-retries). Omitting it means no timeout and a single attempt.
 
 The demo profile adds the `confluence` provider and uses `or` composition. Supported modes are:
 
@@ -217,6 +224,8 @@ Rule behavior:
 - A rule with no conditions matches every message for its workflow.
 - Every rule requires at least one action.
 - Every action requires an `executor`.
+- An action may set `timeout` and `retry` to override the engine `execution` defaults.
+- Conditions support comparison operators and `any` / `all` / `not` groups over the fixed message fields and `payload.<path>` / `metadata.<path>`; see [Conditions](rule-engine.md#conditions).
 - Referencing an executor that was not registered fails pipeline startup.
 
 ## Strict Validation Examples
