@@ -154,11 +154,15 @@ The built-in `http` executor treats invalid parameters and `4xx` responses as pe
 
 For operations that must be atomic, place the transaction inside one executor or build a domain-specific executor that owns compensation and idempotency.
 
+## Mattermost Executors
+
+`pkg/mattermost` provides `mattermost_post` (post or reply in a thread) and `mattermost_reaction` (add an emoji reaction). The reference runtime registers them when `inputs.mattermost` is enabled. See [Mattermost Bots](mattermost.md#executors).
+
 ## Demo Executors
 
 The reference runtime optionally registers:
 
-- `mattermost` from `internal/adapters/mattermost`
+- `mattermost` from `internal/adapters/mattermost` (posts to one configured channel; for real bots use `mattermost_post`)
 - `db` from `internal/adapters/badgedb`
 
 They demonstrate extension points and are intentionally excluded from the public core packages. Enable them with `config/profiles/demo/runtime.yaml` or `make dev`.

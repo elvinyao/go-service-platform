@@ -47,6 +47,13 @@ WORKFLOW_RULES=config/profiles/demo/workflow-rules.yaml \
 go run ./cmd/go-service-platform
 ```
 
+The Mattermost bot profile reads events from a real Mattermost instead of `fake-server`; see [Mattermost Bots](mattermost.md):
+
+```bash
+make mattermost-up    # local Mattermost in Docker, provisioned with a bot
+make mattermost-bot   # config/profiles/mattermost/*
+```
+
 ## Runtime Configuration
 
 `config/runtime.yaml` configures the reference application. The repository default is:
@@ -114,6 +121,20 @@ The heartbeat catches connections that died without a close frame, such as after
 
 On shutdown the runtime stops this input first, then lets the dispatcher finish the events already queued, and only then stops the output services such as Mattermost and BadgeDB, so accepted events can still deliver their actions.
 
+### Mattermost Input Fields
+
+`inputs.mattermost` connects to Mattermost as a bot and registers the `mattermost_post` and `mattermost_reaction` executors. See [Mattermost Bots](mattermost.md) for the message payload.
+
+| Field | Meaning | Validation when enabled |
+| --- | --- | --- |
+| `enabled` | Registers and starts the bot input | Boolean (default `false`) |
+| `server_url` | Mattermost base URL | Absolute `http` or `https` URL |
+| `reconnect_interval` | Delay between reconnect attempts (default `5s`) | Positive Go duration |
+| `ping_interval` | Keep-alive ping interval (default `20s`) | Positive, less than `read_timeout` |
+| `read_timeout` | Silence after which the connection is redialed (default `60s`) | Positive Go duration |
+
+The bot token has no YAML field: set `MATTERMOST_BOT_TOKEN`. Startup fails when the input is enabled without it.
+
 ### Demo Adapter Fields
 
 | Field | Meaning | Validation when enabled |
@@ -144,6 +165,8 @@ In the reference demo wiring, a workflow that uses the enabled `confluence` prov
 | `ADMIN_IDLE_TIMEOUT` | `admin.idle_timeout` |
 | `WEBSOCKET_SERVER_URL` | `inputs.websocket.server_url` |
 | `WEBSOCKET_PATH` | `inputs.websocket.path` |
+| `MATTERMOST_BOT_URL` | `inputs.mattermost.server_url` |
+| `MATTERMOST_BOT_TOKEN` | the bot token for `inputs.mattermost` (environment only) |
 | `CONFLUENCE_API_ENDPOINT` | `adapters.confluence.api_endpoint` |
 | `CONFLUENCE_SETTINGS_PAGE_ID` | `adapters.confluence.settings_page_id` |
 | `MATTERMOST_SERVER_URL` | `adapters.mattermost.server_url` |

@@ -9,11 +9,13 @@ import (
 	"github.com/elvinyao/go-service-platform/internal/adapters/confluence"
 	"github.com/elvinyao/go-service-platform/internal/adapters/mattermost"
 	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/service"
 	runtimeconfig "github.com/elvinyao/go-service-platform/pkg/config"
 	appctx "github.com/elvinyao/go-service-platform/pkg/context"
 	"github.com/elvinyao/go-service-platform/pkg/errors"
 	coreexecutor "github.com/elvinyao/go-service-platform/pkg/executor"
 	"github.com/elvinyao/go-service-platform/pkg/logger"
+	mmbot "github.com/elvinyao/go-service-platform/pkg/mattermost"
 	"github.com/elvinyao/go-service-platform/pkg/pipeline"
 	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
@@ -68,6 +70,13 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 	if runtimeCfg.Adapters.Mattermost.Enabled {
 		allExecutors = append(allExecutors, mattermost.NewExecutor(sm))
 	}
+	if runtimeCfg.Inputs.Mattermost.Enabled {
+		botExecutors, err := mattermostBotExecutors(ctx, sm)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to set up Mattermost executors", errors.TypeInvalidInput)
+		}
+		allExecutors = append(allExecutors, botExecutors...)
+	}
 	providerList := make([]ruleengine.RuleProvider, 0, len(providers))
 	for _, provider := range providers {
 		providerList = append(providerList, provider)
@@ -94,6 +103,24 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 	}
 	w.dispatcher = dispatcher
 	return w, nil
+}
+
+// mattermostBotExecutors returns the executors that answer through the
+// Mattermost bot input's client.
+func mattermostBotExecutors(ctx context.Context, sm *manager.ServiceManager) ([]coreexecutor.Executor, error) {
+	svc, ok := sm.GetServiceByName(ctx, service.MattermostInputServiceName)
+	if !ok {
+		return nil, fmt.Errorf("%s is not registered", service.MattermostInputServiceName)
+	}
+	input, ok := svc.(*service.MattermostInputService)
+	if !ok {
+		return nil, fmt.Errorf("%s has unexpected type %T", service.MattermostInputServiceName, svc)
+	}
+	client := input.Client()
+	return []coreexecutor.Executor{
+		mmbot.NewPostExecutor(client),
+		mmbot.NewReactionExecutor(client),
+	}, nil
 }
 
 func validateRuntimeAdapterDependencies(cfg ruleengine.EngineConfig, runtimeCfg runtimeconfig.RuntimeConfig) error {

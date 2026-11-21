@@ -45,6 +45,12 @@ make build-fake
   ```bash
   make dev
   ```
+- **Mattermost bot mode** (real Mattermost 12.1 in Docker; see `docs/mattermost.md`):
+  ```bash
+  make mattermost-up    # docker compose (deploy/mattermost) + go run ./deploy/mattermost/provision -> deploy/mattermost/.env
+  make mattermost-bot   # config/profiles/mattermost/*, token from MATTERMOST_BOT_TOKEN
+  make mattermost-down  # or mattermost-reset to delete data
+  ```
 - **YAML-first mode** (no business-specific demo adapters; only `yaml` provider + `log`/`http` executors):
   ```bash
   make fake-server   # Terminal 1: listens on :8090 (Confluence), :8091/:8092 (Mattermost), :8093 (WebSocket)
@@ -67,13 +73,13 @@ make build-fake
 
 ### SDK vs. Reference Runtime Boundary
 
-- **`pkg/` (Public Framework SDK)**: Domain-agnostic packages (`pkg/ruleengine`, `pkg/executor`, `pkg/pipeline`, `pkg/config`, `pkg/runtime`, `pkg/health`, `pkg/logger`, `pkg/errors`, `pkg/concurrency`, `pkg/context`). Must never depend on `internal/` or demo integrations. Programs under `examples/` import only `pkg/` packages and exclude tests so `make coverage` skips them.
+- **`pkg/` (Public Framework SDK)**: Domain-agnostic packages (`pkg/ruleengine`, `pkg/executor`, `pkg/pipeline`, `pkg/config`, `pkg/runtime`, `pkg/health`, `pkg/logger`, `pkg/errors`, `pkg/concurrency`, `pkg/context`), plus the public Mattermost bot integration `pkg/mattermost` (REST `Client`, WebSocket `Listener`, `mattermost_post`/`mattermost_reaction` executors) and its test fake `pkg/mattermost/mattermosttest`. Must never depend on `internal/` or demo integrations. Programs under `examples/` import only `pkg/` packages and exclude tests so `make coverage` skips them.
 - **`cmd/go-service-platform/` & `internal/` (Reference Application)**: Wires `pkg/` into a runnable service runtime (`internal/app`, `internal/workflow`, `internal/manager`, `internal/service`) alongside optional demo adapters (`internal/adapters/{confluence,mattermost,badgedb}`).
 - **`fake-server/`**: Standalone local server emulating Confluence (`:8090`), Mattermost HTTP/WS (`:8091`/`:8092`), and an HTTP-to-WebSocket event broadcaster (`:8093`) for local runs and integration tests.
 
 ### Event Processing & Rule Composition
 
-In the reference runtime, events flow through:
+In the reference runtime, events flow through (the Mattermost input, `service.MattermostInputService` wrapping `mattermost.Listener`, enters via `app.setupMattermostListener`):
 
 ```text
 service.WebSocketService -> app.setupMessageListeners -> workflow.WorkflowEngine.Submit
@@ -95,7 +101,7 @@ Key engine invariants:
 ### Configuration & Startup Preflight
 
 Configuration is split across three files (selected via `RUNTIME_CONFIG`, `RULE_ENGINE_CONFIG`, and `WORKFLOW_RULES`):
-- `config/runtime.yaml` (or `config/profiles/demo/runtime.yaml`): admin server timeouts/address, WebSocket input, and adapter enablement. (`config/config.yaml` is an unused migration stub.)
+- `config/runtime.yaml` (or `config/profiles/demo/runtime.yaml`, or `config/profiles/mattermost/runtime.yaml`): admin server timeouts/address, WebSocket and Mattermost inputs, and adapter enablement. The Mattermost bot token is read only from `MATTERMOST_BOT_TOKEN` (`MATTERMOST_BOT_URL` overrides `inputs.mattermost.server_url`); the `MATTERMOST_SERVER_URL`/`MATTERMOST_API_TOKEN` variables belong to the unrelated demo adapter. (`config/config.yaml` is an unused migration stub.)
 - `config/rule-engine.yaml` (or `config/profiles/demo/rule-engine.yaml`): workflow policies, provider lists, composition `mode`, and `action_merge`.
 - `config/workflow-rules.yaml` (or `config/profiles/demo/workflow-rules.yaml`, which adds a `BADGE` rule for the `db` executor): local rule definitions (comparison operators plus `any`/`all`/`not` groups over fixed fields and `payload.<path>`/`metadata.<path>`, validated by `validateCondition` in `pkg/ruleengine/validation.go`; Go `text/template` rendering via `executor.RenderTemplate` in `log` and `http` executors, with `missingkey=error` and the `json`, `field`, and `default` helpers; template errors are permanent).
 
@@ -110,6 +116,7 @@ Validation is fail-fast and strict:
 - **Transactional startup**: `app.App.Start`, `manager.ServiceManager.StartAll`, and `pipeline.Engine.Start` all roll back already-started services, lifecycle-aware executors (`Starter`/`Stopper`), and providers in reverse/cleanup order if any step fails during startup (including admin port bind failures in `pkg/runtime/admin_server.go`).
 - **Health, Readiness, and Liveness** (`internal/app/admin.go`, `pkg/health`):
   - Critical check failures return HTTP `503` on `/health` and `/health/readiness` (`NOT_READY`). Every registered service gets a critical running check, and an enabled `WebSocketService` reports critical failure whenever it has zero active connections (even while its background reconnect loop is running). Warning-level checks stay `200` / `READY`.
-  - Calling `App.Stop` immediately marks `HealthManager` as shutting down (`NOT_READY`), then stops the WebSocket input (`stopInputs`), drains the workflow dispatcher and engine, and only then stops the remaining services, which executors depend on. `pipeline.Engine.Process` does not hold the engine lock while actions run; `Engine.Stop` waits for in-flight calls only until its context ends.
+  - Calling `App.Stop` immediately marks `HealthManager` as shutting down (`NOT_READY`), then stops the WebSocket and Mattermost inputs (`stopInputs`), drains the workflow dispatcher and engine, and only then stops the remaining services, which executors depend on. `pipeline.Engine.Process` does not hold the engine lock while actions run; `Engine.Stop` waits for in-flight calls only until its context ends.
   - The WebSocket input pings every `ping_interval` and redials after `read_timeout` without any frame; frames that are not valid events are skipped (counted as `malformed_messages`) without dropping the connection.
+  - The Mattermost input's health check is critical: `NOT_READY` until its event stream is connected. A rejected bot token fails startup; an unreachable server is retried. The bot's own posts and reactions are never routed. On reconnect the listener sends the last `connection_id`/`sequence_number` so Mattermost replays missed events.
   - `/health/liveness` reports `200 UP` whenever the process and admin server can respond, independent of external dependency health.

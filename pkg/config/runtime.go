@@ -35,7 +35,26 @@ type AdminConfig struct {
 
 // InputsConfig contains event input configuration.
 type InputsConfig struct {
-	WebSocket WebSocketInputConfig `yaml:"websocket" json:"websocket"`
+	WebSocket  WebSocketInputConfig  `yaml:"websocket" json:"websocket"`
+	Mattermost MattermostInputConfig `yaml:"mattermost" json:"mattermost"`
+}
+
+// MattermostInputConfig connects the runtime to Mattermost as a bot: events
+// from the bot's channels become rule engine messages, and the
+// mattermost_post and mattermost_reaction executors become available.
+//
+// The bot token is never read from YAML; it comes from the
+// MATTERMOST_BOT_TOKEN environment variable.
+type MattermostInputConfig struct {
+	Enabled           bool          `yaml:"enabled" json:"enabled"`
+	ServerURL         string        `yaml:"server_url" json:"server_url"`
+	Token             string        `yaml:"-" json:"-"`
+	ReconnectInterval time.Duration `yaml:"-" json:"reconnect_interval"`
+	ReconnectRaw      string        `yaml:"reconnect_interval" json:"-"`
+	PingInterval      time.Duration `yaml:"-" json:"ping_interval"`
+	PingIntervalRaw   string        `yaml:"ping_interval" json:"-"`
+	ReadTimeout       time.Duration `yaml:"-" json:"read_timeout"`
+	ReadTimeoutRaw    string        `yaml:"read_timeout" json:"-"`
 }
 
 // WebSocketInputConfig controls the reference WebSocket input.
@@ -135,7 +154,18 @@ func DefaultRuntimeConfig() RuntimeConfig {
 			PingInterval:      20 * time.Second,
 			ReadTimeoutRaw:    "60s",
 			ReadTimeout:       60 * time.Second,
-		}},
+		},
+			Mattermost: MattermostInputConfig{
+				Enabled:           false,
+				ServerURL:         "http://localhost:8065",
+				ReconnectRaw:      "5s",
+				ReconnectInterval: 5 * time.Second,
+				PingIntervalRaw:   "20s",
+				PingInterval:      20 * time.Second,
+				ReadTimeoutRaw:    "60s",
+				ReadTimeout:       60 * time.Second,
+			},
+		},
 		Adapters: AdaptersConfig{
 			Confluence: ConfluenceAdapterConfig{
 				Enabled:         false,
@@ -182,6 +212,12 @@ func (c *RuntimeConfig) ApplyEnv() {
 	if v := os.Getenv("WEBSOCKET_PATH"); v != "" {
 		c.Inputs.WebSocket.Path = v
 	}
+	if v := os.Getenv("MATTERMOST_BOT_URL"); v != "" {
+		c.Inputs.Mattermost.ServerURL = v
+	}
+	if v := os.Getenv("MATTERMOST_BOT_TOKEN"); v != "" {
+		c.Inputs.Mattermost.Token = v
+	}
 	if v := os.Getenv("CONFLUENCE_API_ENDPOINT"); v != "" {
 		c.Adapters.Confluence.APIEndpoint = v
 	}
@@ -219,6 +255,9 @@ func (c *RuntimeConfig) Normalize() error {
 		{name: "inputs.websocket.reconnect_interval", raw: c.Inputs.WebSocket.ReconnectRaw, target: &c.Inputs.WebSocket.ReconnectInterval},
 		{name: "inputs.websocket.ping_interval", raw: c.Inputs.WebSocket.PingIntervalRaw, target: &c.Inputs.WebSocket.PingInterval},
 		{name: "inputs.websocket.read_timeout", raw: c.Inputs.WebSocket.ReadTimeoutRaw, target: &c.Inputs.WebSocket.ReadTimeout},
+		{name: "inputs.mattermost.reconnect_interval", raw: c.Inputs.Mattermost.ReconnectRaw, target: &c.Inputs.Mattermost.ReconnectInterval},
+		{name: "inputs.mattermost.ping_interval", raw: c.Inputs.Mattermost.PingIntervalRaw, target: &c.Inputs.Mattermost.PingInterval},
+		{name: "inputs.mattermost.read_timeout", raw: c.Inputs.Mattermost.ReadTimeoutRaw, target: &c.Inputs.Mattermost.ReadTimeout},
 		{name: "adapters.confluence.refresh_interval", raw: c.Adapters.Confluence.RefreshRaw, target: &c.Adapters.Confluence.RefreshInterval},
 	}
 	for _, duration := range durations {
@@ -268,7 +307,26 @@ func (c RuntimeConfig) Validate() error {
 		if c.Inputs.WebSocket.ReconnectInterval <= 0 {
 			return fmt.Errorf("inputs.websocket.reconnect_interval must be greater than zero")
 		}
-		if err := validateHeartbeat(c.Inputs.WebSocket.PingInterval, c.Inputs.WebSocket.ReadTimeout); err != nil {
+		if err := validateHeartbeat("inputs.websocket", c.Inputs.WebSocket.PingInterval, c.Inputs.WebSocket.ReadTimeout); err != nil {
+			return err
+		}
+	}
+
+	if c.Inputs.Mattermost.Enabled {
+		mm := c.Inputs.Mattermost
+		if err := validateServiceURL("inputs.mattermost.server_url", mm.ServerURL, "http", "https"); err != nil {
+			return err
+		}
+		if mm.Token == "" {
+			return fmt.Errorf("inputs.mattermost is enabled but the MATTERMOST_BOT_TOKEN environment variable is empty")
+		}
+		if mm.ReconnectInterval <= 0 {
+			return fmt.Errorf("inputs.mattermost.reconnect_interval must be greater than zero")
+		}
+		if mm.PingInterval <= 0 || mm.ReadTimeout <= 0 {
+			return fmt.Errorf("inputs.mattermost.ping_interval and read_timeout must be greater than zero")
+		}
+		if err := validateHeartbeat("inputs.mattermost", mm.PingInterval, mm.ReadTimeout); err != nil {
 			return err
 		}
 	}
@@ -325,15 +383,15 @@ func validateServiceURL(name, rawURL string, allowedSchemes ...string) error {
 // validateHeartbeat checks the WebSocket keep-alive settings. A read timeout
 // needs pings that arrive well inside it, or a quiet but healthy connection
 // would be dropped.
-func validateHeartbeat(pingInterval, readTimeout time.Duration) error {
+func validateHeartbeat(prefix string, pingInterval, readTimeout time.Duration) error {
 	if pingInterval < 0 {
-		return fmt.Errorf("inputs.websocket.ping_interval must not be negative")
+		return fmt.Errorf("%s.ping_interval must not be negative", prefix)
 	}
 	if readTimeout < 0 {
-		return fmt.Errorf("inputs.websocket.read_timeout must not be negative")
+		return fmt.Errorf("%s.read_timeout must not be negative", prefix)
 	}
 	if readTimeout > 0 && (pingInterval == 0 || pingInterval >= readTimeout) {
-		return fmt.Errorf("inputs.websocket.ping_interval must be greater than zero and less than read_timeout when read_timeout is set")
+		return fmt.Errorf("%s.ping_interval must be greater than zero and less than read_timeout when read_timeout is set", prefix)
 	}
 	return nil
 }
