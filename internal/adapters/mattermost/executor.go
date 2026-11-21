@@ -37,7 +37,7 @@ func (e *Executor) Execute(ctx context.Context, msg ruleengine.Message, action r
 	templateVal, _ := action.Params["template"].(string)
 	message, err := coreexecutor.RenderTemplate(templateVal, msg)
 	if err != nil {
-		return fmt.Errorf("render mattermost template: %w", err)
+		return coreexecutor.Permanent(fmt.Errorf("render mattermost template: %w", err))
 	}
 	if message == "" {
 		message = fmt.Sprintf("Event received: type=%s id=%s content=%s", msg.Type, msg.ID, msg.Content)

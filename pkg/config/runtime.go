@@ -45,6 +45,13 @@ type WebSocketInputConfig struct {
 	Path              string        `yaml:"path" json:"path"`
 	ReconnectInterval time.Duration `yaml:"-" json:"reconnect_interval"`
 	ReconnectRaw      string        `yaml:"reconnect_interval" json:"-"`
+	// PingInterval is how often a keep-alive ping is sent; "0s" disables pings.
+	PingInterval    time.Duration `yaml:"-" json:"ping_interval"`
+	PingIntervalRaw string        `yaml:"ping_interval" json:"-"`
+	// ReadTimeout is how long the connection may stay silent before it is
+	// redialed; "0s" disables the check.
+	ReadTimeout    time.Duration `yaml:"-" json:"read_timeout"`
+	ReadTimeoutRaw string        `yaml:"read_timeout" json:"-"`
 }
 
 // AdaptersConfig contains optional reference adapter configuration.
@@ -124,6 +131,10 @@ func DefaultRuntimeConfig() RuntimeConfig {
 			Path:              "/ws",
 			ReconnectRaw:      "5s",
 			ReconnectInterval: 5 * time.Second,
+			PingIntervalRaw:   "20s",
+			PingInterval:      20 * time.Second,
+			ReadTimeoutRaw:    "60s",
+			ReadTimeout:       60 * time.Second,
 		}},
 		Adapters: AdaptersConfig{
 			Confluence: ConfluenceAdapterConfig{
@@ -206,6 +217,8 @@ func (c *RuntimeConfig) Normalize() error {
 		{name: "admin.write_timeout", raw: c.Admin.WriteTimeoutRaw, target: &c.Admin.WriteTimeout},
 		{name: "admin.idle_timeout", raw: c.Admin.IdleTimeoutRaw, target: &c.Admin.IdleTimeout},
 		{name: "inputs.websocket.reconnect_interval", raw: c.Inputs.WebSocket.ReconnectRaw, target: &c.Inputs.WebSocket.ReconnectInterval},
+		{name: "inputs.websocket.ping_interval", raw: c.Inputs.WebSocket.PingIntervalRaw, target: &c.Inputs.WebSocket.PingInterval},
+		{name: "inputs.websocket.read_timeout", raw: c.Inputs.WebSocket.ReadTimeoutRaw, target: &c.Inputs.WebSocket.ReadTimeout},
 		{name: "adapters.confluence.refresh_interval", raw: c.Adapters.Confluence.RefreshRaw, target: &c.Adapters.Confluence.RefreshInterval},
 	}
 	for _, duration := range durations {
@@ -254,6 +267,9 @@ func (c RuntimeConfig) Validate() error {
 		}
 		if c.Inputs.WebSocket.ReconnectInterval <= 0 {
 			return fmt.Errorf("inputs.websocket.reconnect_interval must be greater than zero")
+		}
+		if err := validateHeartbeat(c.Inputs.WebSocket.PingInterval, c.Inputs.WebSocket.ReadTimeout); err != nil {
+			return err
 		}
 	}
 
@@ -304,4 +320,20 @@ func validateServiceURL(name, rawURL string, allowedSchemes ...string) error {
 		}
 	}
 	return fmt.Errorf("%s must use one of these schemes: %s", name, strings.Join(allowedSchemes, ", "))
+}
+
+// validateHeartbeat checks the WebSocket keep-alive settings. A read timeout
+// needs pings that arrive well inside it, or a quiet but healthy connection
+// would be dropped.
+func validateHeartbeat(pingInterval, readTimeout time.Duration) error {
+	if pingInterval < 0 {
+		return fmt.Errorf("inputs.websocket.ping_interval must not be negative")
+	}
+	if readTimeout < 0 {
+		return fmt.Errorf("inputs.websocket.read_timeout must not be negative")
+	}
+	if readTimeout > 0 && (pingInterval == 0 || pingInterval >= readTimeout) {
+		return fmt.Errorf("inputs.websocket.ping_interval must be greater than zero and less than read_timeout when read_timeout is set")
+	}
+	return nil
 }

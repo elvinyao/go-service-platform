@@ -166,14 +166,20 @@ func (w *WorkflowEngine) AdminSnapshot(ctx context.Context) EngineAdminSnapshot 
 	return admin
 }
 
-// Stop drains queued events, then releases lifecycle-aware rule providers and executors.
+// Stop drains queued events, then releases lifecycle-aware rule providers and
+// executors. If ctx ends before the queue drains, in-flight events are
+// cancelled and the engine is still asked to stop.
 func (w *WorkflowEngine) Stop(ctx context.Context) error {
+	var stopErrors []error
 	if w.dispatcher != nil {
 		if err := w.dispatcher.Stop(ctx); err != nil {
-			return err
+			stopErrors = append(stopErrors, err)
 		}
 	}
-	return w.engine.Stop(ctx)
+	if err := w.engine.Stop(ctx); err != nil {
+		stopErrors = append(stopErrors, err)
+	}
+	return stderrors.Join(stopErrors...)
 }
 
 // Submit queues a message for concurrent processing. Duplicate and dropped

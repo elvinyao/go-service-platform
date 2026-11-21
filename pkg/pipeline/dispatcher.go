@@ -23,7 +23,8 @@ var (
 )
 
 // Handler processes one accepted event. It runs on a dispatcher worker with a
-// context that keeps the submitter's values but not its cancellation.
+// context that keeps the submitter's values but not its cancellation; the
+// context is cancelled only when Stop gives up waiting for the workers.
 type Handler func(ctx context.Context, message ruleengine.Message)
 
 // DispatchStats is a point-in-time view of dispatcher activity.
@@ -35,6 +36,8 @@ type DispatchStats struct {
 	Duplicates int64 `json:"duplicates"`
 	Dropped    int64 `json:"dropped"`
 	Panics     int64 `json:"panics"`
+	// Abandoned counts queued events skipped because Stop ran out of time.
+	Abandoned int64 `json:"abandoned"`
 }
 
 type dispatchItem struct {
@@ -60,12 +63,18 @@ type Dispatcher struct {
 	workers    sync.WaitGroup
 	closeOnce  sync.Once
 
+	// abort is cancelled when Stop gives up waiting; it interrupts in-flight
+	// handlers and makes workers skip what is still queued.
+	abort       context.Context
+	cancelAbort context.CancelFunc
+
 	next       atomic.Uint64
 	accepted   atomic.Int64
 	processed  atomic.Int64
 	duplicates atomic.Int64
 	dropped    atomic.Int64
 	panics     atomic.Int64
+	abandoned  atomic.Int64
 }
 
 // NewDispatcher validates config, applies defaults, and starts the workers.
@@ -78,11 +87,14 @@ func NewDispatcher(config ruleengine.DispatchConfig, handler Handler) (*Dispatch
 		return nil, err
 	}
 
+	abort, cancelAbort := context.WithCancel(context.Background())
 	d := &Dispatcher{
-		config:   config,
-		handler:  handler,
-		queues:   make([]chan dispatchItem, config.Workers),
-		stopping: make(chan struct{}),
+		config:      config,
+		handler:     handler,
+		queues:      make([]chan dispatchItem, config.Workers),
+		stopping:    make(chan struct{}),
+		abort:       abort,
+		cancelAbort: cancelAbort,
 	}
 	if config.Dedup.Enabled {
 		ttl, _ := config.DedupTTL() // validated above
@@ -173,22 +185,33 @@ func (d *Dispatcher) queueIndex(message ruleengine.Message) int {
 func (d *Dispatcher) work(queue chan dispatchItem) {
 	defer d.workers.Done()
 	for item := range queue {
+		if d.abort.Err() != nil {
+			d.abandoned.Add(1)
+			continue
+		}
 		d.handle(item)
 	}
 }
 
 func (d *Dispatcher) handle(item dispatchItem) {
+	ctx, cancel := context.WithCancel(item.ctx)
+	stopAbort := context.AfterFunc(d.abort, cancel)
 	defer func() {
+		stopAbort()
+		cancel()
 		if recovered := recover(); recovered != nil {
 			d.panics.Add(1)
 		}
 		d.processed.Add(1)
 	}()
-	d.handler(item.ctx, item.message)
+	d.handler(ctx, item.message)
 }
 
 // Stop rejects new events, lets workers finish everything already queued, and
-// waits for them until ctx ends. It is safe to call more than once.
+// waits for them until ctx ends. If ctx ends first, Stop cancels the context
+// of the events being handled, makes the workers skip events still queued,
+// and returns an error without waiting further. It is safe to call more than
+// once.
 func (d *Dispatcher) Stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -217,9 +240,11 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		d.cancelAbort()
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("wait for dispatcher workers: %w", ctx.Err())
+		d.cancelAbort()
+		return fmt.Errorf("dispatcher did not drain in time, cancelled in-flight events: %w", ctx.Err())
 	}
 }
 
@@ -237,6 +262,7 @@ func (d *Dispatcher) Stats() DispatchStats {
 		Duplicates: d.duplicates.Load(),
 		Dropped:    d.dropped.Load(),
 		Panics:     d.panics.Load(),
+		Abandoned:  d.abandoned.Load(),
 	}
 }
 

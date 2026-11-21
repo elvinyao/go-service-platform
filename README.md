@@ -168,7 +168,7 @@ rules:
           backoff: "200ms"
         params:
           url: "https://chat.example/api/posts"
-          body_template: '{"channel":"{{.Payload.channel.id}}","text":"Hi <@{{.UserID}}>"}'
+          body_template: '{"channel":{{json .Payload.channel.id}},"text":{{json (printf "Hi <@%s>" .UserID)}}}'
 ```
 
 Built-in executors are `log` and `http`; applications can register their own `executor.Executor` implementations. See [Rule Engine](docs/rule-engine.md) for condition and retry semantics.

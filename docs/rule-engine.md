@@ -253,7 +253,7 @@ dispatch:
 
 An ID is remembered when the event is accepted, not when it succeeds, so a redelivered event is skipped even if its first run failed; use action retries for transient failures. A dropped event is not remembered and can be redelivered. Deduplication state is in memory and is lost on restart.
 
-`Stop` rejects new events and waits for everything already queued to finish, up to the context deadline. `Stats` reports workers, queue depth, and accepted, processed, duplicate, dropped, and panic counts. Handlers and executors run concurrently and must be safe for concurrent use.
+`Stop` rejects new events and waits for everything already queued to finish, up to the context deadline. If the deadline passes first, `Stop` cancels the context of the events being handled (so executors that honor it return promptly), makes the workers skip the events still queued, and returns an error. Handler contexts keep the submitter's values but ignore its cancellation; only this deadline cancels them. `Stats` reports workers, queue depth, and accepted, processed, duplicate, dropped, panic, and abandoned counts (`abandoned` is events skipped because `Stop` ran out of time). Handlers and executors run concurrently and must be safe for concurrent use.
 
 ## Running a Pipeline
 
@@ -283,7 +283,7 @@ defer engine.Stop(context.Background())
 plan, err := engine.Process(ctx, ruleengine.DefaultWorkflowName, message)
 ```
 
-Calling `Process` before `Start` or after `Stop` returns an error. `Stop` waits for in-flight processing, then stops lifecycle-aware executors and providers in reverse startup order. A successful stop permits a later clean start.
+Calling `Process` before `Start` or after `Stop` returns an error. `Stop` rejects new `Process` calls at once, waits for in-flight processing, then stops lifecycle-aware executors and providers in reverse startup order. A successful stop permits a later clean start. If the context ends while messages are still in flight, `Stop` returns an error and leaves the engine pending cleanup, so `Stop` can be called again; it does not block past the deadline even when an executor ignores cancellation.
 
 The engine continues executing later actions when one action fails, then returns the plan together with `*pipeline.ExecutionError`. Each failure includes the action ID, executor type, and original error:
 

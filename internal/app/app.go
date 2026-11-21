@@ -206,6 +206,13 @@ func (a *App) stop(ctx context.Context) error {
 			a.adminServer = nil
 		}
 	}
+	// Stop reading events first, so nothing new arrives while the dispatcher
+	// drains; output services stay up until the queued events are handled.
+	if a.serviceManager != nil {
+		if err := stopInputs(ctx, a.serviceManager); err != nil {
+			stopErrors = append(stopErrors, err)
+		}
+	}
 	if a.workflowEngine != nil {
 		if err := a.workflowEngine.Stop(ctx); err != nil {
 			stopErrors = append(stopErrors, fmt.Errorf("stop workflows: %w", err))
@@ -235,6 +242,8 @@ func registerServices(sm *manager.ServiceManager, cfg config.RuntimeConfig, vers
 				ServerURL:         cfg.Inputs.WebSocket.ServerURL,
 				Path:              cfg.Inputs.WebSocket.Path,
 				ReconnectInterval: cfg.Inputs.WebSocket.ReconnectInterval,
+				PingInterval:      cfg.Inputs.WebSocket.PingInterval,
+				ReadTimeout:       cfg.Inputs.WebSocket.ReadTimeout,
 			},
 			version,
 		))
@@ -277,6 +286,22 @@ func registerServices(sm *manager.ServiceManager, cfg config.RuntimeConfig, vers
 			version,
 		))
 	}
+}
+
+// stopInputs stops the event input services. StopAll stops them again later,
+// which is a no-op for a stopped service.
+func stopInputs(ctx context.Context, serviceManager *manager.ServiceManager) error {
+	ctx = appctx.WithOperationName(ctx, "inputs_shutdown")
+	svc, ok := serviceManager.GetServiceByName(ctx, service.WebSocketInputServiceName)
+	if !ok {
+		return nil
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, serviceShutdownTimeout)
+	defer cancel()
+	if err := svc.Stop(stopCtx); err != nil {
+		return fmt.Errorf("stop input %s: %w", service.WebSocketInputServiceName, err)
+	}
+	return nil
 }
 
 func shutdownServices(ctx context.Context, serviceManager *manager.ServiceManager) error {

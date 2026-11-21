@@ -24,7 +24,7 @@ func (e *LogExecutor) Execute(ctx context.Context, msg ruleengine.Message, actio
 
 	message, err := RenderTemplate(templateVal, msg)
 	if err != nil {
-		return fmt.Errorf("render log template: %w", err)
+		return Permanent(fmt.Errorf("render log template: %w", err))
 	}
 	if message == "" {
 		message = fmt.Sprintf("workflow action log message=%s type=%s id=%s", msg.Content, msg.Type, msg.ID)

@@ -51,7 +51,19 @@ Built-in executors use Go templates:
 template: "type={{.Type}} id={{.ID}} content={{.Content}}"
 ```
 
-Available values are `.ID`, `.Type`, `.Content`, `.UserID`, `.Timestamp`, `.Metadata`, and `.Payload` (for example `{{.Payload.channel.name}}`). Invalid template syntax is returned as an action error.
+Available values are `.ID`, `.Type`, `.Content`, `.UserID`, `.Timestamp`, `.Metadata`, and `.Payload` (for example `{{.Payload.channel.name}}`).
+
+Referencing a map key that is not present, such as `{{.Payload.channel.name}}` on an event without a channel, or a misspelled name such as `{{.Contnet}}`, is an action error instead of the text `<no value>`. Template errors, including invalid syntax, are permanent and never retried.
+
+Helpers:
+
+| Helper | Use |
+| --- | --- |
+| `json VALUE` | Renders VALUE as JSON. Strings are quoted and escaped, so user text cannot break the body or add fields: `{"text": {{json .Content}}}`. Chat markup such as `<@user>` is not HTML-escaped. |
+| `field "PATH"` | Returns the value at a condition path such as `"payload.thread.id"`, or `""` when it is absent. Use it for optional values. |
+| `default FALLBACK VALUE` | Returns FALLBACK when VALUE is nil or `""`: `{{field "payload.channel.name" \| default "unknown"}}`. |
+
+Always use `json` when a template builds JSON from event values. Writing `"{{.Content}}"` produces an invalid body as soon as a message contains a quote or a line break, and lets the sender inject fields.
 
 ## Log Executor
 
@@ -80,7 +92,7 @@ actions:
       timeout_ms: 3000
       headers:
         X-Source: go-service-platform
-      body_template: '{"id":"{{.ID}}","type":"{{.Type}}"}'
+      body_template: '{"id":{{json .ID}},"type":{{json .Type}},"text":{{json .Content}}}'
 ```
 
 Behavior:

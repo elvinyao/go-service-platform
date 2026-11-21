@@ -65,6 +65,8 @@ inputs:
     server_url: "ws://localhost:8093"
     path: "/ws"
     reconnect_interval: "5s"
+    ping_interval: "20s"
+    read_timeout: "60s"
 
 adapters:
   confluence:
@@ -103,8 +105,14 @@ The admin listener is critical. A bind failure stops startup and rolls back serv
 | `server_url` | WebSocket server base URL | Absolute `ws` or `wss` URL |
 | `path` | WebSocket endpoint path | Must start with `/` |
 | `reconnect_interval` | Delay between reconnect attempts | Positive Go duration |
+| `ping_interval` | How often a keep-alive ping is sent (default `20s`) | Go duration; `0s` disables pings |
+| `read_timeout` | How long the connection may stay silent, with no event and no pong, before it is dropped and redialed (default `60s`) | Go duration; `0s` disables the check. When set, `ping_interval` must be greater than zero and less than `read_timeout` |
 
 The final local endpoint is `server_url + path`, for example `ws://localhost:8093/ws`.
+
+The heartbeat catches connections that died without a close frame, such as after a network change or a proxy timeout. Without it the input would keep reporting a healthy connection while receiving nothing. A frame that is not a valid event (bad JSON, or a field of the wrong type) is logged, counted in the service's `malformed_messages` metric, and skipped; the connection stays open.
+
+On shutdown the runtime stops this input first, then lets the dispatcher finish the events already queued, and only then stops the output services such as Mattermost and BadgeDB, so accepted events can still deliver their actions.
 
 ### Demo Adapter Fields
 
