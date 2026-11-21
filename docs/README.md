@@ -10,6 +10,10 @@ Use this page to choose the shortest document for the task at hand. The root `RE
 
 ## By Role
 
+### Bot Author
+
+Start with `mattermost.md`: `make mattermost-up` gives you a local Mattermost with a bot in a minute. Then read `rule-engine.md` for conditions and `executors.md` for templates.
+
 ### Rule Author
 
 Read in this order:
@@ -54,6 +58,7 @@ The reference runtime lives under `cmd/` and `internal/`. The design specificati
 | `configuration.md` | Runtime fields, profiles, environment overrides, strict validation |
 | `rule-engine.md` | Messages, matching, provider composition, execution plans |
 | `executors.md` | Built-in log and HTTP actions, custom executor contract |
+| `mattermost.md` | Mattermost bots: local Mattermost, bot input, message payload, post/reaction executors, testing |
 | `concurrency.md` | Worker-pool contract and bounded concurrency decisions |
 | `adapters.md` | Optional demo integrations and fake-server endpoints |
 

@@ -9,11 +9,13 @@ import (
 	"github.com/elvinyao/go-service-platform/internal/adapters/confluence"
 	"github.com/elvinyao/go-service-platform/internal/adapters/mattermost"
 	"github.com/elvinyao/go-service-platform/internal/manager"
+	"github.com/elvinyao/go-service-platform/internal/service"
 	runtimeconfig "github.com/elvinyao/go-service-platform/pkg/config"
 	appctx "github.com/elvinyao/go-service-platform/pkg/context"
 	"github.com/elvinyao/go-service-platform/pkg/errors"
 	coreexecutor "github.com/elvinyao/go-service-platform/pkg/executor"
 	"github.com/elvinyao/go-service-platform/pkg/logger"
+	mmbot "github.com/elvinyao/go-service-platform/pkg/mattermost"
 	"github.com/elvinyao/go-service-platform/pkg/pipeline"
 	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 )
@@ -68,6 +70,13 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 	if runtimeCfg.Adapters.Mattermost.Enabled {
 		allExecutors = append(allExecutors, mattermost.NewExecutor(sm))
 	}
+	if runtimeCfg.Inputs.Mattermost.Enabled {
+		botExecutors, err := mattermostBotExecutors(ctx, sm)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to set up Mattermost executors", errors.TypeInvalidInput)
+		}
+		allExecutors = append(allExecutors, botExecutors...)
+	}
 	providerList := make([]ruleengine.RuleProvider, 0, len(providers))
 	for _, provider := range providers {
 		providerList = append(providerList, provider)
@@ -94,6 +103,24 @@ func NewWorkflowEngine(ctx context.Context, sm *manager.ServiceManager, configPa
 	}
 	w.dispatcher = dispatcher
 	return w, nil
+}
+
+// mattermostBotExecutors returns the executors that answer through the
+// Mattermost bot input's client.
+func mattermostBotExecutors(ctx context.Context, sm *manager.ServiceManager) ([]coreexecutor.Executor, error) {
+	svc, ok := sm.GetServiceByName(ctx, service.MattermostInputServiceName)
+	if !ok {
+		return nil, fmt.Errorf("%s is not registered", service.MattermostInputServiceName)
+	}
+	input, ok := svc.(*service.MattermostInputService)
+	if !ok {
+		return nil, fmt.Errorf("%s has unexpected type %T", service.MattermostInputServiceName, svc)
+	}
+	client := input.Client()
+	return []coreexecutor.Executor{
+		mmbot.NewPostExecutor(client),
+		mmbot.NewReactionExecutor(client),
+	}, nil
 }
 
 func validateRuntimeAdapterDependencies(cfg ruleengine.EngineConfig, runtimeCfg runtimeconfig.RuntimeConfig) error {
@@ -166,14 +193,20 @@ func (w *WorkflowEngine) AdminSnapshot(ctx context.Context) EngineAdminSnapshot 
 	return admin
 }
 
-// Stop drains queued events, then releases lifecycle-aware rule providers and executors.
+// Stop drains queued events, then releases lifecycle-aware rule providers and
+// executors. If ctx ends before the queue drains, in-flight events are
+// cancelled and the engine is still asked to stop.
 func (w *WorkflowEngine) Stop(ctx context.Context) error {
+	var stopErrors []error
 	if w.dispatcher != nil {
 		if err := w.dispatcher.Stop(ctx); err != nil {
-			return err
+			stopErrors = append(stopErrors, err)
 		}
 	}
-	return w.engine.Stop(ctx)
+	if err := w.engine.Stop(ctx); err != nil {
+		stopErrors = append(stopErrors, err)
+	}
+	return stderrors.Join(stopErrors...)
 }
 
 // Submit queues a message for concurrent processing. Duplicate and dropped

@@ -48,6 +48,10 @@ type Engine struct {
 	state           engineState
 	activeProviders []string
 	activeExecutors []string
+
+	// inflight counts Process calls that passed the running check. Process
+	// does not hold mu while actions run, so Stop can honor its context.
+	inflight sync.WaitGroup
 }
 
 // Snapshot is an immutable diagnostic view of an engine's current wiring.
@@ -198,29 +202,64 @@ func (e *Engine) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops lifecycle-aware executors and providers in reverse startup order.
+// Stop waits for in-flight Process calls, then stops lifecycle-aware
+// executors and providers in reverse startup order. New Process calls are
+// rejected as soon as Stop begins. If ctx ends while messages are still in
+// flight, Stop returns an error and the engine stays in a pending-cleanup
+// state, so Stop can be called again.
 func (e *Engine) Stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	switch e.state {
 	case engineStateStopped:
+		e.mu.Unlock()
 		return nil
 	case engineStateRunning, engineStatePendingCleanup:
 		e.state = engineStateStopping
-		err := e.stopComponents(ctx)
-		if err != nil {
-			e.state = engineStatePendingCleanup
-			return err
-		}
-		e.state = engineStateStopped
-		return nil
 	default:
-		return fmt.Errorf("pipeline cannot stop while in state %d", e.state)
+		state := e.state
+		e.mu.Unlock()
+		return fmt.Errorf("pipeline cannot stop while in state %d", state)
+	}
+	e.mu.Unlock()
+
+	if err := waitWithContext(ctx, &e.inflight); err != nil {
+		e.mu.Lock()
+		e.state = engineStatePendingCleanup
+		e.mu.Unlock()
+		return fmt.Errorf("wait for in-flight messages: %w", err)
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.stopComponents(ctx); err != nil {
+		e.state = engineStatePendingCleanup
+		return err
+	}
+	e.state = engineStateStopped
+	return nil
+}
+
+// waitWithContext waits for group until ctx ends.
+func waitWithContext(ctx context.Context, group *sync.WaitGroup) error {
+	done := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		select {
+		case <-done:
+			return nil
+		default:
+			return ctx.Err()
+		}
 	}
 }
 
@@ -286,10 +325,13 @@ func retainNames(names []string, retained map[string]struct{}) []string {
 // one or more independent actions fail.
 func (e *Engine) Process(ctx context.Context, workflow string, message ruleengine.Message) (ruleengine.ExecutionPlan, error) {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
 	if e.state != engineStateRunning {
+		e.mu.RUnlock()
 		return ruleengine.ExecutionPlan{}, fmt.Errorf("pipeline is not started")
 	}
+	e.inflight.Add(1)
+	e.mu.RUnlock()
+	defer e.inflight.Done()
 
 	plan, err := e.composer.BuildExecutionPlan(ctx, workflow, message)
 	if err != nil {

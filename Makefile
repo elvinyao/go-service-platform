@@ -1,4 +1,4 @@
-.PHONY: test test-fake test-race coverage vet vet-fake verify build build-fake run fake-server dev clean
+.PHONY: test test-fake test-race coverage vet vet-fake verify build build-fake run fake-server dev clean mattermost-up mattermost-down mattermost-reset mattermost-bot
 
 test:
 	go test ./...
@@ -57,6 +57,28 @@ dev: build-fake
 	RUNTIME_CONFIG=config/profiles/demo/runtime.yaml \
 	RULE_ENGINE_CONFIG=config/profiles/demo/rule-engine.yaml \
 	WORKFLOW_RULES=config/profiles/demo/workflow-rules.yaml \
+	go run ./cmd/go-service-platform
+
+# Local Mattermost for bot development (needs Docker). See docs/mattermost.md.
+MATTERMOST_COMPOSE = docker compose -f deploy/mattermost/docker-compose.yml
+
+mattermost-up:
+	$(MATTERMOST_COMPOSE) up -d
+	go run ./deploy/mattermost/provision
+
+mattermost-down:
+	$(MATTERMOST_COMPOSE) down
+
+mattermost-reset:
+	$(MATTERMOST_COMPOSE) down -v
+	rm -f deploy/mattermost/.env
+
+mattermost-bot:
+	@test -f deploy/mattermost/.env || { printf '%s\n' 'deploy/mattermost/.env is missing; run make mattermost-up first' >&2; exit 1; }
+	@set -a; . ./deploy/mattermost/.env; set +a; \
+	RUNTIME_CONFIG=config/profiles/mattermost/runtime.yaml \
+	RULE_ENGINE_CONFIG=config/profiles/mattermost/rule-engine.yaml \
+	WORKFLOW_RULES=config/profiles/mattermost/workflow-rules.yaml \
 	go run ./cmd/go-service-platform
 
 clean:

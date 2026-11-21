@@ -16,7 +16,9 @@ The SDK provides:
 - structured logging and health, readiness, liveness, and admin APIs
 - runnable examples that use only public framework packages
 
-Confluence, Mattermost, and BadgeDB are optional demo adapters. They are not required by the framework SDK or the default YAML-first profile.
+Mattermost is supported as a real bot platform: `pkg/mattermost` turns a bot's posts and reactions into events and answers with posts, thread replies, and reactions. `make mattermost-up` starts a local Mattermost with a ready bot; see [Mattermost Bots](docs/mattermost.md).
+
+Confluence, BadgeDB, and the `adapters.mattermost` channel poster are optional demo adapters. They are not required by the framework SDK or the default YAML-first profile.
 
 ## Requirements
 
@@ -54,6 +56,7 @@ The repository intentionally has two local modes:
 | --- | --- | --- | --- | --- |
 | YAML-first | `make fake-server`, then `make run` | YAML | `log`, `http` | Learn and build without business-specific adapters |
 | Full demo | `make dev` | YAML, Confluence | `log`, `http`, Mattermost, BadgeDB | Exercise all reference integrations |
+| Mattermost bot | `make mattermost-up`, then `make mattermost-bot` | YAML | `log`, `http`, `mattermost_post`, `mattermost_reaction` | Run a bot against a local Mattermost |
 
 `make run` loads `config/runtime.yaml`, `config/rule-engine.yaml`, and `config/workflow-rules.yaml`. `make dev` selects `config/profiles/demo/runtime.yaml`, `config/profiles/demo/rule-engine.yaml`, and `config/profiles/demo/workflow-rules.yaml`; the demo rules add a `BADGE` event rule that exercises the BadgeDB `db` executor.
 
@@ -168,7 +171,7 @@ rules:
           backoff: "200ms"
         params:
           url: "https://chat.example/api/posts"
-          body_template: '{"channel":"{{.Payload.channel.id}}","text":"Hi <@{{.UserID}}>"}'
+          body_template: '{"channel":{{json .Payload.channel.id}},"text":{{json (printf "Hi <@%s>" .UserID)}}}'
 ```
 
 Built-in executors are `log` and `http`; applications can register their own `executor.Executor` implementations. See [Rule Engine](docs/rule-engine.md) for condition and retry semantics.
@@ -184,6 +187,7 @@ Built-in executors are `log` and `http`; applications can register their own `ex
 - `pkg/logger`: structured logging and context fields
 - `pkg/errors`: typed application errors
 - `pkg/concurrency`: worker-pool and concurrency helpers
+- `pkg/mattermost`: Mattermost bot client, event listener, and post/reaction executors; `pkg/mattermost/mattermosttest` is a fake server for tests
 
 Packages below `internal/` implement the reference application and demo adapters. External applications cannot and should not import them.
 

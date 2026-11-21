@@ -24,7 +24,8 @@ rules:
           timeout_ms: 3000
           headers:
             X-Automation-Source: rule-engine
-          body_template: '{"id":"audit-{{.ID}}","type":"DEPLOY_AUDIT","content":"deployment event normalized","user_id":"automation","metadata":{"source_event":"{{.ID}}"}}'
+          # json quotes and escapes the value, so any ID yields a valid body.
+          body_template: '{"id":{{json (printf "audit-%s" .ID)}},"type":"DEPLOY_AUDIT","content":"deployment event normalized","user_id":"automation","metadata":{"source_event":{{json .ID}}}}'
   - id: record-deployment-audit
     workflow: WorkflowEngine
     enabled: true

@@ -1,0 +1,104 @@
+version: "1"
+rules:
+  # "!ping" anywhere in a message: react, then answer in the thread.
+  - id: ping
+    workflow: WorkflowEngine
+    enabled: true
+    priority: 10
+    conditions:
+      - field: type
+        op: eq
+        value: message
+      - field: payload.sender.is_bot
+        op: eq
+        value: false
+      - field: content
+        op: regex
+        value: '(^|\s)!ping(\s|$)'
+        ignore_case: true
+    actions:
+      - id: ack_ping
+        executor: mattermost_reaction
+        priority: 10
+        params:
+          emoji: white_check_mark
+      - id: reply_pong
+        executor: mattermost_post
+        priority: 20
+        retry:
+          max_attempts: 3
+          backoff: "500ms"
+        params:
+          thread: true
+          template: 'pong :ping_pong: @{{field "payload.sender.username"}}'
+
+  # "!deploy <service>": acknowledge in the thread.
+  - id: deploy_command
+    workflow: WorkflowEngine
+    enabled: true
+    priority: 20
+    conditions:
+      - field: type
+        op: eq
+        value: message
+      - field: payload.sender.is_bot
+        op: eq
+        value: false
+      - field: content
+        op: regex
+        value: '(^|\s)!deploy\s+\S+'
+        ignore_case: true
+    actions:
+      - id: reply_deploy
+        executor: mattermost_post
+        retry:
+          max_attempts: 3
+          backoff: "500ms"
+        params:
+          thread: true
+          template: 'Deploy requested by @{{field "payload.sender.username"}}: `{{.Content}}`'
+
+  # Mentioned (or sent a direct message) without a command: explain usage.
+  - id: help_on_mention
+    workflow: WorkflowEngine
+    enabled: true
+    priority: 30
+    conditions:
+      - field: type
+        op: eq
+        value: message
+      - field: payload.sender.is_bot
+        op: eq
+        value: false
+      - field: payload.bot_mentioned
+        op: eq
+        value: true
+      - not:
+          field: content
+          op: regex
+          value: '(^|\s)!(ping|deploy)\b'
+    actions:
+      - id: reply_help
+        executor: mattermost_post
+        params:
+          thread: true
+          template: 'Hi @{{field "payload.sender.username"}}! Try `!ping` or `!deploy <service>`.'
+
+  # Approval-style reactions are logged.
+  - id: log_reaction
+    workflow: WorkflowEngine
+    enabled: true
+    priority: 40
+    conditions:
+      - field: type
+        op: eq
+        value: reaction_added
+      - field: payload.reaction
+        op: in
+        value: ["+1", "white_check_mark", "heavy_check_mark"]
+    actions:
+      - id: log_reaction
+        executor: log
+        params:
+          level: info
+          template: 'reaction :{{.Content}}: by {{.UserID}} on post {{field "payload.post.id"}} in ~{{field "payload.channel.name" | default "unknown"}}'

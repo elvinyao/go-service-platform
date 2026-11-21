@@ -20,12 +20,15 @@ func TestRepositoryProfilesLoadWithExpectedCapabilities(t *testing.T) {
 		confluenceEnabled bool
 		mattermostEnabled bool
 		badgeDBEnabled    bool
+		websocketInput    bool
+		mattermostInput   bool
 	}{
 		{
-			name:        "base",
-			runtimePath: "config/runtime.yaml",
-			enginePath:  "config/rule-engine.yaml",
-			providers:   []string{"yaml"},
+			name:           "base",
+			runtimePath:    "config/runtime.yaml",
+			enginePath:     "config/rule-engine.yaml",
+			providers:      []string{"yaml"},
+			websocketInput: true,
 		},
 		{
 			name:              "demo",
@@ -35,9 +38,19 @@ func TestRepositoryProfilesLoadWithExpectedCapabilities(t *testing.T) {
 			confluenceEnabled: true,
 			mattermostEnabled: true,
 			badgeDBEnabled:    true,
+			websocketInput:    true,
+		},
+		{
+			name:            "mattermost",
+			runtimePath:     "config/profiles/mattermost/runtime.yaml",
+			enginePath:      "config/profiles/mattermost/rule-engine.yaml",
+			providers:       []string{"yaml"},
+			mattermostInput: true,
 		},
 	}
 
+	// The Mattermost profile needs a token, which only ever comes from the environment.
+	t.Setenv("MATTERMOST_BOT_TOKEN", "test-token")
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			runtimeCfg, err := config.LoadRuntimeConfig(filepath.Join(repositoryRoot, tt.runtimePath))
@@ -51,6 +64,9 @@ func TestRepositoryProfilesLoadWithExpectedCapabilities(t *testing.T) {
 				runtimeCfg.Adapters.Mattermost.Enabled != tt.mattermostEnabled ||
 				runtimeCfg.Adapters.BadgeDB.Enabled != tt.badgeDBEnabled {
 				t.Fatalf("adapter flags = %+v", runtimeCfg.Adapters)
+			}
+			if runtimeCfg.Inputs.WebSocket.Enabled != tt.websocketInput || runtimeCfg.Inputs.Mattermost.Enabled != tt.mattermostInput {
+				t.Fatalf("input flags: websocket=%v mattermost=%v", runtimeCfg.Inputs.WebSocket.Enabled, runtimeCfg.Inputs.Mattermost.Enabled)
 			}
 
 			engineCfg, err := ruleengine.LoadEngineConfig(filepath.Join(repositoryRoot, tt.enginePath))
@@ -73,6 +89,7 @@ func TestRepositoryWorkflowRulesLoad(t *testing.T) {
 		{name: "base", path: "config/workflow-rules.yaml", executors: []string{"log"}},
 		{name: "demo", path: "config/profiles/demo/workflow-rules.yaml", executors: []string{"db", "log"}},
 		{name: "im-bot example", path: "examples/rules/im-bot.yaml", executors: []string{"log", "reply"}},
+		{name: "mattermost", path: "config/profiles/mattermost/workflow-rules.yaml", executors: []string{"log", "mattermost_post", "mattermost_reaction"}},
 	}
 
 	for _, tt := range tests {

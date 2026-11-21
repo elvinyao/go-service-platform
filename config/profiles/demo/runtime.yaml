@@ -11,6 +11,9 @@ inputs:
     server_url: "ws://localhost:8093"
     path: "/ws"
     reconnect_interval: "5s"
+    # Keep-alive: ping every ping_interval; redial after read_timeout of silence.
+    ping_interval: "20s"
+    read_timeout: "60s"
 
 adapters:
   confluence:

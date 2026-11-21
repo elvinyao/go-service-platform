@@ -16,6 +16,7 @@ import (
 	"github.com/elvinyao/go-service-platform/pkg/errors"
 	"github.com/elvinyao/go-service-platform/pkg/health"
 	"github.com/elvinyao/go-service-platform/pkg/logger"
+	"github.com/elvinyao/go-service-platform/pkg/mattermost"
 	"github.com/elvinyao/go-service-platform/pkg/ruleengine"
 	appruntime "github.com/elvinyao/go-service-platform/pkg/runtime"
 )
@@ -107,7 +108,10 @@ func (a *App) Start(ctx context.Context) error {
 
 	a.healthManager = health.NewHealthManager(30*time.Second, appVersion)
 	a.serviceManager = manager.NewServiceManager(appVersion, a.healthManager)
-	registerServices(a.serviceManager, a.config, appVersion)
+	if err := registerServices(a.serviceManager, a.config, appVersion); err != nil {
+		err = a.rollbackStartup(err)
+		return errors.Wrap(err, "failed to register services", errors.TypeInvalidInput)
+	}
 
 	if len(a.serviceManager.ListServices(startCtx)) > 0 {
 		if err := a.serviceManager.StartAll(startCtx); err != nil {
@@ -137,6 +141,12 @@ func (a *App) Start(ctx context.Context) error {
 		if err := setupMessageListeners(rootCtx, a.serviceManager, a.workflowEngine); err != nil {
 			err = a.rollbackStartup(err)
 			return errors.Wrap(err, "failed to set up message listeners", errors.TypeInternal)
+		}
+	}
+	if a.config.Inputs.Mattermost.Enabled {
+		if err := setupMattermostListener(rootCtx, a.serviceManager, a.workflowEngine); err != nil {
+			err = a.rollbackStartup(err)
+			return errors.Wrap(err, "failed to set up Mattermost listener", errors.TypeInternal)
 		}
 	}
 
@@ -206,6 +216,13 @@ func (a *App) stop(ctx context.Context) error {
 			a.adminServer = nil
 		}
 	}
+	// Stop reading events first, so nothing new arrives while the dispatcher
+	// drains; output services stay up until the queued events are handled.
+	if a.serviceManager != nil {
+		if err := stopInputs(ctx, a.serviceManager); err != nil {
+			stopErrors = append(stopErrors, err)
+		}
+	}
 	if a.workflowEngine != nil {
 		if err := a.workflowEngine.Stop(ctx); err != nil {
 			stopErrors = append(stopErrors, fmt.Errorf("stop workflows: %w", err))
@@ -226,7 +243,28 @@ func (a *App) stop(ctx context.Context) error {
 	return stderrors.Join(stopErrors...)
 }
 
-func registerServices(sm *manager.ServiceManager, cfg config.RuntimeConfig, version string) {
+func registerServices(sm *manager.ServiceManager, cfg config.RuntimeConfig, version string) error {
+	if cfg.Inputs.Mattermost.Enabled {
+		input, err := service.NewMattermostInputService(
+			service.MattermostInputServiceName,
+			ruleengine.DefaultWorkflowName,
+			service.MattermostInputConfig{
+				ServerURL: cfg.Inputs.Mattermost.ServerURL,
+				Token:     cfg.Inputs.Mattermost.Token,
+				Listener: mattermost.ListenerConfig{
+					ReconnectInterval: cfg.Inputs.Mattermost.ReconnectInterval,
+					PingInterval:      cfg.Inputs.Mattermost.PingInterval,
+					ReadTimeout:       cfg.Inputs.Mattermost.ReadTimeout,
+				},
+			},
+			version,
+		)
+		if err != nil {
+			return fmt.Errorf("configure Mattermost input: %w", err)
+		}
+		_ = sm.RegisterService(input)
+	}
+
 	if cfg.Inputs.WebSocket.Enabled {
 		_ = sm.RegisterService(service.NewWebSocketService(
 			service.WebSocketInputServiceName,
@@ -235,6 +273,8 @@ func registerServices(sm *manager.ServiceManager, cfg config.RuntimeConfig, vers
 				ServerURL:         cfg.Inputs.WebSocket.ServerURL,
 				Path:              cfg.Inputs.WebSocket.Path,
 				ReconnectInterval: cfg.Inputs.WebSocket.ReconnectInterval,
+				PingInterval:      cfg.Inputs.WebSocket.PingInterval,
+				ReadTimeout:       cfg.Inputs.WebSocket.ReadTimeout,
 			},
 			version,
 		))
@@ -277,6 +317,29 @@ func registerServices(sm *manager.ServiceManager, cfg config.RuntimeConfig, vers
 			version,
 		))
 	}
+	return nil
+}
+
+// inputServiceNames lists the services that feed events into the engine.
+var inputServiceNames = []string{service.WebSocketInputServiceName, service.MattermostInputServiceName}
+
+// stopInputs stops the event input services. StopAll stops them again later,
+// which is a no-op for a stopped service.
+func stopInputs(ctx context.Context, serviceManager *manager.ServiceManager) error {
+	ctx = appctx.WithOperationName(ctx, "inputs_shutdown")
+	stopCtx, cancel := context.WithTimeout(ctx, serviceShutdownTimeout)
+	defer cancel()
+	var stopErrors []error
+	for _, name := range inputServiceNames {
+		svc, ok := serviceManager.GetServiceByName(ctx, name)
+		if !ok {
+			continue
+		}
+		if err := svc.Stop(stopCtx); err != nil {
+			stopErrors = append(stopErrors, fmt.Errorf("stop input %s: %w", name, err))
+		}
+	}
+	return stderrors.Join(stopErrors...)
 }
 
 func shutdownServices(ctx context.Context, serviceManager *manager.ServiceManager) error {
@@ -339,4 +402,26 @@ func setupMessageListeners(ctx context.Context, serviceManager *manager.ServiceM
 		logger.InfoWithContext(ctx, "Message listeners set up successfully")
 		return nil
 	})
+}
+
+// setupMattermostListener routes Mattermost bot events into the workflow
+// engine's dispatcher.
+func setupMattermostListener(ctx context.Context, serviceManager *manager.ServiceManager, workflowEngine *workflow.WorkflowEngine) error {
+	svc, ok := serviceManager.GetServiceByName(ctx, service.MattermostInputServiceName)
+	if !ok {
+		return errors.New(errors.TypeNotFound, "Service not found: "+service.MattermostInputServiceName, nil)
+	}
+	input, ok := svc.(*service.MattermostInputService)
+	if !ok {
+		return errors.New(errors.TypeInternal, "Service is not of type *service.MattermostInputService", nil).
+			WithField("actual_type", fmt.Sprintf("%T", svc))
+	}
+	input.OnMessage(func(_ context.Context, msg ruleengine.Message) {
+		msgCtx := appctx.NewContext(ctx)
+		if err := workflowEngine.Submit(msgCtx, msg); err != nil {
+			logger.WithContextError(msgCtx, err).Warnf("Mattermost event type=%s id=%s was not queued", msg.Type, msg.ID)
+		}
+	})
+	logger.InfoWithContext(ctx, "Mattermost listener set up successfully")
+	return nil
 }
